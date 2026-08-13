@@ -134,7 +134,8 @@ import Testing
         async let second = transport.run(["remote-echo"])
         let results = try await [first, second]
 
-        #expect(results.allSatisfy(\.succeeded))
+        let allSucceeded = results.allSatisfy { $0.succeeded }
+        #expect(allSucceeded)
         // The single-flight gate is what turns "N cold commands" into "one
         // authentication": exactly one open, no matter the interleaving.
         #expect(env.count("open") == 1)

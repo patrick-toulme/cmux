@@ -32,7 +32,8 @@ struct RemoteTmuxHostSectionRenderTests {
             collapsedRemoteHostKeys: []
         )
 
-        #expect(items.map(\.id) == [
+        let itemIds = items.map { $0.id }
+        #expect(itemIds == [
             .workspace(local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
             .workspace(xxlSession1.id),
@@ -68,7 +69,8 @@ struct RemoteTmuxHostSectionRenderTests {
             collapsedRemoteHostKeys: ["hash-xxl"]
         )
 
-        #expect(items.map(\.id) == [
+        let itemIds = items.map { $0.id }
+        #expect(itemIds == [
             .workspace(local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")),
@@ -159,6 +161,9 @@ struct RemoteTmuxHostSectionRenderTests {
         let harness = try SectionHarness()
         defer { harness.tearDown() }
         let mirror = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        // Selection change is the trigger: park focus on the local workspace
+        // first, then collapse the machine, then select the hidden mirror.
+        harness.manager.selectWorkspace(harness.local)
         harness.manager.setRemoteTmuxHostCollapsed(hostKey: "hash-xxl", isCollapsed: true)
         #expect(harness.manager.isRemoteTmuxHostCollapsed(hostKey: "hash-xxl"))
 
@@ -180,13 +185,19 @@ struct RemoteTmuxHostSectionRenderTests {
         let local: Workspace
 
         init() throws {
-            appDelegate = try #require(AppDelegate.shared)
-            windowId = appDelegate.createMainWindow()
+            // Locals first: #require expands to closures, and a closure must
+            // not capture self before every stored property is initialized.
+            let appDelegate = try #require(AppDelegate.shared)
+            let windowId = appDelegate.createMainWindow()
             let context = try #require(
                 appDelegate.mainWindowContexts.values.first { $0.windowId == windowId }
             )
-            manager = context.tabManager
-            local = try #require(manager.selectedWorkspace)
+            let manager = context.tabManager
+            let local = try #require(manager.selectedWorkspace)
+            self.appDelegate = appDelegate
+            self.windowId = windowId
+            self.manager = manager
+            self.local = local
             // Collapse state persists app-globally; tests must not inherit or
             // leak entries.
             for key in ["hash-xxl", "hash-xxl2"] {
@@ -195,7 +206,10 @@ struct RemoteTmuxHostSectionRenderTests {
         }
 
         func addMirror(hostKey: String, label: String) -> Workspace {
-            let workspace = manager.addTab(select: false)
+            // Select each added workspace so consecutive adds chain in list
+            // order (addTab inserts AFTER the selected workspace); the tests
+            // assert exact sidebar order.
+            let workspace = manager.addTab(select: true)
             workspace.isRemoteTmuxMirror = true
             workspace.remoteTmuxHostKey = hostKey
             workspace.remoteTmuxHostLabel = label

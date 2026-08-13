@@ -401,10 +401,12 @@ struct TextBoxPendingPasteReservationTests {
             [attachment],
             replacementRange: textView.selectedRange()
         )
+        // U+FFFC OBJECT REPLACEMENT CHARACTER (NSAttachmentCharacter): the
+        // scalar TextKit stores for an attachment run. Spelled literally
+        // because the SDK constant's Swift exposure moved across macOS SDKs
+        // (`NSTextAttachment.character` is gone in the macOS 26 SDK).
         let detectedAttachmentRange = (textView.string as NSString).range(
-            of: String(
-                UnicodeScalar(NSTextAttachment.character)!
-            )
+            of: String(UnicodeScalar(0xFFFC)!)
         )
         let attachmentRange = try #require(
             detectedAttachmentRange.location == NSNotFound

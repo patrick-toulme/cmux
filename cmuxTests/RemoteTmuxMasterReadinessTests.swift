@@ -108,8 +108,15 @@ import Testing
             timeout: .milliseconds(10)
         )
 
+        // The invariant is "returns at its own 10ms deadline instead of
+        // waiting out the SIGTERM-immune child's 5s sleep". The budget is
+        // deliberately far above the deadline but well below the child's
+        // sleep: under Swift Testing's parallel suite execution, task
+        // scheduling contention alone was measured pushing the return past
+        // 1s (isolated runs return in ~15ms), and a hang regression still
+        // trips a 3s budget by seconds.
         #expect(
-            ContinuousClock().now - start < .seconds(1),
+            ContinuousClock().now - start < .seconds(3),
             "Remote session cleanup must return at its own deadline"
         )
     }
