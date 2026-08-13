@@ -158,6 +158,25 @@ final class RemoteTmuxControlConnection {
     /// Number of reconnect attempts since the last successful connect, driving the
     /// capped exponential backoff. Reset to 0 on a successful connect.
     private var reconnectAttemptCount = 0
+    /// Host-level master gate the controller injects: awaited before every
+    /// reconnect spawn so the N sessions of a host coalesce on ONE master
+    /// reopen (at most one authentication, one security-key touch) instead of
+    /// racing N independent ssh clients at a dead socket. The spawn itself is
+    /// a mux-only client (``RemoteTmuxHost/controlModeArguments``), so skipping
+    /// the gate could only fail fast — never authenticate — but the gate is
+    /// what actually brings the master back. `nil` (tests, or a connection the
+    /// controller has not adopted) spawns directly, preserving the old behavior.
+    var masterGate: (@MainActor () async -> RemoteTmuxMasterGateOutcome)?
+    /// The in-flight master-gate query for the current reconnect attempt.
+    /// Cancelled on `stop()` / genuine end alongside the backoff task.
+    private var reconnectGateTask: Task<Void, Never>?
+    /// `true` while the reconnect loop is parked because the master gate
+    /// reported ``RemoteTmuxMasterGateOutcome/authRequired``: retrying would
+    /// only spam authentication attempts, so the loop waits for
+    /// ``resumeReconnectAfterAuth()`` (the user re-authenticating via
+    /// `cmux ssh-tmux`). The connection stays `.reconnecting` — the mirror
+    /// remains frozen exactly like a network outage.
+    private(set) var reconnectSuspendedAwaitingAuth = false
     /// stderr text captured for the in-flight spawn, inspected when a reconnect
     /// attempt's process exits to tell "session genuinely gone" from "host still
     /// unreachable". Reset at the start of each spawn.
@@ -528,6 +547,9 @@ final class RemoteTmuxControlConnection {
         failPendingCommandTransactions()
         reconnectTask?.cancel()
         reconnectTask = nil
+        reconnectGateTask?.cancel()
+        reconnectGateTask = nil
+        reconnectSuspendedAwaitingAuth = false
         resetWindowListRequestCoalescing()
         cancelSizingFollowUps()
         pendingPostAttachAction = nil
@@ -733,6 +755,7 @@ final class RemoteTmuxControlConnection {
         pendingPostAttachAction = nil
         teardownProcessHandles()
         reconnectAttemptCount = 0
+        reconnectSuspendedAwaitingAuth = false
         connectionState = .reconnecting
         scheduleReconnectAttempt()
     }
@@ -762,18 +785,74 @@ final class RemoteTmuxControlConnection {
         }
     }
 
-    /// Re-spawns the ssh control client for a reconnect attempt. Always attach-only
-    /// (`createIfMissing: false`) so a session killed during the outage fails the
-    /// re-attach (→ classified `.ended`) instead of being silently recreated empty.
-    /// A spawn failure (e.g. control-socket dir) backs off and retries; the spawn's
-    /// success/failure is observed via `.enter` (connected) or `handleStreamEnd`.
+    /// Re-spawns the ssh control client for a reconnect attempt, first routing
+    /// through the host-level ``masterGate`` so all of a host's reconnecting
+    /// sessions coalesce on one master reopen (at most one authentication)
+    /// instead of racing independent clients at a dead socket. Always
+    /// attach-only (`createIfMissing: false`) so a session killed during the
+    /// outage fails the re-attach (→ classified `.ended`) instead of being
+    /// silently recreated empty. A spawn failure (e.g. control-socket dir)
+    /// backs off and retries; the spawn's success/failure is observed via
+    /// `.enter` (connected) or `handleStreamEnd`.
     private func attemptReconnectSpawn() {
         record("reconnect-attempt")
+        guard let masterGate else {
+            spawnReconnectClient()
+            return
+        }
+        reconnectGateTask?.cancel()
+        reconnectGateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let outcome = await masterGate()
+            // The gate ran across an await: a deliberate stop()/genuine end
+            // (state != .reconnecting) or a cancelled attempt must not spawn.
+            guard !Task.isCancelled, self.connectionState == .reconnecting else { return }
+            switch outcome {
+            case .ready:
+                self.spawnReconnectClient()
+            case .retryLater:
+                self.scheduleReconnectAttempt()
+            case .authRequired:
+                self.suspendReconnectAwaitingAuth()
+            }
+        }
+    }
+
+    /// The actual mux-only client spawn of a reconnect attempt.
+    private func spawnReconnectClient() {
         do {
             try spawnProcess(createIfMissing: false)
         } catch {
             scheduleReconnectAttempt()
         }
+    }
+
+    /// Parks the reconnect loop until the user re-authenticates: the master
+    /// gate reported that reopening the shared master needs interactive
+    /// authentication, so further silent retries could only blink the user's
+    /// security key without ever succeeding. The connection stays
+    /// `.reconnecting` (mirror frozen); ``resumeReconnectAfterAuth()`` restarts
+    /// the loop once a master is serving again.
+    private func suspendReconnectAwaitingAuth() {
+        guard connectionState == .reconnecting, !reconnectSuspendedAwaitingAuth else { return }
+        record("reconnect-suspended-auth-required")
+        reconnectSuspendedAwaitingAuth = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        observers.notifyReconnectAuthRequired()
+    }
+
+    /// Restarts a reconnect loop parked by ``suspendReconnectAwaitingAuth()``
+    /// — called by the controller after the host's master is confirmed serving
+    /// again (the user re-authenticated, e.g. by re-running
+    /// `cmux ssh-tmux <destination>`). Resets the backoff so the re-attach is
+    /// immediate.
+    func resumeReconnectAfterAuth() {
+        guard connectionState == .reconnecting, reconnectSuspendedAwaitingAuth else { return }
+        record("reconnect-resumed-after-auth")
+        reconnectSuspendedAwaitingAuth = false
+        reconnectAttemptCount = 0
+        attemptReconnectSpawn()
     }
 
     /// Re-seeds every mirrored pane after a successful reconnect: the fresh ssh
@@ -800,6 +879,7 @@ final class RemoteTmuxControlConnection {
                 reconnectAttemptCount = 0
                 reconnectTask?.cancel()
                 reconnectTask = nil
+                reconnectSuspendedAwaitingAuth = false
                 // Do not send here: `.enter` precedes the attach result block, so a
                 // command queued now could be consumed by that result and shift the
                 // FIFO. The attach-block drain queues list-windows once alignment is safe.

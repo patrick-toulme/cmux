@@ -49,6 +49,11 @@ extension RemoteTmuxControlConnection {
     ///   - onTopologyChanged: fires when the window/pane topology changes.
     ///   - onReconnectReady: fires after reconnect attach drainage and reseeding,
     ///     when observers may safely schedule commands against fresh topology.
+    ///   - onReconnectAuthRequired: fires when the reconnect loop parks because
+    ///     reopening the shared master needs interactive authentication (see
+    ///     ``resumeReconnectAfterAuth()``), so the controller can surface one
+    ///     "re-authenticate" notice per host instead of blinking the user's
+    ///     security key with silent retries.
     ///   - onExit: fires once when the connection PERMANENTLY ends (a genuine tmux
     ///     `%exit`, or a session found gone on reconnect). A transient transport loss
     ///     does NOT fire this — the connection reconnects instead.
@@ -65,6 +70,7 @@ extension RemoteTmuxControlConnection {
         onSessionChanged: ((_ oldName: String, _ newName: String) -> Void)? = nil,
         onTopologyChanged: (() -> Void)? = nil,
         onReconnectReady: (() -> Void)? = nil,
+        onReconnectAuthRequired: (() -> Void)? = nil,
         onExit: (() -> Void)? = nil,
         onConnectionStateChanged: ((ConnectionState) -> Void)? = nil
     ) -> ObserverToken {
@@ -77,6 +83,7 @@ extension RemoteTmuxControlConnection {
             onSessionChanged: onSessionChanged,
             onTopologyChanged: onTopologyChanged,
             onReconnectReady: onReconnectReady,
+            onReconnectAuthRequired: onReconnectAuthRequired,
             onExit: onExit,
             onConnectionStateChanged: onConnectionStateChanged
         )

@@ -197,9 +197,13 @@ extension Workspace {
                 destination: host.destination,
                 port: host.port,
                 identityFile: host.identityFile,
+                // An interactive terminal ssh with visible prompts: allowed to
+                // open (and authenticate) the shared master, like the
+                // `cmux ssh-tmux` terminal ssh.
                 sshOptions: host.sshControlArguments(
                     controlPersistSeconds: 180,
-                    batchMode: false
+                    batchMode: false,
+                    role: .opener
                 )
               ).workspaceConfiguration(
                 localSocketPath: TerminalController.shared.currentSocketPathForRemoteRestore(),

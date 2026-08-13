@@ -31,6 +31,13 @@ final class RemoteTmuxController {
     private var connectionsByHostSession: [String: RemoteTmuxControlConnection] = [:]
     private var connectionObserverTokensByHostSession: [String: RemoteTmuxControlConnection.ObserverToken] = [:]
 
+    /// Hosts (by ``RemoteTmuxHost/connectionHash``) whose master reopen is
+    /// parked awaiting the user's interactive re-authentication: their
+    /// suspended connections stay frozen and no silent auth attempts run until
+    /// a bulk attach (`cmux ssh-tmux`) confirms a serving master again. Also
+    /// dedupes the per-host "re-authenticate" notification.
+    private var hostsAwaitingReauth: Set<String> = []
+
     init() {}
 
     /// Synchronous read of the `remoteTmux` beta flag for AppKit/socket paths
@@ -84,6 +91,100 @@ final class RemoteTmuxController {
             // localized "host unreachable: %@" message takes the destination as detail.
             throw RemoteTmuxError.unreachable(host.destination)
         }
+        // A confirmed-serving master is the user-driven recovery edge for any
+        // reconnect loops parked awaiting re-authentication on this host (they
+        // suspend rather than blink the security key; see the master gate).
+        clearReauthStateAndResumeSuspended(host: host)
+    }
+
+    // MARK: - Master gate (single-auth reconnect coordination)
+
+    /// The host-level master gate injected into every control connection's
+    /// reconnect loop (see ``RemoteTmuxControlConnection/masterGate``): funnels
+    /// all of a host's reconnect attempts through the transport's single-flight
+    /// ``RemoteTmuxSSHTransport/ensureMasterReady()`` so a dead master is
+    /// reopened at most once (one authentication, one security-key touch) no
+    /// matter how many sessions are reconnecting.
+    func masterGateOutcome(host: RemoteTmuxHost) async -> RemoteTmuxMasterGateOutcome {
+        do {
+            guard try await transport(for: host).ensureMasterReady() else {
+                return .retryLater
+            }
+            // The master is serving again: any sibling connection parked on
+            // auth can ride it now.
+            clearReauthStateAndResumeSuspended(host: host)
+            return .ready
+        } catch is CancellationError {
+            return .retryLater
+        } catch let error as RemoteTmuxError {
+            if case .commandFailed(_, let stderr) = error,
+               RemoteTmuxSSHTransport.indicatesInteractiveRetryWillHelp(stderr) {
+                return .authRequired
+            }
+            return .retryLater
+        } catch {
+            return .retryLater
+        }
+    }
+
+    /// Whether `host` has reconnect loops parked awaiting interactive
+    /// re-authentication (drives "needs auth" surfacing).
+    func hostAwaitsReauthentication(connectionHash: String) -> Bool {
+        hostsAwaitingReauth.contains(connectionHash)
+    }
+
+    /// Records that a connection's reconnect loop parked for interactive
+    /// authentication and surfaces ONE per-host notification telling the user
+    /// how to recover — instead of the old behavior of every session retrying
+    /// forever with a fresh silent auth attempt each round (the security-key
+    /// touch storm).
+    func noteReconnectAuthRequired(host: RemoteTmuxHost) {
+        guard !hostsAwaitingReauth.contains(host.connectionHash) else { return }
+        hostsAwaitingReauth.insert(host.connectionHash)
+        Self.logger.warning("remote-tmux: reconnect parked, interactive auth required [\(host.connectionHash, privacy: .public)]")
+        postReauthNotification(host: host)
+    }
+
+    /// Clears a host's awaiting-reauth state and immediately retries every
+    /// suspended reconnect loop (the master is confirmed serving, so the
+    /// re-attaches ride it with no further prompts).
+    private func clearReauthStateAndResumeSuspended(host: RemoteTmuxHost) {
+        hostsAwaitingReauth.remove(host.connectionHash)
+        for connection in connectionsByHostSession.values
+        where connection.host.connectionHash == host.connectionHash {
+            connection.resumeReconnectAfterAuth()
+        }
+    }
+
+    /// Posts the per-host "authentication needed" notification onto the host's
+    /// first mirror workspace (badge + banner + Notification Center via the
+    /// standard store pipeline). Cooldown-keyed per endpoint so repeated
+    /// suspensions inside one outage cannot spam.
+    private func postReauthNotification(host: RemoteTmuxHost) {
+        guard let workspaceId = sessionMirrors.values
+            .first(where: { $0.host.connectionHash == host.connectionHash })?
+            .mirroredWorkspaceId else { return }
+        let title = String(
+            localized: "remoteTmux.notification.reauthRequired.title",
+            defaultValue: "SSH authentication needed"
+        )
+        let body = String(
+            format: String(
+                localized: "remoteTmux.notification.reauthRequired.body",
+                defaultValue: "The connection to %@ was lost and reconnecting needs you to authenticate again. Run: cmux ssh-tmux %@"
+            ),
+            host.destination,
+            host.destination
+        )
+        TerminalNotificationStore.shared.addNotification(
+            tabId: workspaceId,
+            surfaceId: nil,
+            title: title,
+            subtitle: host.destination,
+            body: body,
+            cooldownKey: "remote-tmux-reauth-\(host.connectionHash)",
+            cooldownInterval: 300
+        )
     }
 
     // MARK: - Control connections (tmux -CC mirroring)
@@ -109,6 +210,13 @@ final class RemoteTmuxController {
             sessionName: sessionName,
             createIfMissing: createIfMissing
         )
+        // Route every reconnect attempt through the host-level master gate so
+        // a host's N sessions coalesce on ONE master reopen (single-flight,
+        // at most one authentication) instead of racing at a dead socket.
+        connection.masterGate = { [weak self] in
+            guard let self else { return .retryLater }
+            return await self.masterGateOutcome(host: host)
+        }
         // Insert only after a successful launch, so a failed `start()` never
         // leaves a dead (never-started, `exited == false`) connection that a
         // later attach would wrongly reuse.
@@ -168,6 +276,10 @@ final class RemoteTmuxController {
                     oldName: oldName,
                     newName: newName
                 )
+            },
+            onReconnectAuthRequired: { [weak self, weak connection] in
+                guard let self, let connection else { return }
+                self.noteReconnectAuthRequired(host: connection.host)
             }
         )
     }
@@ -721,7 +833,13 @@ final class RemoteTmuxController {
         }
         Task {
             if let killTarget {
-                _ = try? await transport.runTmux(["kill-session", "-t", killTarget])
+                // Best-effort over an existing master only: a workspace close
+                // must never reopen the master (a fresh authentication /
+                // security-key touch) just to kill an already-unreachable session.
+                _ = try? await transport.runTmux(
+                    ["kill-session", "-t", killTarget],
+                    reopeningMasterIfNeeded: false
+                )
             }
             // Close the master only after any kill-session attempt has used it;
             // `ssh -O exit` first would tear the connection down before the

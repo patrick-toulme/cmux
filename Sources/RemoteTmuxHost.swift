@@ -185,7 +185,31 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
         )
     }
 
-    /// SSH options that reuse (or open) the shared ControlMaster.
+    /// `ControlPersist` value that keeps an opened master alive indefinitely
+    /// (OpenSSH treats `0` as "persist forever"). Masters are torn down
+    /// explicitly with `ssh -O exit` on every teardown path (last-mirror close,
+    /// window close, detach, app quit), so an indefinite persist means the one
+    /// authenticated connection per machine survives idle gaps and long
+    /// reconnect outages instead of expiring and demanding a fresh
+    /// authentication (a security-key touch) minutes later.
+    static let masterControlPersistIndefinitely = 0
+
+    /// Stable stderr marker a mux-only invocation emits when it finds no live
+    /// master and its severed direct-connection fallback fails fast (see
+    /// ``RemoteTmuxControlMasterRole/client``). Unique to cmux so
+    /// classification can never confuse it with a genuine remote/proxy error.
+    static let masterUnavailableSentinel = "cmux-remote-tmux-master-unavailable"
+
+    /// The fail-fast `ProxyCommand` mux-only invocations use to sever ssh's
+    /// direct-connection fallback: prints ``masterUnavailableSentinel`` to
+    /// stderr and exits nonzero without ever touching the network. The outer
+    /// command is executed by the user's login shell, so the body is wrapped
+    /// in a portable `/bin/sh -c '…'`.
+    static let muxOnlyProxyCommand =
+        "/bin/sh -c 'echo \(masterUnavailableSentinel) >&2; exit 1'"
+
+    /// SSH options that reuse — and, for ``RemoteTmuxControlMasterRole/opener``
+    /// only, open — the shared ControlMaster.
     ///
     /// Deliberately does NOT pin `StrictHostKeyChecking`, so ssh honors the
     /// user's `~/.ssh/config` host-key policy. Under `batchMode` an unknown host
@@ -197,18 +221,48 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     /// SSH first-contact experience.
     ///
     /// - Parameter controlPersistSeconds: how long the master lingers idle
-    ///   after the last client detaches, so back-to-back commands stay fast.
+    ///   after the last client detaches (`0` = indefinitely, see
+    ///   ``masterControlPersistIndefinitely``). Only meaningful for
+    ///   ``RemoteTmuxControlMasterRole/opener`` invocations — a mux-only
+    ///   client never becomes the master — but always emitted so the argv
+    ///   shape stays uniform.
     /// - Parameter batchMode: when `true`, ssh never prompts interactively.
     ///   Use this for discovery/mutation commands and for the pipe-backed local
     ///   `tmux -CC` control client; interactive prompts are handled only by
     ///   ``interactiveAuthInvocation()`` running in the user's terminal.
-    func sshControlArguments(controlPersistSeconds: Int, batchMode: Bool) -> [String] {
+    /// - Parameter role: whether this invocation may create (and authenticate)
+    ///   the master, or must fail fast when no live master exists. Only the
+    ///   single-flight readiness gate and the interactive terminal ssh pass
+    ///   ``RemoteTmuxControlMasterRole/opener`` — that restriction is what
+    ///   guarantees at most one authenticated connection per machine.
+    func sshControlArguments(
+        controlPersistSeconds: Int,
+        batchMode: Bool,
+        role: RemoteTmuxControlMasterRole
+    ) -> [String] {
         // Every ssh-tmux invocation supplies its own remote command (`true`,
         // `tmux -CC …`, one-shot discovery), which OpenSSH refuses while a
         // host-configured RemoteCommand is in effect (issue #7246).
         var args = SSHHostConfiguredRemoteCommand().overrideArguments
+        switch role {
+        case .opener:
+            args += ["-o", "ControlMaster=auto"]
+        case .client:
+            // `ControlMaster=no` selects mux-client mode; the ProxyCommand
+            // severs the direct-connection fallback so a dead master makes the
+            // spawn fail fast with the sentinel instead of silently opening its
+            // own authenticated connection (a hidden security-key touch —
+            // multiplied by N reconnecting sessions, a touch storm).
+            // `ProxyJump=none` clears any configured jump host so the explicit
+            // ProxyCommand can never conflict with it; both options only govern
+            // the never-taken fallback path, so a live master is unaffected.
+            args += [
+                "-o", "ControlMaster=no",
+                "-o", "ProxyJump=none",
+                "-o", "ProxyCommand=\(Self.muxOnlyProxyCommand)",
+            ]
+        }
         args += [
-            "-o", "ControlMaster=auto",
             "-o", "ControlPath=\(controlSocketPath)",
             "-o", "ControlPersist=\(controlPersistSeconds)",
             "-o", "ConnectTimeout=10",
@@ -272,15 +326,23 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     ///
     /// - Parameter sshExecutablePath: the local `ssh` binary the CLI will exec.
     /// - Parameter controlPersistSeconds: idle lifetime of the opened master.
+    ///   Defaults to ``masterControlPersistIndefinitely`` so the one
+    ///   interactive authentication (the user's security-key touch) is never
+    ///   silently forfeited to an idle timer; every teardown path closes the
+    ///   master explicitly with `ssh -O exit`.
     /// - Returns: argv where element 0 is `sshExecutablePath`; the `--`
     ///   end-of-options guard precedes the destination so a dash-prefixed
     ///   destination can never be parsed as an ssh option.
     func interactiveAuthInvocation(
         sshExecutablePath: String = RemoteTmuxHost.defaultSSHExecutablePath(),
-        controlPersistSeconds: Int = 180
+        controlPersistSeconds: Int = RemoteTmuxHost.masterControlPersistIndefinitely
     ) -> [String] {
         [sshExecutablePath]
-            + sshControlArguments(controlPersistSeconds: controlPersistSeconds, batchMode: false)
+            + sshControlArguments(
+                controlPersistSeconds: controlPersistSeconds,
+                batchMode: false,
+                role: .opener
+            )
             + ["-o", "BatchMode=no", "-n", "-T", "--", destination, "true"]
     }
 
@@ -333,6 +395,13 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     /// that begins with `-` can never be parsed by `ssh` as an option (which
     /// would allow `-oProxyCommand=…` local command injection).
     ///
+    /// Always a mux-only ``RemoteTmuxControlMasterRole/client``: the control
+    /// stream rides the shared master and must never self-authenticate. When
+    /// the master is dead (reconnect after an outage), the spawn fails fast
+    /// with ``masterUnavailableSentinel`` and the reconnect loop routes
+    /// recovery through the controller's master gate — N sessions coalescing
+    /// on one reopen instead of N racing authentications.
+    ///
     /// - Parameters:
     ///   - sessionName: the tmux session to attach to (or create).
     ///   - createIfMissing: `new-session -A -s` (attach or create) vs `attach-session -t`.
@@ -344,7 +413,8 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
         var args = ["-tt"]
         args.append(contentsOf: sshControlArguments(
             controlPersistSeconds: controlPersistSeconds,
-            batchMode: true
+            batchMode: true,
+            role: .client
         ))
         let remoteCommand = Self.tmuxRemoteCommand(arguments: createIfMissing
             ? ["-CC", "new-session", "-A", "-s", sessionName]
@@ -362,6 +432,13 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     /// tmux pane is uploaded to the host and the remote path is inserted, so a
     /// remote CLI (e.g. claude) can read it — instead of inserting a macOS-local
     /// path that doesn't exist on the remote.
+    ///
+    /// Mux-only, like every other non-opener invocation: the fail-fast
+    /// ProxyCommand (see ``muxOnlyProxyCommand``) severs scp/ssh's
+    /// direct-connection fallback, so an upload attempted while the master is
+    /// down fails immediately with ``masterUnavailableSentinel`` instead of
+    /// silently opening its own authenticated connection (an invisible
+    /// security-key touch that would hang the paste until it timed out).
     func detectedSSHSession() -> DetectedSSHSession {
         DetectedSSHSession(
             destination: destination,
@@ -374,7 +451,10 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
             useIPv6: false,
             forwardAgent: false,
             compressionEnabled: false,
-            sshOptions: []
+            sshOptions: [
+                "ProxyJump=none",
+                "ProxyCommand=\(Self.muxOnlyProxyCommand)",
+            ]
         )
     }
 }

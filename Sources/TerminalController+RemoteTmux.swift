@@ -285,6 +285,7 @@ extension TerminalController {
                 "started": snapshot.started,
                 "enter_received": snapshot.enterReceived,
                 "exited": snapshot.exited,
+                "auth_required": snapshot.reconnectSuspendedAwaitingAuth,
                 "window_count": snapshot.windowCount,
                 "window_ids": snapshot.windowIDs,
                 "total_output_bytes": snapshot.totalOutputBytes,

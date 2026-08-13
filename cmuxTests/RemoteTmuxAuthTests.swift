@@ -105,15 +105,21 @@ import Testing
         // the user's ~/.ssh/config, and an unknown host key fails BatchMode (which
         // routes to interactive auth) rather than being silently trusted.
         let host = RemoteTmuxHost(destination: "user@host")
-        let args = host.sshControlArguments(controlPersistSeconds: 180, batchMode: true)
-        #expect(!args.contains(where: { $0.hasPrefix("StrictHostKeyChecking=") }))
-        #expect(consecutive(args, "-o", "BatchMode=yes"))
-        #expect(consecutive(args, "-o", "ControlPath=\(host.controlSocketPath)"))
+        for role in [RemoteTmuxControlMasterRole.opener, .client] {
+            let args = host.sshControlArguments(
+                controlPersistSeconds: 180,
+                batchMode: true,
+                role: role
+            )
+            #expect(!args.contains(where: { $0.hasPrefix("StrictHostKeyChecking=") }))
+            #expect(consecutive(args, "-o", "BatchMode=yes"))
+            #expect(consecutive(args, "-o", "ControlPath=\(host.controlSocketPath)"))
+        }
     }
 
     @Test func nonBatchControlArgsOmitBatchMode() {
         let host = RemoteTmuxHost(destination: "user@host")
-        let args = host.sshControlArguments(controlPersistSeconds: 180, batchMode: false)
+        let args = host.sshControlArguments(controlPersistSeconds: 180, batchMode: false, role: .opener)
         #expect(!args.contains("BatchMode=yes"))
     }
 
@@ -179,9 +185,11 @@ import Testing
 
     @Test func controlArgsAppendPortAndIdentity() {
         let host = RemoteTmuxHost(destination: "user@host", port: 2222, identityFile: "/keys/id")
-        let args = host.sshControlArguments(controlPersistSeconds: 180, batchMode: true)
-        #expect(consecutive(args, "-p", "2222"))
-        #expect(consecutive(args, "-i", "/keys/id"))
+        for role in [RemoteTmuxControlMasterRole.opener, .client] {
+            let args = host.sshControlArguments(controlPersistSeconds: 180, batchMode: true, role: role)
+            #expect(consecutive(args, "-p", "2222"))
+            #expect(consecutive(args, "-i", "/keys/id"))
+        }
     }
 
     @Test func connectionHashVariesByPortAndIdentity() {

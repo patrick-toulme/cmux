@@ -17,8 +17,14 @@ import Testing
     @Test(arguments: [true, false])
     func controlArgsOverrideHostConfiguredRemoteCommand(batchMode: Bool) {
         let host = RemoteTmuxHost(destination: "user@host")
-        let args = host.sshControlArguments(controlPersistSeconds: 180, batchMode: batchMode)
-        #expect(consecutive(args, "-o", "RemoteCommand=none"))
+        for role in [RemoteTmuxControlMasterRole.opener, .client] {
+            let args = host.sshControlArguments(
+                controlPersistSeconds: 180,
+                batchMode: batchMode,
+                role: role
+            )
+            #expect(consecutive(args, "-o", "RemoteCommand=none"))
+        }
     }
 
     @Test func controlModeArgumentsOverrideHostRemoteCommandAndKeepForcedTTY() {

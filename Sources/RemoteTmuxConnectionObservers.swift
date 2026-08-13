@@ -22,6 +22,7 @@ final class RemoteTmuxConnectionObservers {
     private var sessionChangedObservers: [Token: (_ oldName: String, _ newName: String) -> Void] = [:]
     private var topologyObservers: [Token: () -> Void] = [:]
     private var reconnectReadyObservers: [Token: () -> Void] = [:]
+    private var reconnectAuthRequiredObservers: [Token: () -> Void] = [:]
     private var exitObservers: [Token: () -> Void] = [:]
     private var stateObservers: [Token: (RemoteTmuxControlConnection.ConnectionState) -> Void] = [:]
 
@@ -49,6 +50,10 @@ final class RemoteTmuxConnectionObservers {
     ///     the authoritative point for re-keying session-owned state.
     ///   - onTopologyChanged: fires when the window/pane topology changes.
     ///   - onReconnectReady: fires after reconnect attach drainage and reseeding.
+    ///   - onReconnectAuthRequired: fires when the reconnect loop parks because
+    ///     reopening the shared master needs interactive authentication (see
+    ///     ``RemoteTmuxControlConnection/resumeReconnectAfterAuth()``), so the
+    ///     controller can surface one "re-authenticate" notice per host.
     ///   - onExit: fires once when the connection PERMANENTLY ends (a genuine tmux
     ///     `%exit`, or a session found gone on reconnect). A transient transport loss
     ///     does NOT fire this — the connection reconnects instead.
@@ -65,6 +70,7 @@ final class RemoteTmuxConnectionObservers {
         onSessionChanged: ((_ oldName: String, _ newName: String) -> Void)?,
         onTopologyChanged: (() -> Void)?,
         onReconnectReady: (() -> Void)?,
+        onReconnectAuthRequired: (() -> Void)? = nil,
         onExit: (() -> Void)?,
         onConnectionStateChanged: ((RemoteTmuxControlConnection.ConnectionState) -> Void)?
     ) -> Token {
@@ -77,6 +83,7 @@ final class RemoteTmuxConnectionObservers {
         if let onSessionChanged { sessionChangedObservers[token] = onSessionChanged }
         if let onTopologyChanged { topologyObservers[token] = onTopologyChanged }
         if let onReconnectReady { reconnectReadyObservers[token] = onReconnectReady }
+        if let onReconnectAuthRequired { reconnectAuthRequiredObservers[token] = onReconnectAuthRequired }
         if let onExit { exitObservers[token] = onExit }
         if let onConnectionStateChanged { stateObservers[token] = onConnectionStateChanged }
         return token
@@ -92,6 +99,7 @@ final class RemoteTmuxConnectionObservers {
         sessionChangedObservers[token] = nil
         topologyObservers[token] = nil
         reconnectReadyObservers[token] = nil
+        reconnectAuthRequiredObservers[token] = nil
         exitObservers[token] = nil
         stateObservers[token] = nil
     }
@@ -141,6 +149,12 @@ final class RemoteTmuxConnectionObservers {
     /// Notifies observers that reconnect commands are safe and the prior claims were reseeded.
     func notifyReconnectReady() {
         for callback in Array(reconnectReadyObservers.values) { callback() }
+    }
+
+    /// Notifies observers that the reconnect loop parked awaiting interactive
+    /// authentication (the master gate reported it cannot silently reopen).
+    func notifyReconnectAuthRequired() {
+        for callback in Array(reconnectAuthRequiredObservers.values) { callback() }
     }
 
     /// Notifies every exit observer that the connection permanently ended.

@@ -146716,6 +146716,256 @@
         }
       }
     },
+    "remoteTmux.notification.reauthRequired.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "انقطع الاتصال بـ %@ وتتطلب إعادة الاتصال مصادقة جديدة. شغّل: cmux ssh-tmux %@"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Veza sa %@ je prekinuta i ponovno povezivanje zahtijeva ponovnu autentifikaciju. Pokrenite: cmux ssh-tmux %@"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forbindelsen til %@ blev afbrudt, og genoprettelse kræver, at du godkender igen. Kør: cmux ssh-tmux %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Verbindung zu %@ wurde getrennt; zum erneuten Verbinden ist eine erneute Authentifizierung nötig. Führen Sie aus: cmux ssh-tmux %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connection to %@ was lost and reconnecting needs you to authenticate again. Run: cmux ssh-tmux %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se perdió la conexión con %@ y volver a conectar requiere autenticarse de nuevo. Ejecuta: cmux ssh-tmux %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La connexion à %@ a été perdue ; la reconnexion nécessite une nouvelle authentification. Exécutez : cmux ssh-tmux %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La connessione a %@ è stata persa e la riconnessione richiede una nuova autenticazione. Esegui: cmux ssh-tmux %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ への接続が切断され、再接続には再認証が必要です。次を実行してください: cmux ssh-tmux %@"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ការតភ្ជាប់ទៅ %@ បានដាច់ ហើយការតភ្ជាប់ឡើងវិញត្រូវការការផ្ទៀងផ្ទាត់ម្តងទៀត។ ដំណើរការ៖ cmux ssh-tmux %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 연결이 끊어졌으며 다시 연결하려면 다시 인증해야 합니다. 실행: cmux ssh-tmux %@"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tilkoblingen til %@ ble brutt, og ny tilkobling krever at du autentiserer på nytt. Kjør: cmux ssh-tmux %@"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Połączenie z %@ zostało utracone, a ponowne połączenie wymaga ponownego uwierzytelnienia. Uruchom: cmux ssh-tmux %@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A conexão com %@ foi perdida e reconectar exige que você se autentique novamente. Execute: cmux ssh-tmux %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Соединение с %@ потеряно; для переподключения нужно снова пройти аутентификацию. Выполните: cmux ssh-tmux %@"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "การเชื่อมต่อกับ %@ ขาดหาย และการเชื่อมต่อใหม่ต้องยืนยันตัวตนอีกครั้ง เรียกใช้: cmux ssh-tmux %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ bağlantısı koptu; yeniden bağlanmak için yeniden kimlik doğrulamanız gerekiyor. Çalıştırın: cmux ssh-tmux %@"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "З'єднання з %@ втрачено; для повторного підключення потрібно знову пройти автентифікацію. Виконайте: cmux ssh-tmux %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与 %@ 的连接已断开，重新连接需要再次进行身份验证。请运行：cmux ssh-tmux %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "與 %@ 的連線已中斷，重新連線需要再次驗證。請執行：cmux ssh-tmux %@"
+          }
+        }
+      }
+    },
+    "remoteTmux.notification.reauthRequired.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مطلوب مصادقة SSH"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Potrebna je SSH autentifikacija"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH-godkendelse påkrævet"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH-Authentifizierung erforderlich"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH authentication needed"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se necesita autenticación SSH"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentification SSH requise"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autenticazione SSH necessaria"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 認証が必要です"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ត្រូវការការផ្ទៀងផ្ទាត់ SSH"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH 인증 필요"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH-autentisering kreves"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wymagane uwierzytelnienie SSH"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autenticação SSH necessária"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Требуется аутентификация SSH"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ต้องยืนยันตัวตน SSH"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSH kimlik doğrulaması gerekiyor"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Потрібна автентифікація SSH"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要 SSH 身份验证"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要 SSH 驗證"
+          }
+        }
+      }
+    },
     "remoteTmux.pane.close": {
       "extractionState": "manual",
       "localizations": {

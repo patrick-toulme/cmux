@@ -148,9 +148,14 @@ actor RemoteTmuxSSHTransport {
     }
 
     /// Runs a `tmux <args…>` command on the remote host and returns its result.
+    ///
+    /// - Parameter reopeningMasterIfNeeded: see ``run(_:reopeningMasterIfNeeded:)``.
     @discardableResult
-    func runTmux(_ args: [String]) async throws -> RemoteTmuxCommandResult {
-        try await run(["tmux"] + args)
+    func runTmux(
+        _ args: [String],
+        reopeningMasterIfNeeded: Bool = true
+    ) async throws -> RemoteTmuxCommandResult {
+        try await run(["tmux"] + args, reopeningMasterIfNeeded: reopeningMasterIfNeeded)
     }
 
     /// Runs an arbitrary remote command over the shared SSH master.
@@ -161,8 +166,56 @@ actor RemoteTmuxSSHTransport {
     /// `list-sessions -F` format string) would be word-split on the remote.
     /// A leading literal `tmux` is the `runTmux(_:)` contract and selects the
     /// remote tmux resolver; other commands are treated as explicit remote argv.
+    ///
+    /// The spawn itself is always a mux-only ``RemoteTmuxControlMasterRole/client``
+    /// — it can never authenticate on its own. When no live master is serving,
+    /// the spawn fails fast (locally, no network) with
+    /// ``RemoteTmuxHost/masterUnavailableSentinel`` and the command is routed
+    /// through the single-flight ``ensureMasterReady()`` gate — the only place
+    /// a one-shot command's authentication can happen — then retried once.
+    /// Concurrent cold commands therefore coalesce on ONE master open (one
+    /// authentication) instead of each self-promoting like the old
+    /// `ControlMaster=auto` scheme. The warm path costs nothing extra: the
+    /// client rides the live master directly.
+    ///
+    /// - Parameter reopeningMasterIfNeeded: `true` (default) reopens the master
+    ///   through the gate when the client finds it dead. Pass `false` for
+    ///   best-effort teardown commands (`kill-session` on close/quit): those
+    ///   must ride an existing master or fail fast, never re-authenticate — a
+    ///   dying window must not blink the user's security key.
     @discardableResult
-    func run(_ remoteArgs: [String]) async throws -> RemoteTmuxCommandResult {
+    func run(
+        _ remoteArgs: [String],
+        reopeningMasterIfNeeded: Bool = true
+    ) async throws -> RemoteTmuxCommandResult {
+        let result = try await execute(remoteArgs, role: .client)
+        guard reopeningMasterIfNeeded,
+              !result.succeeded,
+              Self.indicatesMasterUnavailable(result.stderr) else {
+            return result
+        }
+        // No live master. Open it exactly once (single-flight across every
+        // concurrent caller; auth failures throw with their stderr so callers
+        // classify them for the interactive-retry flow) and rerun the command.
+        guard try await ensureMasterReady() else {
+            throw RemoteTmuxError.unreachable(host.destination)
+        }
+        let retried = try await execute(remoteArgs, role: .client)
+        guard !retried.succeeded, Self.indicatesMasterUnavailable(retried.stderr) else {
+            return retried
+        }
+        // The confirmed master died again before the retry could ride it —
+        // an unusable connection, not a command failure.
+        throw RemoteTmuxError.unreachable(host.destination)
+    }
+
+    /// Builds the ssh argv for `remoteArgs` and spawns it with `role`. The only
+    /// caller allowed to pass ``RemoteTmuxControlMasterRole/opener`` is
+    /// ``performMasterReady()`` — everything else is a mux client.
+    private func execute(
+        _ remoteArgs: [String],
+        role: RemoteTmuxControlMasterRole
+    ) async throws -> RemoteTmuxCommandResult {
         try host.ensureControlSocketDirectory()
         let remoteCommand: String
         if remoteArgs.first == "tmux" {
@@ -175,23 +228,38 @@ actor RemoteTmuxSSHTransport {
         // `--` ends ssh option parsing so a destination beginning with `-`
         // (e.g. `-oProxyCommand=…`) can never be consumed as an ssh option.
         let sshArgs =
-            host.sshControlArguments(controlPersistSeconds: controlPersistSeconds, batchMode: true)
+            host.sshControlArguments(
+                controlPersistSeconds: role == .opener
+                    ? RemoteTmuxHost.masterControlPersistIndefinitely
+                    : controlPersistSeconds,
+                batchMode: true,
+                role: role
+            )
             + ["--", host.destination, remoteCommand]
         return try await Self.runProcess(executable: sshExecutablePath, arguments: sshArgs)
     }
 
     /// Opens the shared SSH ControlMaster (if it isn't already up) and confirms it
     /// accepts multiplexed sessions, so the burst of `tmux -CC attach` connections
-    /// the controller fires next — each `ControlMaster=auto`
-    /// (``RemoteTmuxHost/controlModeArguments``) — rides a *ready* master instead of
-    /// all racing to create one at the same `ControlPath`.
+    /// the controller fires next — each a mux-only
+    /// ``RemoteTmuxControlMasterRole/client`` (``RemoteTmuxHost/controlModeArguments``)
+    /// — rides a *ready* master.
     ///
-    /// On a cold first attach with many sessions, that creation race makes
-    /// all-but-one connection fail with "ControlSocket … already exists, disabling
-    /// multiplexing", so only one or two sessions mirror (#6732). Even discovery
-    /// (which opens the master implicitly) leaves a brief background hand-off window
-    /// where the socket exists but isn't yet accepting sessions; `ssh -O check` is
-    /// the authoritative "ready now" signal that closes it.
+    /// This gate is the ONLY code path that may open (and therefore
+    /// authenticate) the master; every other spawn is a mux-only client that
+    /// fails fast when the socket is dead. That split is the single-auth
+    /// guarantee: one machine, one authenticated connection, at most one
+    /// security-key touch — regardless of how many sessions are mirrored or
+    /// how many commands race a dead socket.
+    ///
+    /// Historical context: under the old all-`ControlMaster=auto` scheme, a cold
+    /// first attach with many sessions raced to create the master at the same
+    /// `ControlPath`; all-but-one failed with "ControlSocket … already exists,
+    /// disabling multiplexing", so only one or two sessions mirrored (#6732) —
+    /// and every loser silently opened its OWN authenticated connection. Even
+    /// discovery left a brief background hand-off window where the socket
+    /// existed but wasn't yet accepting sessions; `ssh -O check` is the
+    /// authoritative "ready now" signal that closes it.
     ///
     /// Idempotent: returns `true` at once when a master is already live (warm path);
     /// otherwise opens it exactly once with `run(["true"])` — a single connection
@@ -227,14 +295,28 @@ actor RemoteTmuxSSHTransport {
 
     /// The actual warmup, run exactly once per ``readinessTask`` (see
     /// ``ensureMasterReady()`` for the single-flight + readiness rationale).
+    ///
+    /// This is the ONLY place a transport spawn may run as
+    /// ``RemoteTmuxControlMasterRole/opener`` — i.e. the only place a
+    /// non-interactive authentication can happen. When the open itself fails
+    /// (BatchMode cannot service a password / host-key confirmation / FIDO
+    /// touch), the failure is thrown as ``RemoteTmuxError/commandFailed`` with
+    /// the captured stderr so callers classify it with the existing
+    /// `indicatesInteractiveRetryWillHelp` decision layer and route the user to
+    /// the interactive terminal ssh.
     private func performMasterReady() async throws -> Bool {
         try? host.ensureControlSocketDirectory()
         if try await masterIsRunning() { return true }
         // Warm the shared master once, then confirm. The open's exit code is not
-        // trusted (a non-multiplexed fallback can make `run` exit 0 with no live
-        // master — see the doc comment); the post-open `ssh -O check` is authoritative.
-        _ = try? await run(["true"])
-        return try await masterIsRunning()
+        // trusted (a non-multiplexed fallback can make the open exit 0 with no
+        // live master — see the doc comment); the post-open `ssh -O check` is
+        // authoritative.
+        let opened = try await execute(["true"], role: .opener)
+        if try await masterIsRunning() { return true }
+        if !opened.succeeded {
+            throw RemoteTmuxError.commandFailed(exitCode: opened.exitCode, stderr: opened.stderr)
+        }
+        return false
     }
 
     /// Whether the shared ControlMaster is live and accepting sessions, via the
@@ -306,7 +388,16 @@ actor RemoteTmuxSSHTransport {
             group.addTask {
                 await withTaskGroup(of: Void.self) { kills in
                     for job in jobs {
-                        kills.addTask { _ = try? await job.transport.runTmux(["kill-session", "-t", job.target]) }
+                        // Best-effort: ride an existing master or fail fast. A
+                        // teardown kill must never reopen the master (a fresh
+                        // authentication — security-key touch — from a dying
+                        // window or the app-quit path).
+                        kills.addTask {
+                            _ = try? await job.transport.runTmux(
+                                ["kill-session", "-t", job.target],
+                                reopeningMasterIfNeeded: false
+                            )
+                        }
                     }
                     await kills.waitForAll()
                 }
@@ -382,6 +473,16 @@ actor RemoteTmuxSSHTransport {
             || lowered.contains("remote host identification has changed")
             || lowered.contains("authentication failed")
             || lowered.contains("too many authentication failures")
+    }
+
+    /// Whether a failed mux-only (``RemoteTmuxControlMasterRole/client``) spawn
+    /// failed because no live ControlMaster was serving its socket: the severed
+    /// direct-connection fallback ran the fail-fast ProxyCommand, which prints
+    /// the cmux-unique sentinel. This is a LOCAL condition ("the shared master
+    /// is gone"), never a remote error — callers route recovery through
+    /// ``ensureMasterReady()`` instead of surfacing it.
+    static func indicatesMasterUnavailable(_ stderr: String) -> Bool {
+        stderr.contains(RemoteTmuxHost.masterUnavailableSentinel)
     }
 
     // MARK: - Process plumbing

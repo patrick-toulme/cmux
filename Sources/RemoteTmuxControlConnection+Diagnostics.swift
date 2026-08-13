@@ -9,6 +9,7 @@ extension RemoteTmuxControlConnection {
       started: started,
       enterReceived: enterReceived,
       exited: exited,
+      reconnectSuspendedAwaitingAuth: reconnectSuspendedAwaitingAuth,
       sessionId: sessionId,
       windowCount: windowsByID.count,
       windowIDs: windowOrder,
