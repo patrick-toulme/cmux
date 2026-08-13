@@ -146,6 +146,44 @@ struct RemoteTmuxHostSectionRenderTests {
         #expect(sectionIndex < mirrorIndex)
     }
 
+    @Test func interleavedAttachCompletionsStayClusteredPerMachine() throws {
+        // Session mirrors are appended as their control streams finish
+        // attaching; with several machines attaching concurrently the
+        // completion order interleaves. The placement helper must keep each
+        // machine's sessions physically contiguous — otherwise a session
+        // renders under ANOTHER machine's section header (dogfood report:
+        // "alpha" listed under the fakeb section).
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let a1 = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        harness.manager.placeMirrorWorkspaceWithItsHost(a1)
+        let b1 = harness.addMirror(hostKey: "hash-xxl2", label: "xxl2")
+        harness.manager.placeMirrorWorkspaceWithItsHost(b1)
+        // The interleaved arrival: xxl's second session completes AFTER
+        // xxl2's first.
+        let a2 = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        harness.manager.placeMirrorWorkspaceWithItsHost(a2)
+
+        let order = harness.manager.tabs.map { $0.id }
+        #expect(order == [harness.local.id, a1.id, a2.id, b1.id])
+
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            collapsedRemoteHostKeys: []
+        )
+        let itemIds = items.map { $0.id }
+        #expect(itemIds == [
+            .workspace(harness.local.id),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
+            .workspace(a1.id),
+            .workspace(a2.id),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")),
+            .workspace(b1.id),
+        ])
+    }
+
     @Test func sectionIdentityIsStableAndDistinct() {
         // Collapse persistence and row identity both key off the derived UUID,
         // so it must be a pure function of the host key — and different keys

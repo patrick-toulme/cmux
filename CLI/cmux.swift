@@ -9543,6 +9543,14 @@ struct CMUXCLI {
                         message: "ssh-tmux: cmux did not return an ssh command for authentication"
                     )
                 }
+                if !jsonOutput {
+                    // Security keys show no prompt at all (the key just
+                    // blinks), and in a multi-machine attach the second
+                    // machine's auth is easy to miss right after the first
+                    // one's touch. Say loudly that THIS machine needs its own
+                    // authentication now.
+                    print("Authenticating to \(destination) — complete it in this terminal (password, MFA, or security key touch)…")
+                }
                 try runInteractiveAuthSSH(sshArgv: sshArgv, destination: destination)
                 didAuthenticate = true
                 // Retry while the just-opened ControlMaster is warm.
@@ -9576,7 +9584,16 @@ struct CMUXCLI {
         // The app builds this argv with a hardcoded /usr/bin/ssh; require exactly
         // that. A basename check would accept a planted /tmp/ssh — pin the full
         // path so the CLI never execs an arbitrary command returned over the socket.
-        let allowedSSHPaths: Set<String> = ["/usr/bin/ssh"]
+        var allowedSSHPaths: Set<String> = ["/usr/bin/ssh"]
+#if DEBUG
+        // The app-side transport honors the same env seam in DEBUG builds;
+        // without accepting it here the end-to-end fake-ssh harness can never
+        // exercise the interactive authentication retry.
+        if let override = ProcessInfo.processInfo.environment["CMUX_REMOTE_TMUX_SSH_FOR_TESTING"],
+           !override.isEmpty {
+            allowedSSHPaths.insert(override)
+        }
+#endif
         guard let executable = sshArgv.first, allowedSSHPaths.contains(executable) else {
             throw CLIError(message: "ssh-tmux: refusing to run a non-standard ssh path for authentication")
         }

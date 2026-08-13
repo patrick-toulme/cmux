@@ -418,12 +418,20 @@ final class RemoteTmuxController {
         let workspace = tabManager.addWorkspace(
             title: sessionName, titleSource: .auto,
             select: false,
+            // Deterministic placement: mirrors land at the end of the list
+            // (then cluster with their machine below), never wherever the
+            // user's new-workspace placement setting would scatter them.
+            placementOverride: .end,
             autoWelcomeIfNeeded: false,
             applyCreationTitleAsCustomTitle: false
         )
         workspace.isRemoteTmuxMirror = true
         workspace.remoteTmuxHostKey = host.connectionHash
         workspace.remoteTmuxHostLabel = host.destination
+        // Concurrent multi-machine attaches interleave completion order; keep
+        // each machine's sessions contiguous so the sidebar's per-machine
+        // sections never show a session under another machine's header.
+        tabManager.placeMirrorWorkspaceWithItsHost(workspace)
         workspace.remoteTmuxWindowOrderSync = { [weak self, weak workspace] orderedPanelIds, verification in
             guard let self, let workspace else { return false }
             return self.handleMirrorWindowsReordered(

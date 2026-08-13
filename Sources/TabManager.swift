@@ -2061,6 +2061,29 @@ class TabManager: ObservableObject {
         setRemoteTmuxHostCollapsed(hostKey: hostKey, isCollapsed: false)
     }
 
+    /// Keeps a machine's mirror workspaces physically contiguous: moves
+    /// `workspace` (just created by `addWorkspace`) directly after the last
+    /// OTHER workspace of the same machine. Session mirrors are appended as
+    /// their control streams finish attaching, and with several machines
+    /// attaching concurrently that completion order interleaves machines —
+    /// the sidebar's per-machine sections group CONTIGUOUS runs, so an
+    /// interleaved session would render under another machine's header.
+    func placeMirrorWorkspaceWithItsHost(_ workspace: Workspace) {
+        guard let hostKey = workspace.remoteTmuxHostKey,
+              let currentIndex = tabs.firstIndex(where: { $0.id == workspace.id }),
+              let lastSiblingIndex = tabs.lastIndex(where: {
+                  $0.id != workspace.id && $0.remoteTmuxHostKey == hostKey
+              })
+        else { return }
+        // First session of its machine: keep the position addWorkspace chose.
+        let targetIndex = lastSiblingIndex + 1
+        guard targetIndex != currentIndex else { return }
+        let removed = tabs.remove(at: currentIndex)
+        // Removing an element before the target shifts later indices left.
+        let insertIndex = currentIndex < targetIndex ? targetIndex - 1 : targetIndex
+        tabs.insert(removed, at: min(insertIndex, tabs.count))
+    }
+
     func toggleWorkspaceGroupPinned(groupId: UUID) {
         workspaceGrouping.toggleWorkspaceGroupPinned(groupId: groupId)
     }
