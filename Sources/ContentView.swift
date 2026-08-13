@@ -10970,6 +10970,10 @@ struct VerticalTabsSidebar: View, Equatable {
     /// has no TabItemView, so no implicit per-row publisher subscription
     /// would otherwise fire on `cd` while it's not selected.
     @State private var anchorCwdRevision: Int = 0
+    /// Bumped when a remote tmux machine's needs-reauthentication state flips
+    /// (the controller is not observable); the body reads it so the machine
+    /// section headers repaint their auth badge.
+    @State private var remoteHostAuthRevision: Int = 0
     @AppStorage(CmuxExtensionSidebarSelection.defaultsKey)
     private var selectedExtensionSidebarProviderId = CmuxExtensionSidebarSelection.defaultProviderId
     @LiveSetting(\.betaFeatures.extensions) private var extensionsExperimentalEnabled
@@ -11225,10 +11229,45 @@ struct VerticalTabsSidebar: View, Equatable {
         let workspaceGroupById: [UUID: WorkspaceGroup]
         let memberWorkspaceIdsByGroupId: [UUID: [UUID]]
         let workspaceGroupMenuSnapshot: WorkspaceGroupMenuSnapshot
+        /// Remote tmux mirrors: machine key per mirror workspace, member lists
+        /// and display labels per machine, plus the collapse and needs-reauth
+        /// sets that drive the per-machine sidebar sections.
+        let remoteHostKeyByWorkspaceId: [UUID: String]
+        let remoteHostLabelByHostKey: [String: String]
+        let memberWorkspaceIdsByRemoteHostKey: [String: [UUID]]
+        let collapsedRemoteHostKeys: Set<String>
+        let remoteHostAuthRequiredKeys: Set<String>
         let workspaceRenderItems: [SidebarWorkspaceRenderItem]
         let visibleWorkspaceRowIds: [UUID]
 
         var workspaceIds: [UUID] { tabIds }
+    }
+
+    /// The per-machine projections for remote tmux mirror workspaces, built
+    /// outside the ViewBuilder (bare loops are not statements there).
+    struct RemoteHostSectionProjection {
+        let hostKeyByWorkspaceId: [UUID: String]
+        let labelByHostKey: [String: String]
+        let memberWorkspaceIdsByHostKey: [String: [UUID]]
+    }
+
+    static func remoteHostSectionProjection(tabs: [Workspace]) -> RemoteHostSectionProjection {
+        var hostKeyByWorkspaceId: [UUID: String] = [:]
+        var labelByHostKey: [String: String] = [:]
+        var memberWorkspaceIdsByHostKey: [String: [UUID]] = [:]
+        for tab in tabs {
+            guard let hostKey = tab.remoteTmuxHostKey else { continue }
+            hostKeyByWorkspaceId[tab.id] = hostKey
+            memberWorkspaceIdsByHostKey[hostKey, default: []].append(tab.id)
+            if labelByHostKey[hostKey] == nil {
+                labelByHostKey[hostKey] = tab.remoteTmuxHostLabel ?? hostKey
+            }
+        }
+        return RemoteHostSectionProjection(
+            hostKeyByWorkspaceId: hostKeyByWorkspaceId,
+            labelByHostKey: labelByHostKey,
+            memberWorkspaceIdsByHostKey: memberWorkspaceIdsByHostKey
+        )
     }
 
     private func activateSidebarInteractions() {
@@ -11321,14 +11360,34 @@ struct VerticalTabsSidebar: View, Equatable {
         let workspaceGroupMenuSnapshot = WorkspaceGroupMenuSnapshot(
             items: workspaceGroups.map { WorkspaceGroupMenuSnapshot.Item(id: $0.id, name: $0.name) }
         )
+        // Remote tmux mirrors project into per-machine collapsible sections.
+        let remoteHostProjection = Self.remoteHostSectionProjection(tabs: tabs)
+        let remoteHostKeyByWorkspaceId = remoteHostProjection.hostKeyByWorkspaceId
+        let remoteHostLabelByHostKey = remoteHostProjection.labelByHostKey
+        let memberWorkspaceIdsByRemoteHostKey = remoteHostProjection.memberWorkspaceIdsByHostKey
+        let collapsedRemoteHostKeys = isPresented ? tabManager.collapsedRemoteTmuxHostKeys : []
+        let _ = remoteHostAuthRevision
+        let remoteHostAuthRequiredKeys: Set<String> = Set(
+            memberWorkspaceIdsByRemoteHostKey.keys.filter { hostKey in
+                AppDelegate.shared?.remoteTmuxController
+                    .hostAwaitsReauthentication(connectionHash: hostKey) == true
+            }
+        )
         let workspaceRenderItems = SidebarWorkspaceRenderItem.renderItems(
             tabs: tabs,
-            groupsById: workspaceGroupById
+            groupsById: workspaceGroupById,
+            remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
+            collapsedRemoteHostKeys: collapsedRemoteHostKeys
         )
         let numberedWorkspaceIndexById = SidebarWorkspaceRenderItem.numberedWorkspaceIndexById(
             from: workspaceRenderItems
         )
-        let visibleWorkspaceRowIds = workspaceRenderItems.map(\.rowWorkspaceId)
+        // Machine section headers are containers, not reorder/drop rows: keep
+        // them out of the row-id projection the drag machinery consumes.
+        let visibleWorkspaceRowIds = workspaceRenderItems.compactMap { item -> UUID? in
+            if case .remoteHostSection = item { return nil }
+            return item.rowWorkspaceId
+        }
         let draggedSidebarTabId = dragState.draggedTabId
         let dropIndicatorScope = dragState.dropIndicatorScope
         let sidebarReorderIds = draggedSidebarTabId.map {
@@ -11376,6 +11435,11 @@ struct VerticalTabsSidebar: View, Equatable {
             workspaceGroupById: workspaceGroupById,
             memberWorkspaceIdsByGroupId: memberWorkspaceIdsByGroupId,
             workspaceGroupMenuSnapshot: workspaceGroupMenuSnapshot,
+            remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
+            remoteHostLabelByHostKey: remoteHostLabelByHostKey,
+            memberWorkspaceIdsByRemoteHostKey: memberWorkspaceIdsByRemoteHostKey,
+            collapsedRemoteHostKeys: collapsedRemoteHostKeys,
+            remoteHostAuthRequiredKeys: remoteHostAuthRequiredKeys,
             workspaceRenderItems: workspaceRenderItems,
             visibleWorkspaceRowIds: visibleWorkspaceRowIds
         )
@@ -11668,6 +11732,9 @@ struct VerticalTabsSidebar: View, Equatable {
                 // unrelated sidebar event fires.
                 anchorCwdRevision &+= 1
             }
+            .onReceive(NotificationCenter.default.publisher(for: .remoteTmuxHostAuthStateDidChange)) { _ in
+                remoteHostAuthRevision &+= 1
+            }
             .onReceive(NotificationCenter.default.publisher(for: SidebarMultiSelectionDidHideEvent.notificationName)) { notification in
                 // Group collapse hides some workspaces without changing
                 // focus or wiping the rest of the multi-selection. Strip
@@ -11943,6 +12010,12 @@ struct VerticalTabsSidebar: View, Equatable {
                 return sidebarWorkspaceGroupTableConfiguration(
                     group: group,
                     memberWorkspaceIds: renderContext.memberWorkspaceIdsByGroupId[groupId] ?? [],
+                    renderContext: renderContext
+                )
+            case .remoteHostSection(let hostKey, let firstWorkspaceId):
+                return sidebarRemoteHostSectionTableConfiguration(
+                    hostKey: hostKey,
+                    firstWorkspaceId: firstWorkspaceId,
                     renderContext: renderContext
                 )
             case .workspace(let workspaceId):
@@ -13618,6 +13691,16 @@ struct VerticalTabsSidebar: View, Equatable {
                     if let snapshot = listSnapshot.groupRowsById[groupId] {
                         sidebarWorkspaceGroupRow(snapshot: snapshot)
                     }
+                case .remoteHostSection(let hostKey, _):
+                    sidebarRemoteHostSectionHeader(
+                        hostKey: hostKey,
+                        isPointerHovering: false,
+                        contextMenuActions: nil,
+                        renderContext: renderContext,
+                        unreadCountForWorkspace: {
+                            unreadSummariesByWorkspaceId[$0]?.unreadCount ?? 0
+                        }
+                    )
                 case .workspace(let workspaceId):
                     if let input = listSnapshot.workspaceRowsById[workspaceId] {
                         workspaceRow(

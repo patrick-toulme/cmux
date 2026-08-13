@@ -7786,6 +7786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         initialBrowserTransparentBackground: Bool = false,
         applyCreationTitleAsCustomTitle: Bool = true,
         focusInitialBrowserAddressBarOnCreate: Bool = true,
+        promptsForRemoteTmuxDestination: Bool = true,
         createdWorkspaceHandler: ((Workspace) -> Void)? = nil
     ) -> Bool {
         let preferredContext = preferredTabManager.flatMap { mainWindowContext(for: $0) }
@@ -7852,6 +7853,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let context = livePreferredContext
             ?? preferredMainWindowContextForWorkspaceCreation(event: event, debugSource: debugSource)
+
+        // A window that mirrors remote tmux machines makes New Workspace
+        // ambiguous: a tmux session on one of the machines, or a local Mac
+        // workspace? Ask, from every UI entrypoint (⌘N, menu, sidebar plus,
+        // titlebar plus) — one shared decision point.
+        if initialSurface == .terminal,
+           promptsForRemoteTmuxDestination,
+           let context,
+           presentRemoteTmuxNewWorkspaceDestinationMenu(in: context, debugSource: debugSource) {
+            return true
+        }
 
         let workspaceGroupTarget = context.flatMap { workspaceGroupNewWorkspaceTarget(in: $0) }
         // The configured new-workspace action is the user's override for the
@@ -7932,6 +7944,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             openNewMainWindow(nil)
         }
         return true
+    }
+
+    /// When the target window mirrors remote tmux machines, presents the New
+    /// Workspace destination menu at the pointer: one "New tmux Session on
+    /// <machine>" item per mirrored machine, plus "New Local Workspace" (a
+    /// plain Mac terminal in the same window). Returns `false` when the window
+    /// mirrors nothing, so callers proceed with the normal local creation.
+    private func presentRemoteTmuxNewWorkspaceDestinationMenu(
+        in context: MainWindowContext,
+        debugSource: String
+    ) -> Bool {
+        var hostKeysInOrder: [String] = []
+        var labelByHostKey: [String: String] = [:]
+        for tab in context.tabManager.tabs {
+            guard let hostKey = tab.remoteTmuxHostKey else { continue }
+            if labelByHostKey[hostKey] == nil {
+                hostKeysInOrder.append(hostKey)
+                labelByHostKey[hostKey] = tab.remoteTmuxHostLabel ?? hostKey
+            }
+        }
+        guard !hostKeysInOrder.isEmpty else { return false }
+#if DEBUG
+        cmuxDebugLog("newWorkspace.remoteTmuxDestinationMenu hosts=\(hostKeysInOrder.count) source=\(debugSource)")
+#endif
+        let menu = NSMenu()
+        for hostKey in hostKeysInOrder {
+            let item = NSMenuItem(
+                title: String(
+                    format: String(
+                        localized: "remoteTmuxNewWorkspace.menu.sessionOnHost",
+                        defaultValue: "New tmux Session on %@"
+                    ),
+                    labelByHostKey[hostKey] ?? hostKey
+                ),
+                action: #selector(remoteTmuxNewWorkspaceMenuCreateSession(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = hostKey
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let localItem = NSMenuItem(
+            title: String(
+                localized: "remoteTmuxNewWorkspace.menu.localWorkspace",
+                defaultValue: "New Local Workspace"
+            ),
+            action: #selector(remoteTmuxNewWorkspaceMenuCreateLocal(_:)),
+            keyEquivalent: ""
+        )
+        localItem.target = self
+        localItem.representedObject = context.tabManager
+        menu.addItem(localItem)
+        // Screen coordinates: works for pointer AND keyboard invocations (the
+        // menu appears at the cursor either way).
+        menu.popUp(positioning: menu.items.first, at: NSEvent.mouseLocation, in: nil)
+        return true
+    }
+
+    @objc private func remoteTmuxNewWorkspaceMenuCreateSession(_ sender: NSMenuItem) {
+        guard let hostKey = sender.representedObject as? String else { return }
+        Task { @MainActor [weak self] in
+            await self?.remoteTmuxController.createSessionOnHost(connectionHash: hostKey)
+        }
+    }
+
+    @objc private func remoteTmuxNewWorkspaceMenuCreateLocal(_ sender: NSMenuItem) {
+        guard let tabManager = sender.representedObject as? TabManager else { return }
+        _ = performNewWorkspaceCreationAction(
+            initialSurface: .terminal,
+            preferredTabManager: tabManager,
+            event: nil,
+            debugSource: "remoteTmuxDestinationMenu.local",
+            promptsForRemoteTmuxDestination: false
+        )
     }
 
     private func proUpgradeWorkspaceContext(workspaceId: UUID) -> (MainWindowContext, Workspace)? {

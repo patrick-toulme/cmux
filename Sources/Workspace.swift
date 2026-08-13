@@ -5583,6 +5583,14 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
 
     /// Ephemeral remote tmux mirror; excluded from cmux session restore.
     var isRemoteTmuxMirror: Bool = false
+    /// Stable endpoint identity (``RemoteTmuxHost/connectionHash``) of the
+    /// machine this mirror belongs to. Drives the sidebar's per-machine
+    /// collapsible sections when several hosts are mirrored into one window.
+    /// Ephemeral like the mirror itself.
+    var remoteTmuxHostKey: String?
+    /// The machine's display label for the sidebar section header (the SSH
+    /// destination exactly as the user typed it, e.g. `xxl` or `dev@host`).
+    var remoteTmuxHostLabel: String?
     weak var remoteTmuxSessionMirror: RemoteTmuxSessionMirror?
     /// Bound action for this mirror's outbound window-order mutation boundary.
     var remoteTmuxWindowOrderSync: (([UUID], ((Bool) -> Void)?) -> Bool)?

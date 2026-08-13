@@ -1695,6 +1695,7 @@ C0DE71B10000000000000001 /* AppDelegate+AgentChatNotifications.swift in Sources 
 		2FAA10BC0D7B50DE57F507A4 /* RemoteTmuxError.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF44822DC080B2110CFECF88 /* RemoteTmuxError.swift */; };
 		240EDE51707EB251790C8985 /* RemoteTmuxHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02B8A9858C9804AC9C37D7B4 /* RemoteTmuxHost.swift */; };
 		F6724602A1B2C3D4E5F67246 /* RemoteTmuxHostRemoteCommandOverrideTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6724603A1B2C3D4E5F67246 /* RemoteTmuxHostRemoteCommandOverrideTests.swift */; };
+		3D572E8BF37E4EB3BD8CA258 /* RemoteTmuxHostSectionRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 210989117FFD4EB7AAC8A006 /* RemoteTmuxHostSectionRenderTests.swift */; };
 		9251A0019251A0019251A002 /* RemoteTmuxKeyName.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9251A0019251A0019251A001 /* RemoteTmuxKeyName.swift */; };
 		79380000000000000000000C /* RemoteTmuxLayoutNodePatchingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79380000000000000000000B /* RemoteTmuxLayoutNodePatchingTests.swift */; };
 		D5804231CD0240288D16BB4A /* RemoteTmuxMasterGateOutcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DCA0215617C4467948216ED /* RemoteTmuxMasterGateOutcome.swift */; };
@@ -1988,6 +1989,7 @@ C0DE71B10000000000000001 /* AppDelegate+AgentChatNotifications.swift in Sources 
 		D75280020000000000000001 /* SidebarProfilingSignposts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D75280020000000000000002 /* SidebarProfilingSignposts.swift */; };
 		C0DE48000000000000000001 /* SidebarProviderMenuRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE48000000000000000002 /* SidebarProviderMenuRegressionTests.swift */; };
 		B9000130A1B2C3D4E5F60719 /* SidebarPullRequestInteractivityUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000131A1B2C3D4E5F60719 /* SidebarPullRequestInteractivityUITests.swift */; };
+		0F0AFB526ECF43C7BF5BA5E4 /* SidebarRemoteHostSectionHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523541A27AEC4241ABEFB5D3 /* SidebarRemoteHostSectionHeaderView.swift */; };
 		5B0C00010000000000000001 /* SidebarResizerOcclusionResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0C00010000000000000002 /* SidebarResizerOcclusionResolver.swift */; };
 		5B0C00010000000000000003 /* SidebarResizerOcclusionResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0C00010000000000000004 /* SidebarResizerOcclusionResolverTests.swift */; };
 		B8F266236A1A3D9A45BD840F /* SidebarResizeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 818DBCD4AB69EB72573E8138 /* SidebarResizeUITests.swift */; };
@@ -2560,6 +2562,7 @@ C0DE71B10000000000000001 /* AppDelegate+AgentChatNotifications.swift in Sources 
 		992300019923000199230010 /* VaultQueuedRestoreIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99230001992300019923000F /* VaultQueuedRestoreIdentityTests.swift */; };
 		992300019923000199230006 /* VaultRestoreRelaunchPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 992300019923000199230005 /* VaultRestoreRelaunchPersistenceTests.swift */; };
 		F7216001000000000000001 /* VerticalTabsSidebar+EmptyAreasAndFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7216001000000000000002 /* VerticalTabsSidebar+EmptyAreasAndFooter.swift */; };
+		9FA551EC27834AA98350D8C3 /* VerticalTabsSidebar+RemoteHostSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9903F00338354007942A0959 /* VerticalTabsSidebar+RemoteHostSections.swift */; };
 		C9A57209C9A57209C9A57209 /* VerticalTabsSidebar+WorkspaceGroups.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A5720AC9A5720AC9A5720A /* VerticalTabsSidebar+WorkspaceGroups.swift */; };
 		A28B087F0000000000000005 /* ViewerNavigationKeyRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A28B087F0000000000000006 /* ViewerNavigationKeyRouter.swift */; };
 		A3340002A3340002A3340002 /* ViewerNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3340001A3340001A3340001 /* ViewerNavigationTests.swift */; };
@@ -4466,6 +4469,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 		AF44822DC080B2110CFECF88 /* RemoteTmuxError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxError.swift; sourceTree = "<group>"; };
 		02B8A9858C9804AC9C37D7B4 /* RemoteTmuxHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxHost.swift; sourceTree = "<group>"; };
 		F6724603A1B2C3D4E5F67246 /* RemoteTmuxHostRemoteCommandOverrideTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxHostRemoteCommandOverrideTests.swift; sourceTree = "<group>"; };
+		210989117FFD4EB7AAC8A006 /* RemoteTmuxHostSectionRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxHostSectionRenderTests.swift; sourceTree = "<group>"; };
 		9251A0019251A0019251A001 /* RemoteTmuxKeyName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxKeyName.swift; sourceTree = "<group>"; };
 		79380000000000000000000B /* RemoteTmuxLayoutNodePatchingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxLayoutNodePatchingTests.swift; sourceTree = "<group>"; };
 		0DCA0215617C4467948216ED /* RemoteTmuxMasterGateOutcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTmuxMasterGateOutcome.swift; sourceTree = "<group>"; };
@@ -4756,6 +4760,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 		D75280020000000000000002 /* SidebarProfilingSignposts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProfilingSignposts.swift; sourceTree = "<group>"; };
 		C0DE48000000000000000002 /* SidebarProviderMenuRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProviderMenuRegressionTests.swift; sourceTree = "<group>"; };
 		B9000131A1B2C3D4E5F60719 /* SidebarPullRequestInteractivityUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarPullRequestInteractivityUITests.swift; sourceTree = "<group>"; };
+		523541A27AEC4241ABEFB5D3 /* SidebarRemoteHostSectionHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SidebarRemoteHostSectionHeaderView.swift"; sourceTree = "<group>"; };
 		5B0C00010000000000000002 /* SidebarResizerOcclusionResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sidebar/SidebarResizerOcclusionResolver.swift; sourceTree = "<group>"; };
 		5B0C00010000000000000004 /* SidebarResizerOcclusionResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarResizerOcclusionResolverTests.swift; sourceTree = "<group>"; };
 		818DBCD4AB69EB72573E8138 /* SidebarResizeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarResizeUITests.swift; sourceTree = "<group>"; };
@@ -5321,6 +5326,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 		99230001992300019923000F /* VaultQueuedRestoreIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultQueuedRestoreIdentityTests.swift; sourceTree = "<group>"; };
 		992300019923000199230005 /* VaultRestoreRelaunchPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultRestoreRelaunchPersistenceTests.swift; sourceTree = "<group>"; };
 		F7216001000000000000002 /* VerticalTabsSidebar+EmptyAreasAndFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VerticalTabsSidebar+EmptyAreasAndFooter.swift"; sourceTree = "<group>"; };
+		9903F00338354007942A0959 /* VerticalTabsSidebar+RemoteHostSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VerticalTabsSidebar+RemoteHostSections.swift"; sourceTree = "<group>"; };
 		C9A5720AC9A5720AC9A5720A /* VerticalTabsSidebar+WorkspaceGroups.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VerticalTabsSidebar+WorkspaceGroups.swift"; sourceTree = "<group>"; };
 		A28B087F0000000000000006 /* ViewerNavigationKeyRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ViewerNavigationKeyRouter.swift; sourceTree = "<group>"; };
 		A3340001A3340001A3340001 /* ViewerNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerNavigationTests.swift; sourceTree = "<group>"; };
@@ -7391,6 +7397,8 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 					736200000000000000000001 /* RemoteTmuxController+Decisions.swift */,
 				0E17C0DE0E17C0DE0E17C001 /* RemoteTmuxTransportRegistry.swift */,
 				0F17C0DE0F17C0DE0F17C001 /* RemoteTmuxWindowRegistry.swift */,
+				9903F00338354007942A0959 /* VerticalTabsSidebar+RemoteHostSections.swift */,
+				523541A27AEC4241ABEFB5D3 /* SidebarRemoteHostSectionHeaderView.swift */,
 				0DCA0215617C4467948216ED /* RemoteTmuxMasterGateOutcome.swift */,
 				57407D0C7FDA4F4D90EB0F9B /* RemoteTmuxControlMasterRole.swift */,
 				E8F5DB43CBC1B7DF31B7A0C9 /* RemoteTmuxSSHTransport.swift */,
@@ -8242,6 +8250,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				0A17C0DE0A17C0DE0A17C003 /* RemoteTmuxAuthTests.swift */,
 				7020C0DE7020C0DE7020A001 /* RemoteTmuxProxyTransportRetryTests.swift */,
 				6732BEEF6732BEEF6732B001 /* RemoteTmuxMasterReadinessTests.swift */,
+				210989117FFD4EB7AAC8A006 /* RemoteTmuxHostSectionRenderTests.swift */,
 				C82C6402F4E84D4F86FC6AAE /* RemoteTmuxSingleAuthTests.swift */,
 				7368BEEF7368BEEF7368B001 /* RemoteTmuxMissingTmuxTests.swift */,
 				0C7D0CDD0C7D0CDD0C7D0001 /* RemoteTmuxNewWindowCwdTests.swift */,
@@ -10126,6 +10135,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				C0DEF0A30000000000000001 /* SidebarPortDisplayText.swift in Sources */,
 				C0DEA7710000000000000005 /* SidebarProBadge.swift in Sources */,
 				D75280020000000000000001 /* SidebarProfilingSignposts.swift in Sources */,
+				0F0AFB526ECF43C7BF5BA5E4 /* SidebarRemoteHostSectionHeaderView.swift in Sources */,
 				5B0C00010000000000000001 /* SidebarResizerOcclusionResolver.swift in Sources */,
 				AABBCC000000000000000208 /* SidebarRowAccessibilityModifier.swift in Sources */,
 				B804A02E000000000000002E /* SidebarRowChecklistAddRow.swift in Sources */,
@@ -10566,6 +10576,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 					B35750000000000000000002 /* VaultAgentRegistry.swift in Sources */,
 				F76550060000000000000001 /* VaultObservedAgentProcess.swift in Sources */,
 				F7216001000000000000001 /* VerticalTabsSidebar+EmptyAreasAndFooter.swift in Sources */,
+				9FA551EC27834AA98350D8C3 /* VerticalTabsSidebar+RemoteHostSections.swift in Sources */,
 				C9A57209C9A57209C9A57209 /* VerticalTabsSidebar+WorkspaceGroups.swift in Sources */,
 				A28B087F0000000000000005 /* ViewerNavigationKeyRouter.swift in Sources */,
 				ACE4FE1A8F1CC6C0B6A673AB /* VMClient.swift in Sources */,
@@ -11371,6 +11382,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				B2FDE62450514C4C27FBD8F1 /* RemoteTmuxControlParserTests.swift in Sources */,
 				B0555301B0555301B0555301 /* RemoteTmuxControlStreamParserBudgetTests.swift in Sources */,
 				F6724602A1B2C3D4E5F67246 /* RemoteTmuxHostRemoteCommandOverrideTests.swift in Sources */,
+				3D572E8BF37E4EB3BD8CA258 /* RemoteTmuxHostSectionRenderTests.swift in Sources */,
 				79380000000000000000000C /* RemoteTmuxLayoutNodePatchingTests.swift in Sources */,
 				6732BEEF6732BEEF6732B002 /* RemoteTmuxMasterReadinessTests.swift in Sources */,
 				7738A0027738A0027738A002 /* RemoteTmuxMirrorCLIFailClosedTests.swift in Sources */,

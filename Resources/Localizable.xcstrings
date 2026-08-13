@@ -39547,121 +39547,246 @@
         "ar": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nاعكس جلسات tmux للمضيف البعيد داخل نافذة cmux الحالية عبر وضع تحكم tmux بواسطة SSH. تصبح كل جلسة مساحة عمل، وكل نافذة علامة تبويب، وكل نافذة متعددة الأجزاء تقسيمًا أصليًا. يتطلب ذلك تفعيل الإصدار التجريبي \"Remote tmux\".\n\nعند الحاجة إلى مصادقة تفاعلية، يشغّل cmux أمر ssh في هذه الطرفية ثم يعيد المحاولة عبر الاتصال المشترك. تُحترم الأسماء المستعارة وإعدادات ~/.ssh/config.\n\nFlags:\n  --port <n>          منفذ SSH\n  --identity <path>   مسار ملف هوية SSH\n  --no-focus          عدم تحديد مساحة العمل المعكوسة أو تنشيط نافذتها\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nاعكس جلسات tmux للمضيف البعيد داخل نافذة cmux الحالية عبر وضع تحكم tmux بواسطة SSH. تصبح كل جلسة مساحة عمل، وكل نافذة علامة تبويب، وكل نافذة متعددة الأجزاء تقسيمًا أصليًا. يتطلب ذلك تفعيل الإصدار التجريبي \"Remote tmux\".\n\nعند الحاجة إلى مصادقة تفاعلية، يشغّل cmux أمر ssh في هذه الطرفية ثم يعيد المحاولة عبر الاتصال المشترك. تُحترم الأسماء المستعارة وإعدادات ~/.ssh/config.\n\nFlags:\n  --port <n>          منفذ SSH\n  --identity <path>   مسار ملف هوية SSH\n  --no-focus          عدم تحديد مساحة العمل المعكوسة أو تنشيط نافذتها\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "bs": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nPreslikava tmux sesije udaljenog hosta u trenutni cmux prozor putem SSH tmux kontrolnog režima. Svaka sesija postaje radni prostor, svaki prozor kartica, a prozor s više okana izvorna podjela. Potrebno je uključiti beta opciju \"Remote tmux\".\n\nAko je potrebna interaktivna autentifikacija, cmux pokreće ssh u ovom terminalu i zatim pokušava ponovo preko dijeljene veze. Poštuju se aliasi i postavke iz ~/.ssh/config.\n\nFlags:\n  --port <n>          SSH port\n  --identity <path>   putanja SSH identiteta\n  --no-focus          ne biraj preslikani radni prostor niti aktiviraj prozor\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nPreslikava tmux sesije udaljenog hosta u trenutni cmux prozor putem SSH tmux kontrolnog režima. Svaka sesija postaje radni prostor, svaki prozor kartica, a prozor s više okana izvorna podjela. Potrebno je uključiti beta opciju \"Remote tmux\".\n\nAko je potrebna interaktivna autentifikacija, cmux pokreće ssh u ovom terminalu i zatim pokušava ponovo preko dijeljene veze. Poštuju se aliasi i postavke iz ~/.ssh/config.\n\nFlags:\n  --port <n>          SSH port\n  --identity <path>   putanja SSH identiteta\n  --no-focus          ne biraj preslikani radni prostor niti aktiviraj prozor\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "da": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nSpejl en fjernværts tmux-sessioner i det aktuelle cmux-vindue via SSH tmux-kontroltilstand. Hver session bliver et arbejdsområde, hvert vindue en fane og hvert vindue med flere ruder en integreret opdeling. Kræver at betaindstillingen \"Remote tmux\" er slået til.\n\nHvis interaktiv godkendelse er nødvendig, kører cmux ssh i denne terminal og prøver derefter igen via den delte forbindelse. Aliasser og indstillinger i ~/.ssh/config respekteres.\n\nFlags:\n  --port <n>          SSH-port\n  --identity <path>   sti til SSH-identitetsfil\n  --no-focus          vælg ikke det spejlede arbejdsområde eller aktivér vinduet\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSpejl en fjernværts tmux-sessioner i det aktuelle cmux-vindue via SSH tmux-kontroltilstand. Hver session bliver et arbejdsområde, hvert vindue en fane og hvert vindue med flere ruder en integreret opdeling. Kræver at betaindstillingen \"Remote tmux\" er slået til.\n\nHvis interaktiv godkendelse er nødvendig, kører cmux ssh i denne terminal og prøver derefter igen via den delte forbindelse. Aliasser og indstillinger i ~/.ssh/config respekteres.\n\nFlags:\n  --port <n>          SSH-port\n  --identity <path>   sti til SSH-identitetsfil\n  --no-focus          vælg ikke det spejlede arbejdsområde eller aktivér vinduet\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nSpiegelt die tmux-Sitzungen eines entfernten Hosts per SSH-tmux-Steuermodus in das aktuelle cmux-Fenster. Jede Sitzung wird zu einem Arbeitsbereich, jedes Fenster zu einem Tab und jedes Fenster mit mehreren Bereichen zu einer nativen Teilung. Erfordert die aktivierte Betaoption \"Remote tmux\".\n\nWenn eine interaktive Authentifizierung nötig ist, führt cmux ssh in diesem Terminal aus und versucht es anschließend über die gemeinsame Verbindung erneut. Aliase und Einstellungen aus ~/.ssh/config werden berücksichtigt.\n\nFlags:\n  --port <n>          SSH-Port\n  --identity <path>   Pfad zur SSH-Identitätsdatei\n  --no-focus          Spiegel-Arbeitsbereich nicht auswählen und Fenster nicht aktivieren\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSpiegelt die tmux-Sitzungen eines entfernten Hosts per SSH-tmux-Steuermodus in das aktuelle cmux-Fenster. Jede Sitzung wird zu einem Arbeitsbereich, jedes Fenster zu einem Tab und jedes Fenster mit mehreren Bereichen zu einer nativen Teilung. Erfordert die aktivierte Betaoption \"Remote tmux\".\n\nWenn eine interaktive Authentifizierung nötig ist, führt cmux ssh in diesem Terminal aus und versucht es anschließend über die gemeinsame Verbindung erneut. Aliase und Einstellungen aus ~/.ssh/config werden berücksichtigt.\n\nFlags:\n  --port <n>          SSH-Port\n  --identity <path>   Pfad zur SSH-Identitätsdatei\n  --no-focus          Spiegel-Arbeitsbereich nicht auswählen und Fenster nicht aktivieren\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nMirror a remote host's tmux sessions into the current cmux window over SSH tmux control mode. Each session becomes a workspace, each window a tab, and each multi-pane window a native split. Requires the \"Remote tmux\" beta setting.\n\nIf interactive authentication is needed, cmux runs ssh in this terminal and then retries over the shared connection. ~/.ssh/config aliases and settings are honored.\n\nFlags:\n  --port <n>          SSH port\n  --identity <path>   SSH identity file path\n  --no-focus          Do not select the mirror workspace or activate its window\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nMirror a remote host's tmux sessions into the current cmux window over SSH tmux control mode. Each session becomes a workspace, each window a tab, and each multi-pane window a native split. Requires the \"Remote tmux\" beta setting.\n\nIf interactive authentication is needed, cmux runs ssh in this terminal and then retries over the shared connection. ~/.ssh/config aliases and settings are honored.\n\nFlags:\n  --port <n>          SSH port\n  --identity <path>   SSH identity file path\n  --no-focus          Do not select the mirror workspace or activate its window\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nRefleja las sesiones tmux de un host remoto en la ventana actual de cmux mediante el modo de control tmux por SSH. Cada sesión se convierte en un espacio de trabajo, cada ventana en una pestaña y cada ventana con varios paneles en una división nativa. Requiere activar la función beta \"Remote tmux\".\n\nSi se necesita autenticación interactiva, cmux ejecuta ssh en este terminal y luego reintenta mediante la conexión compartida. Se respetan los alias y ajustes de ~/.ssh/config.\n\nFlags:\n  --port <n>          puerto SSH\n  --identity <path>   ruta del archivo de identidad SSH\n  --no-focus          no seleccionar el espacio reflejado ni activar su ventana\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nRefleja las sesiones tmux de un host remoto en la ventana actual de cmux mediante el modo de control tmux por SSH. Cada sesión se convierte en un espacio de trabajo, cada ventana en una pestaña y cada ventana con varios paneles en una división nativa. Requiere activar la función beta \"Remote tmux\".\n\nSi se necesita autenticación interactiva, cmux ejecuta ssh en este terminal y luego reintenta mediante la conexión compartida. Se respetan los alias y ajustes de ~/.ssh/config.\n\nFlags:\n  --port <n>          puerto SSH\n  --identity <path>   ruta del archivo de identidad SSH\n  --no-focus          no seleccionar el espacio reflejado ni activar su ventana\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nReproduit les sessions tmux d’un hôte distant dans la fenêtre cmux actuelle via le mode de contrôle tmux sur SSH. Chaque session devient un espace de travail, chaque fenêtre un onglet et chaque fenêtre à plusieurs volets une division native. Nécessite l’option bêta \"Remote tmux\".\n\nSi une authentification interactive est nécessaire, cmux exécute ssh dans ce terminal puis réessaie via la connexion partagée. Les alias et réglages de ~/.ssh/config sont respectés.\n\nFlags:\n  --port <n>          port SSH\n  --identity <path>   chemin du fichier d’identité SSH\n  --no-focus          ne pas sélectionner l’espace miroir ni activer sa fenêtre\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nReproduit les sessions tmux d’un hôte distant dans la fenêtre cmux actuelle via le mode de contrôle tmux sur SSH. Chaque session devient un espace de travail, chaque fenêtre un onglet et chaque fenêtre à plusieurs volets une division native. Nécessite l’option bêta \"Remote tmux\".\n\nSi une authentification interactive est nécessaire, cmux exécute ssh dans ce terminal puis réessaie via la connexion partagée. Les alias et réglages de ~/.ssh/config sont respectés.\n\nFlags:\n  --port <n>          port SSH\n  --identity <path>   chemin du fichier d’identité SSH\n  --no-focus          ne pas sélectionner l’espace miroir ni activer sa fenêtre\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nReplica le sessioni tmux di un host remoto nella finestra cmux corrente tramite la modalità di controllo tmux su SSH. Ogni sessione diventa uno spazio di lavoro, ogni finestra una scheda e ogni finestra con più riquadri una suddivisione nativa. Richiede l’opzione beta \"Remote tmux\".\n\nSe serve l’autenticazione interattiva, cmux esegue ssh in questo terminale e poi riprova tramite la connessione condivisa. Gli alias e le impostazioni di ~/.ssh/config vengono rispettati.\n\nFlags:\n  --port <n>          porta SSH\n  --identity <path>   percorso del file di identità SSH\n  --no-focus          non selezionare lo spazio replicato né attivarne la finestra\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nReplica le sessioni tmux di un host remoto nella finestra cmux corrente tramite la modalità di controllo tmux su SSH. Ogni sessione diventa uno spazio di lavoro, ogni finestra una scheda e ogni finestra con più riquadri una suddivisione nativa. Richiede l’opzione beta \"Remote tmux\".\n\nSe serve l’autenticazione interattiva, cmux esegue ssh in questo terminale e poi riprova tramite la connessione condivisa. Gli alias e le impostazioni di ~/.ssh/config vengono rispettati.\n\nFlags:\n  --port <n>          porta SSH\n  --identity <path>   percorso del file di identità SSH\n  --no-focus          non selezionare lo spazio replicato né attivarne la finestra\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nSSH の tmux コントロールモードで、リモートホストの tmux セッションを現在の cmux ウィンドウにミラーリングします。各セッションはワークスペースに、各ウィンドウはタブに、複数ペインのウィンドウはネイティブな分割になります。「Remote tmux」ベータ設定を有効にする必要があります。\n\n対話型認証が必要な場合、cmux はこのターミナルで ssh を実行し、共有接続を使って再試行します。~/.ssh/config のエイリアスと設定も使用されます。\n\nFlags:\n  --port <n>          SSH ポート\n  --identity <path>   SSH 識別ファイルのパス\n  --no-focus          ミラーワークスペースを選択せず、ウィンドウもアクティブにしない\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSSH の tmux コントロールモードで、リモートホストの tmux セッションを現在の cmux ウィンドウにミラーリングします。各セッションはワークスペースに、各ウィンドウはタブに、複数ペインのウィンドウはネイティブな分割になります。「Remote tmux」ベータ設定を有効にする必要があります。\n\n対話型認証が必要な場合、cmux はこのターミナルで ssh を実行し、共有接続を使って再試行します。~/.ssh/config のエイリアスと設定も使用されます。\n\nFlags:\n  --port <n>          SSH ポート\n  --identity <path>   SSH 識別ファイルのパス\n  --no-focus          ミラーワークスペースを選択せず、ウィンドウもアクティブにしない\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "km": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nឆ្លុះសម័យ tmux របស់ម៉ាស៊ីនពីចម្ងាយចូលក្នុងបង្អួច cmux បច្ចុប្បន្ន តាមរយៈរបៀបបញ្ជា tmux លើ SSH។ សម័យនីមួយៗក្លាយជាកន្លែងធ្វើការ បង្អួចនីមួយៗក្លាយជាផ្ទាំង និងបង្អួចដែលមានផ្ទាំងច្រើនក្លាយជាការបំបែកដើម។ ត្រូវបើកមុខងារសាកល្បង \"Remote tmux\"។\n\nបើត្រូវការផ្ទៀងផ្ទាត់អន្តរកម្ម cmux នឹងដំណើរការ ssh ក្នុងស្ថានីយនេះ ហើយសាកល្បងម្តងទៀតតាមការតភ្ជាប់រួម។ ឈ្មោះកាត់ និងការកំណត់ក្នុង ~/.ssh/config ត្រូវបានគោរព។\n\nFlags:\n  --port <n>          ច្រក SSH\n  --identity <path>   ផ្លូវឯកសារអត្តសញ្ញាណ SSH\n  --no-focus          កុំជ្រើសកន្លែងធ្វើការឆ្លុះ ឬបើកបង្អួចរបស់វា\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nឆ្លុះសម័យ tmux របស់ម៉ាស៊ីនពីចម្ងាយចូលក្នុងបង្អួច cmux បច្ចុប្បន្ន តាមរយៈរបៀបបញ្ជា tmux លើ SSH។ សម័យនីមួយៗក្លាយជាកន្លែងធ្វើការ បង្អួចនីមួយៗក្លាយជាផ្ទាំង និងបង្អួចដែលមានផ្ទាំងច្រើនក្លាយជាការបំបែកដើម។ ត្រូវបើកមុខងារសាកល្បង \"Remote tmux\"។\n\nបើត្រូវការផ្ទៀងផ្ទាត់អន្តរកម្ម cmux នឹងដំណើរការ ssh ក្នុងស្ថានីយនេះ ហើយសាកល្បងម្តងទៀតតាមការតភ្ជាប់រួម។ ឈ្មោះកាត់ និងការកំណត់ក្នុង ~/.ssh/config ត្រូវបានគោរព។\n\nFlags:\n  --port <n>          ច្រក SSH\n  --identity <path>   ផ្លូវឯកសារអត្តសញ្ញាណ SSH\n  --no-focus          កុំជ្រើសកន្លែងធ្វើការឆ្លុះ ឬបើកបង្អួចរបស់វា\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nSSH tmux 제어 모드로 원격 호스트의 tmux 세션을 현재 cmux 창에 미러링합니다. 각 세션은 작업 공간이 되고, 각 창은 탭이 되며, 여러 패널이 있는 창은 네이티브 분할이 됩니다. \"Remote tmux\" 베타 설정을 켜야 합니다.\n\n대화형 인증이 필요하면 cmux가 이 터미널에서 ssh를 실행한 뒤 공유 연결을 통해 다시 시도합니다. ~/.ssh/config의 별칭과 설정도 적용됩니다.\n\nFlags:\n  --port <n>          SSH 포트\n  --identity <path>   SSH ID 파일 경로\n  --no-focus          미러 작업 공간을 선택하거나 창을 활성화하지 않음\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSSH tmux 제어 모드로 원격 호스트의 tmux 세션을 현재 cmux 창에 미러링합니다. 각 세션은 작업 공간이 되고, 각 창은 탭이 되며, 여러 패널이 있는 창은 네이티브 분할이 됩니다. \"Remote tmux\" 베타 설정을 켜야 합니다.\n\n대화형 인증이 필요하면 cmux가 이 터미널에서 ssh를 실행한 뒤 공유 연결을 통해 다시 시도합니다. ~/.ssh/config의 별칭과 설정도 적용됩니다.\n\nFlags:\n  --port <n>          SSH 포트\n  --identity <path>   SSH ID 파일 경로\n  --no-focus          미러 작업 공간을 선택하거나 창을 활성화하지 않음\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "nb": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nSpeil tmux-øktene på en ekstern vert i det gjeldende cmux-vinduet via tmux-kontrollmodus over SSH. Hver økt blir et arbeidsområde, hvert vindu en fane og hvert vindu med flere ruter en integrert deling. Krever at betaalternativet \"Remote tmux\" er aktivert.\n\nHvis interaktiv autentisering er nødvendig, kjører cmux ssh i denne terminalen og prøver deretter på nytt via den delte forbindelsen. Aliaser og innstillinger i ~/.ssh/config blir brukt.\n\nFlags:\n  --port <n>          SSH-port\n  --identity <path>   bane til SSH-identitetsfil\n  --no-focus          ikke velg det speilede arbeidsområdet eller aktiver vinduet\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSpeil tmux-øktene på en ekstern vert i det gjeldende cmux-vinduet via tmux-kontrollmodus over SSH. Hver økt blir et arbeidsområde, hvert vindu en fane og hvert vindu med flere ruter en integrert deling. Krever at betaalternativet \"Remote tmux\" er aktivert.\n\nHvis interaktiv autentisering er nødvendig, kjører cmux ssh i denne terminalen og prøver deretter på nytt via den delte forbindelsen. Aliaser og innstillinger i ~/.ssh/config blir brukt.\n\nFlags:\n  --port <n>          SSH-port\n  --identity <path>   bane til SSH-identitetsfil\n  --no-focus          ikke velg det speilede arbeidsområdet eller aktiver vinduet\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "pl": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nOdzwierciedla sesje tmux zdalnego hosta w bieżącym oknie cmux przez tryb sterowania tmux po SSH. Każda sesja staje się obszarem roboczym, każde okno kartą, a okno z wieloma panelami natywnym podziałem. Wymaga włączenia funkcji beta \"Remote tmux\".\n\nJeśli potrzebne jest interaktywne uwierzytelnianie, cmux uruchamia ssh w tym terminalu, a następnie ponawia próbę przez współdzielone połączenie. Aliasy i ustawienia z ~/.ssh/config są respektowane.\n\nFlags:\n  --port <n>          port SSH\n  --identity <path>   ścieżka pliku tożsamości SSH\n  --no-focus          nie wybieraj obszaru lustrzanego ani nie aktywuj jego okna\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nOdzwierciedla sesje tmux zdalnego hosta w bieżącym oknie cmux przez tryb sterowania tmux po SSH. Każda sesja staje się obszarem roboczym, każde okno kartą, a okno z wieloma panelami natywnym podziałem. Wymaga włączenia funkcji beta \"Remote tmux\".\n\nJeśli potrzebne jest interaktywne uwierzytelnianie, cmux uruchamia ssh w tym terminalu, a następnie ponawia próbę przez współdzielone połączenie. Aliasy i ustawienia z ~/.ssh/config są respektowane.\n\nFlags:\n  --port <n>          port SSH\n  --identity <path>   ścieżka pliku tożsamości SSH\n  --no-focus          nie wybieraj obszaru lustrzanego ani nie aktywuj jego okna\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "pt-BR": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nEspelha as sessões tmux de um host remoto na janela atual do cmux pelo modo de controle tmux via SSH. Cada sessão vira um espaço de trabalho, cada janela uma aba e cada janela com vários painéis uma divisão nativa. Requer a opção beta \"Remote tmux\".\n\nSe for necessária autenticação interativa, o cmux executa ssh neste terminal e tenta novamente pela conexão compartilhada. Os aliases e ajustes de ~/.ssh/config são respeitados.\n\nFlags:\n  --port <n>          porta SSH\n  --identity <path>   caminho do arquivo de identidade SSH\n  --no-focus          não selecionar o espaço espelhado nem ativar sua janela\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nEspelha as sessões tmux de um host remoto na janela atual do cmux pelo modo de controle tmux via SSH. Cada sessão vira um espaço de trabalho, cada janela uma aba e cada janela com vários painéis uma divisão nativa. Requer a opção beta \"Remote tmux\".\n\nSe for necessária autenticação interativa, o cmux executa ssh neste terminal e tenta novamente pela conexão compartilhada. Os aliases e ajustes de ~/.ssh/config são respeitados.\n\nFlags:\n  --port <n>          porta SSH\n  --identity <path>   caminho do arquivo de identidade SSH\n  --no-focus          não selecionar o espaço espelhado nem ativar sua janela\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nОтображает сеансы tmux удалённого узла в текущем окне cmux через режим управления tmux по SSH. Каждый сеанс становится рабочим пространством, каждое окно — вкладкой, а окно с несколькими панелями — нативным разделением. Требуется включить бета-функцию \"Remote tmux\".\n\nЕсли нужна интерактивная аутентификация, cmux запускает ssh в этом терминале, а затем повторяет попытку через общее соединение. Псевдонимы и настройки из ~/.ssh/config учитываются.\n\nFlags:\n  --port <n>          порт SSH\n  --identity <path>   путь к файлу идентификации SSH\n  --no-focus          не выбирать зеркальное пространство и не активировать его окно\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nОтображает сеансы tmux удалённого узла в текущем окне cmux через режим управления tmux по SSH. Каждый сеанс становится рабочим пространством, каждое окно — вкладкой, а окно с несколькими панелями — нативным разделением. Требуется включить бета-функцию \"Remote tmux\".\n\nЕсли нужна интерактивная аутентификация, cmux запускает ssh в этом терминале, а затем повторяет попытку через общее соединение. Псевдонимы и настройки из ~/.ssh/config учитываются.\n\nFlags:\n  --port <n>          порт SSH\n  --identity <path>   путь к файлу идентификации SSH\n  --no-focus          не выбирать зеркальное пространство и не активировать его окно\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "th": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nมิเรอร์เซสชัน tmux ของโฮสต์ระยะไกลมายังหน้าต่าง cmux ปัจจุบันผ่านโหมดควบคุม tmux บน SSH แต่ละเซสชันจะเป็นพื้นที่ทำงาน แต่ละหน้าต่างจะเป็นแท็บ และหน้าต่างหลายบานจะเป็นการแบ่งแบบเนทีฟ ต้องเปิดใช้รุ่นเบต้า \"Remote tmux\"\n\nหากต้องยืนยันตัวตนแบบโต้ตอบ cmux จะเรียก ssh ในเทอร์มินัลนี้แล้วลองใหม่ผ่านการเชื่อมต่อที่ใช้ร่วมกัน โดยใช้ชื่อแทนและการตั้งค่าจาก ~/.ssh/config\n\nFlags:\n  --port <n>          พอร์ต SSH\n  --identity <path>   พาธไฟล์ข้อมูลประจำตัว SSH\n  --no-focus          ไม่เลือกพื้นที่ทำงานที่มิเรอร์หรือเปิดใช้งานหน้าต่าง\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nมิเรอร์เซสชัน tmux ของโฮสต์ระยะไกลมายังหน้าต่าง cmux ปัจจุบันผ่านโหมดควบคุม tmux บน SSH แต่ละเซสชันจะเป็นพื้นที่ทำงาน แต่ละหน้าต่างจะเป็นแท็บ และหน้าต่างหลายบานจะเป็นการแบ่งแบบเนทีฟ ต้องเปิดใช้รุ่นเบต้า \"Remote tmux\"\n\nหากต้องยืนยันตัวตนแบบโต้ตอบ cmux จะเรียก ssh ในเทอร์มินัลนี้แล้วลองใหม่ผ่านการเชื่อมต่อที่ใช้ร่วมกัน โดยใช้ชื่อแทนและการตั้งค่าจาก ~/.ssh/config\n\nFlags:\n  --port <n>          พอร์ต SSH\n  --identity <path>   พาธไฟล์ข้อมูลประจำตัว SSH\n  --no-focus          ไม่เลือกพื้นที่ทำงานที่มิเรอร์หรือเปิดใช้งานหน้าต่าง\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "tr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nUzak bir ana makinenin tmux oturumlarını SSH tmux denetim modu üzerinden geçerli cmux penceresine yansıtır. Her oturum bir çalışma alanına, her pencere bir sekmeye ve çok bölmeli her pencere yerel bir bölmeye dönüşür. \"Remote tmux\" beta ayarının etkin olması gerekir.\n\nEtkileşimli kimlik doğrulama gerekirse cmux bu terminalde ssh çalıştırır ve ardından paylaşılan bağlantı üzerinden yeniden dener. ~/.ssh/config içindeki takma adlar ve ayarlar kullanılır.\n\nFlags:\n  --port <n>          SSH bağlantı noktası\n  --identity <path>   SSH kimlik dosyası yolu\n  --no-focus          yansıtılan çalışma alanını seçme veya penceresini etkinleştirme\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nUzak bir ana makinenin tmux oturumlarını SSH tmux denetim modu üzerinden geçerli cmux penceresine yansıtır. Her oturum bir çalışma alanına, her pencere bir sekmeye ve çok bölmeli her pencere yerel bir bölmeye dönüşür. \"Remote tmux\" beta ayarının etkin olması gerekir.\n\nEtkileşimli kimlik doğrulama gerekirse cmux bu terminalde ssh çalıştırır ve ardından paylaşılan bağlantı üzerinden yeniden dener. ~/.ssh/config içindeki takma adlar ve ayarlar kullanılır.\n\nFlags:\n  --port <n>          SSH bağlantı noktası\n  --identity <path>   SSH kimlik dosyası yolu\n  --no-focus          yansıtılan çalışma alanını seçme veya penceresini etkinleştirme\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "uk": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\nВіддзеркалює сеанси tmux віддаленого вузла в поточному вікні cmux через режим керування tmux по SSH. Кожен сеанс стає робочим простором, кожне вікно — вкладкою, а вікно з кількома панелями — нативним поділом. Потрібно ввімкнути бета-функцію \"Remote tmux\".\n\nЯкщо потрібна інтерактивна автентифікація, cmux запускає ssh у цьому терміналі, а потім повторює спробу через спільне з’єднання. Псевдоніми й налаштування з ~/.ssh/config враховуються.\n\nFlags:\n  --port <n>          порт SSH\n  --identity <path>   шлях до файлу ідентифікації SSH\n  --no-focus          не вибирати віддзеркалений простір і не активувати його вікно\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nВіддзеркалює сеанси tmux віддаленого вузла в поточному вікні cmux через режим керування tmux по SSH. Кожен сеанс стає робочим простором, кожне вікно — вкладкою, а вікно з кількома панелями — нативним поділом. Потрібно ввімкнути бета-функцію \"Remote tmux\".\n\nЯкщо потрібна інтерактивна автентифікація, cmux запускає ssh у цьому терміналі, а потім повторює спробу через спільне з’єднання. Псевдоніми й налаштування з ~/.ssh/config враховуються.\n\nFlags:\n  --port <n>          порт SSH\n  --identity <path>   шлях до файлу ідентифікації SSH\n  --no-focus          не вибирати віддзеркалений простір і не активувати його вікно\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\n通过 SSH tmux 控制模式，将远程主机的 tmux 会话镜像到当前 cmux 窗口中。每个会话成为一个工作区，每个窗口成为一个标签页，多窗格窗口则成为原生分栏。需要启用“Remote tmux”测试功能。\n\n如果需要交互式身份验证，cmux 会在此终端中运行 ssh，然后通过共享连接重试。系统会采用 ~/.ssh/config 中的别名和设置。\n\nFlags:\n  --port <n>          SSH 端口\n  --identity <path>   SSH 身份文件路径\n  --no-focus          不选择镜像工作区，也不激活其窗口\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\n通过 SSH tmux 控制模式，将远程主机的 tmux 会话镜像到当前 cmux 窗口中。每个会话成为一个工作区，每个窗口成为一个标签页，多窗格窗口则成为原生分栏。需要启用“Remote tmux”测试功能。\n\n如果需要交互式身份验证，cmux 会在此终端中运行 ssh，然后通过共享连接重试。系统会采用 ~/.ssh/config 中的别名和设置。\n\nFlags:\n  --port <n>          SSH 端口\n  --identity <path>   SSH 身份文件路径\n  --no-focus          不选择镜像工作区，也不激活其窗口\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]\n\n透過 SSH tmux 控制模式，將遠端主機的 tmux 工作階段鏡像到目前的 cmux 視窗。每個工作階段會成為工作區，每個視窗會成為分頁，多窗格視窗則會成為原生分割。需要啟用「Remote tmux」測試功能。\n\n若需要互動式驗證，cmux 會在此終端機中執行 ssh，然後透過共用連線重試。系統會採用 ~/.ssh/config 中的別名與設定。\n\nFlags:\n  --port <n>          SSH 連接埠\n  --identity <path>   SSH 身分檔案路徑\n  --no-focus          不選取鏡像工作區，也不啟用其視窗\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\n透過 SSH tmux 控制模式，將遠端主機的 tmux 工作階段鏡像到目前的 cmux 視窗。每個工作階段會成為工作區，每個視窗會成為分頁，多窗格視窗則會成為原生分割。需要啟用「Remote tmux」測試功能。\n\n若需要互動式驗證，cmux 會在此終端機中執行 ssh，然後透過共用連線重試。系統會採用 ~/.ssh/config 中的別名與設定。\n\nFlags:\n  --port <n>          SSH 連接埠\n  --identity <path>   SSH 身分檔案路徑\n  --no-focus          不選取鏡像工作區，也不啟用其視窗\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+          }
+        }
+      }
+    },
+    "cli.help.ssh-tmux.multiHost": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "عدة أجهزة:\n  مرّر عدة وجهات (مفصولة بمسافات أو فواصل) لعكسها كلها في النافذة نفسها.\n  يجمع الشريط الجانبي جلسات tmux لكل جهاز ضمن قسم قابل للطي خاص به.\n  تتم مصادقة الأجهزة واحدًا تلو الآخر."
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Više mašina:\n  Navedite više odredišta (odvojena razmakom ili zarezom) da se sva preslikaju\n  u isti prozor. Bočna traka grupiše tmux sesije svake mašine u njen vlastiti\n  sklopivi odjeljak. Mašine se autentifikuju jedna po jedna."
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flere maskiner:\n  Angiv flere destinationer (adskilt med mellemrum eller komma) for at spejle\n  dem alle i samme vindue. Sidepanelet grupperer hver maskines tmux-sessioner\n  under dens egen sammenklappelige sektion. Maskinerne godkendes én ad gangen."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mehrere Maschinen:\n  Geben Sie mehrere Ziele an (durch Leerzeichen oder Kommas getrennt), um sie\n  alle im selben Fenster zu spiegeln. Die Seitenleiste gruppiert die\n  tmux-Sitzungen jeder Maschine in einem eigenen einklappbaren Abschnitt.\n  Die Maschinen authentifizieren sich nacheinander."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Multiple machines:\n  Pass several destinations (space or comma separated) to mirror them all\n  into the same window. The sidebar groups each machine's tmux sessions\n  under its own collapsible section. Machines authenticate one at a time."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Varias máquinas:\n  Pasa varios destinos (separados por espacios o comas) para reflejarlos todos\n  en la misma ventana. La barra lateral agrupa las sesiones tmux de cada\n  máquina en su propia sección plegable. Las máquinas se autentican una por una."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Plusieurs machines :\n  Passez plusieurs destinations (séparées par des espaces ou des virgules) pour\n  les refléter toutes dans la même fenêtre. La barre latérale regroupe les\n  sessions tmux de chaque machine dans sa propre section repliable. Les\n  machines s'authentifient l'une après l'autre."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Più macchine:\n  Passa più destinazioni (separate da spazi o virgole) per rispecchiarle tutte\n  nella stessa finestra. La barra laterale raggruppa le sessioni tmux di ogni\n  macchina in una propria sezione comprimibile. Le macchine si autenticano una\n  alla volta."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "複数マシン:\n  複数の宛先（スペースまたはカンマ区切り）を渡すと、すべて同じウィンドウに\n  ミラーされます。サイドバーでは各マシンの tmux セッションがマシンごとの\n  折りたたみ可能なセクションにまとめられます。認証はマシンごとに順番に行われます。"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ម៉ាស៊ីនច្រើន:\n  បញ្ជូនទិសដៅច្រើន (បំបែកដោយដកឃ្លា ឬក្បៀស) ដើម្បីឆ្លុះបញ្ចាំងទាំងអស់ក្នុងបង្អួចតែមួយ។\n  របារចំហៀងដាក់ជាក្រុមសម័យ tmux របស់ម៉ាស៊ីននីមួយៗនៅក្រោមផ្នែកអាចបត់បាន\n  របស់វា។ ម៉ាស៊ីនផ្ទៀងផ្ទាត់ម្តងមួយៗ។"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "여러 머신:\n  여러 대상을(공백 또는 쉼표로 구분) 전달하면 모두 같은 창에 미러링됩니다.\n  사이드바는 각 머신의 tmux 세션을 머신별 접을 수 있는 섹션으로 묶어\n  보여줍니다. 머신은 한 번에 하나씩 인증합니다."
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flere maskiner:\n  Oppgi flere destinasjoner (adskilt med mellomrom eller komma) for å speile\n  alle i samme vindu. Sidefeltet grupperer hver maskins tmux-økter under sin\n  egen sammenleggbare seksjon. Maskinene autentiseres én om gangen."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wiele maszyn:\n  Podaj kilka miejsc docelowych (rozdzielonych spacjami lub przecinkami), aby\n  odzwierciedlić je wszystkie w tym samym oknie. Pasek boczny grupuje sesje\n  tmux każdej maszyny w jej własnej zwijanej sekcji. Maszyny uwierzytelniają\n  się kolejno."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Várias máquinas:\n  Passe vários destinos (separados por espaço ou vírgula) para espelhar todos\n  na mesma janela. A barra lateral agrupa as sessões tmux de cada máquina em\n  sua própria seção recolhível. As máquinas se autenticam uma de cada vez."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Несколько машин:\n  Укажите несколько назначений (через пробел или запятую), чтобы отразить их\n  все в одном окне. Боковая панель группирует tmux-сессии каждой машины в её\n  собственный сворачиваемый раздел. Машины аутентифицируются по очереди."
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "หลายเครื่อง:\n  ระบุปลายทางหลายรายการ (คั่นด้วยช่องว่างหรือจุลภาค) เพื่อมิเรอร์ทั้งหมดใน\n  หน้าต่างเดียวกัน แถบด้านข้างจะจัดกลุ่มเซสชัน tmux ของแต่ละเครื่องไว้ใน\n  ส่วนที่พับได้ของเครื่องนั้น เครื่องจะยืนยันตัวตนทีละเครื่อง"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Birden çok makine:\n  Hepsini aynı pencerede yansıtmak için birden çok hedef geçirin (boşluk veya\n  virgülle ayrılmış). Kenar çubuğu her makinenin tmux oturumlarını kendi\n  daraltılabilir bölümünde gruplar. Makineler sırayla kimlik doğrular."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Кілька машин:\n  Вкажіть кілька призначень (через пробіл або кому), щоб відобразити їх усі в\n  одному вікні. Бічна панель групує tmux-сеанси кожної машини у її власний\n  згортуваний розділ. Машини автентифікуються по черзі."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多台机器:\n  传入多个目标（以空格或逗号分隔）即可将它们全部镜像到同一窗口。侧边栏会将\n  每台机器的 tmux 会话归入其独立的可折叠分组。机器逐台进行身份验证。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多台機器:\n  傳入多個目標（以空格或逗號分隔）即可將它們全部鏡射到同一視窗。側邊欄會將\n  每台機器的 tmux 工作階段歸入其獨立的可摺疊區段。機器會逐台進行驗證。"
           }
         }
       }
@@ -147729,6 +147854,1881 @@
           "stringUnit": {
             "state": "translated",
             "value": "未知"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.authRequired.tooltip": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "المصادقة مطلوبة. شغّل: cmux ssh-tmux %@"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Potrebna je autentifikacija. Pokrenite: cmux ssh-tmux %@"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Godkendelse påkrævet. Kør: cmux ssh-tmux %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentifizierung erforderlich. Führen Sie aus: cmux ssh-tmux %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication needed. Run: cmux ssh-tmux %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se necesita autenticación. Ejecuta: cmux ssh-tmux %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentification requise. Exécutez : cmux ssh-tmux %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autenticazione necessaria. Esegui: cmux ssh-tmux %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "認証が必要です。実行: cmux ssh-tmux %@"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ត្រូវការការផ្ទៀងផ្ទាត់។ ដំណើរការ៖ cmux ssh-tmux %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "인증이 필요합니다. 실행: cmux ssh-tmux %@"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autentisering kreves. Kjør: cmux ssh-tmux %@"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wymagane uwierzytelnienie. Uruchom: cmux ssh-tmux %@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autenticação necessária. Execute: cmux ssh-tmux %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Требуется аутентификация. Выполните: cmux ssh-tmux %@"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ต้องยืนยันตัวตน เรียกใช้: cmux ssh-tmux %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kimlik doğrulama gerekiyor. Çalıştırın: cmux ssh-tmux %@"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Потрібна автентифікація. Виконайте: cmux ssh-tmux %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要身份验证。请运行：cmux ssh-tmux %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要驗證。請執行：cmux ssh-tmux %@"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.collapse.a11y": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "طي الجهاز"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skupi mašinu"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sammenfold maskine"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maschine einklappen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse machine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contraer máquina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réduire la machine"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprimi macchina"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "マシンを折りたたむ"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "បត់ម៉ាស៊ីន"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "머신 접기"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slå sammen maskin"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zwiń maszynę"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recolher máquina"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Свернуть машину"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ยุบเครื่อง"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Makineyi daralt"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Згорнути машину"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "折叠机器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "摺疊機器"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.contextMenu.collapse": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "طي الجهاز"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skupi mašinu"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sammenfold maskine"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maschine einklappen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collapse Machine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contraer máquina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réduire la machine"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comprimi macchina"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "マシンを折りたたむ"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "បត់ម៉ាស៊ីន"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "머신 접기"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slå sammen maskin"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zwiń maszynę"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recolher máquina"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Свернуть машину"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ยุบเครื่อง"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Makineyi Daralt"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Згорнути машину"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "折叠机器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "摺疊機器"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.contextMenu.detach": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "فصل الجهاز (إبقاء الجلسات قيد التشغيل)"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odvoji mašinu (sesije ostaju pokrenute)"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Frakobl maskine (behold sessioner kørende)"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maschine trennen (Sitzungen weiterlaufen lassen)"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detach Machine (Keep Sessions Running)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desconectar máquina (mantener sesiones en ejecución)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Détacher la machine (garder les sessions actives)"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scollega macchina (mantieni le sessioni attive)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "マシンをデタッチ（セッションは実行し続ける）"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ផ្ដាច់ម៉ាស៊ីន (រក្សាសម័យឱ្យដំណើរការ)"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "머신 분리(세션은 계속 실행)"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Koble fra maskin (behold øktene i gang)"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Odłącz maszynę (pozostaw sesje uruchomione)"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desanexar máquina (manter sessões em execução)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отсоединить машину (сессии продолжат работать)"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ถอดเครื่อง (ให้เซสชันทำงานต่อไป)"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Makineyi Ayır (Oturumlar Çalışmaya Devam Etsin)"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Від'єднати машину (сеанси продовжать працювати)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分离机器（保持会话运行）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分離機器（保持工作階段執行）"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.contextMenu.expand": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توسيع الجهاز"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proširi mašinu"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Udvid maskine"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maschine ausklappen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand Machine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expandir máquina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Développer la machine"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espandi macchina"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "マシンを展開"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ពង្រីកម៉ាស៊ីន"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "머신 펼치기"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utvid maskin"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rozwiń maszynę"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expandir máquina"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Развернуть машину"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ขยายเครื่อง"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Makineyi Genişlet"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Розгорнути машину"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开机器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展開機器"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.contextMenu.killAll": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إنهاء كل الجلسات…"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ubij sve sesije…"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dræb alle sessioner…"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle Sitzungen beenden…"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kill All Sessions…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminar todas las sesiones…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tuer toutes les sessions…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termina tutte le sessioni…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてのセッションを強制終了…"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "បញ្ចប់សម័យទាំងអស់…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "모든 세션 종료…"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drep alle økter…"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zabij wszystkie sesje…"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encerrar todas as sessões…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершить все сессии…"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ปิดทุกเซสชัน…"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tüm Oturumları Sonlandır…"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершити всі сеанси…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终止所有会话…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "終止所有工作階段…"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.contextMenu.newSession": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جلسة tmux جديدة"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nova tmux sesija"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ny tmux-session"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neue tmux-Sitzung"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New tmux Session"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nueva sesión tmux"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nouvelle session tmux"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuova sessione tmux"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新規 tmux セッション"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "សម័យ tmux ថ្មី"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "새 tmux 세션"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ny tmux-økt"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nowa sesja tmux"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nova sessão tmux"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новая сессия tmux"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "เซสชัน tmux ใหม่"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yeni tmux Oturumu"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новий сеанс tmux"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建 tmux 会话"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增 tmux 工作階段"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.expand.a11y": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "توسيع الجهاز"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Proširi mašinu"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Udvid maskine"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maschine ausklappen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expand machine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expandir máquina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Développer la machine"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Espandi macchina"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "マシンを展開"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ពង្រីកម៉ាស៊ីន"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "머신 펼치기"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Utvid maskin"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rozwiń maszynę"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expandir máquina"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Развернуть машину"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ขยายเครื่อง"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Makineyi genişlet"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Розгорнути машину"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展开机器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "展開機器"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.killAll.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "سيؤدي هذا إلى إنهاء %lld من جلسات tmux على الجهاز البعيد. سيتم إيقاف البرامج التي تعمل فيها. استخدم الفصل بدلًا من ذلك لإبقائها قيد التشغيل."
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ovo ubija %lld tmux sesija na udaljenoj mašini. Programi koji rade u njima bit će prekinuti. Umjesto toga odvojite da nastave raditi."
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dette dræber %lld tmux-sessioner på den eksterne maskine. Programmer, der kører i dem, afsluttes. Frakobl i stedet for at holde dem kørende."
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dies beendet %lld tmux-Sitzungen auf der entfernten Maschine. Darin laufende Programme werden beendet. Trennen Sie stattdessen, um sie weiterlaufen zu lassen."
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This kills %lld tmux sessions on the remote machine. Programs running in them are terminated. Detach instead to keep them running."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esto termina %lld sesiones tmux en la máquina remota. Los programas que se ejecutan en ellas se cerrarán. Desconecta en su lugar para mantenerlas en ejecución."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cela tue %lld sessions tmux sur la machine distante. Les programmes qui y tournent seront arrêtés. Détachez plutôt pour les garder actives."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Questo termina %lld sessioni tmux sulla macchina remota. I programmi in esecuzione al loro interno verranno chiusi. Scollega invece per mantenerle attive."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リモートマシン上の %lld 個の tmux セッションを強制終了します。実行中のプログラムは終了します。実行を続けたい場合はデタッチしてください。"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "វានឹងបញ្ចប់សម័យ tmux ចំនួន %lld នៅលើម៉ាស៊ីនពីចម្ងាយ។ កម្មវិធីដែលកំពុងដំណើរការក្នុងវានឹងត្រូវបញ្ឈប់។ ផ្ដាច់ជំនួសវិញដើម្បីរក្សាឱ្យដំណើរការ។"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "원격 머신의 tmux 세션 %lld개를 종료합니다. 세션에서 실행 중인 프로그램이 종료됩니다. 계속 실행하려면 대신 분리하세요."
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dette dreper %lld tmux-økter på den eksterne maskinen. Programmer som kjører i dem avsluttes. Koble fra i stedet for å la dem kjøre."
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spowoduje to zabicie %lld sesji tmux na zdalnej maszynie. Uruchomione w nich programy zostaną zakończone. Zamiast tego odłącz, aby działały dalej."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Isso encerra %lld sessões tmux na máquina remota. Os programas em execução nelas serão terminados. Desanexe em vez disso para mantê-las em execução."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Это завершит %lld сессий tmux на удалённой машине. Работающие в них программы будут остановлены. Чтобы они продолжили работать, используйте отсоединение."
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "การดำเนินการนี้จะปิดเซสชัน tmux %lld รายการบนเครื่องระยะไกล โปรแกรมที่ทำงานอยู่จะถูกยุติ ให้ถอดแทนหากต้องการให้ทำงานต่อ"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu, uzak makinedeki %lld tmux oturumunu sonlandırır. İçinde çalışan programlar kapatılır. Çalışmaya devam etmeleri için bunun yerine ayırın."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Це завершить %lld сеансів tmux на віддаленій машині. Програми, що в них працюють, буде зупинено. Натомість від'єднайте, щоб вони працювали далі."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这将终止远程机器上的 %lld 个 tmux 会话。其中运行的程序将被终止。若要保持运行，请改用分离。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這將終止遠端機器上的 %lld 個 tmux 工作階段。其中執行的程式將被終止。若要保持執行，請改用分離。"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.killAll.confirm": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "إنهاء الجلسات"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ubij sesije"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dræb sessioner"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sitzungen beenden"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kill Sessions"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminar sesiones"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tuer les sessions"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Termina sessioni"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "セッションを強制終了"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "បញ្ចប់សម័យ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "세션 종료"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drep økter"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zabij sesje"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encerrar sessões"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершить сессии"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ปิดเซสชัน"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oturumları Sonlandır"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершити сеанси"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终止会话"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "終止工作階段"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.killAll.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "هل تريد إنهاء كل جلسات tmux على %@؟"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ubiti sve tmux sesije na %@?"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dræb alle tmux-sessioner på %@?"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alle tmux-Sitzungen auf %@ beenden?"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kill all tmux sessions on %@?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Terminar todas las sesiones tmux en %@?"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tuer toutes les sessions tmux sur %@ ?"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminare tutte le sessioni tmux su %@?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ のすべての tmux セッションを強制終了しますか？"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "បញ្ចប់សម័យ tmux ទាំងអស់នៅលើ %@?"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 모든 tmux 세션을 종료하시겠습니까?"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drepe alle tmux-økter på %@?"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zabić wszystkie sesje tmux na %@?"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Encerrar todas as sessões tmux em %@?"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершить все сессии tmux на %@?"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ปิดทุกเซสชัน tmux บน %@ หรือไม่"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ üzerindeki tüm tmux oturumları sonlandırılsın mı?"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершити всі сеанси tmux на %@?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终止 %@ 上的所有 tmux 会话？"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "終止 %@ 上的所有 tmux 工作階段？"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.newSession.a11y": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جلسة tmux جديدة على هذا الجهاز"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nova tmux sesija na ovoj mašini"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ny tmux-session på denne maskine"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neue tmux-Sitzung auf dieser Maschine"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New tmux session on this machine"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nueva sesión tmux en esta máquina"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nouvelle session tmux sur cette machine"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuova sessione tmux su questa macchina"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このマシンで新しい tmux セッション"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "សម័យ tmux ថ្មីនៅលើម៉ាស៊ីននេះ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 머신에서 새 tmux 세션"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ny tmux-økt på denne maskinen"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nowa sesja tmux na tej maszynie"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nova sessão tmux nesta máquina"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новая сессия tmux на этой машине"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "เซสชัน tmux ใหม่บนเครื่องนี้"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bu makinede yeni tmux oturumu"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новий сеанс tmux на цій машині"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此机器上新建 tmux 会话"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此機器上新增 tmux 工作階段"
+          }
+        }
+      }
+    },
+    "remoteTmuxHostSection.sessionCount.a11y": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld جلسات tmux"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tmux sesija"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tmux-sessioner"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tmux-Sitzungen"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tmux sessions"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sesiones tmux"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sessions tmux"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sessioni tmux"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 個の tmux セッション"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "សម័យ tmux %lld"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tmux 세션 %lld개"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tmux-økter"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sesji tmux"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld sessões tmux"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сессий tmux: %lld"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "เซสชัน tmux %lld รายการ"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld tmux oturumu"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Сеансів tmux: %lld"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 个 tmux 会话"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 個 tmux 工作階段"
+          }
+        }
+      }
+    },
+    "remoteTmuxNewWorkspace.menu.localWorkspace": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مساحة عمل محلية جديدة"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Novi lokalni radni prostor"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nyt lokalt arbejdsområde"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neuer lokaler Arbeitsbereich"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Local Workspace"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuevo espacio de trabajo local"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nouvel espace de travail local"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuovo spazio di lavoro locale"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新規ローカルワークスペース"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "កន្លែងធ្វើការមូលដ្ឋានថ្មី"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "새 로컬 작업 공간"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nytt lokalt arbeidsområde"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nowy lokalny obszar roboczy"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Novo espaço de trabalho local"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новое локальное рабочее пространство"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "พื้นที่ทำงานในเครื่องใหม่"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yeni Yerel Çalışma Alanı"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новий локальний робочий простір"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新建本地工作区"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新增本機工作區"
+          }
+        }
+      }
+    },
+    "remoteTmuxNewWorkspace.menu.sessionOnHost": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "جلسة tmux جديدة على %@"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nova tmux sesija na %@"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ny tmux-session på %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Neue tmux-Sitzung auf %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New tmux Session on %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nueva sesión tmux en %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nouvelle session tmux sur %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuova sessione tmux su %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で新規 tmux セッション"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "សម័យ tmux ថ្មីនៅលើ %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@에서 새 tmux 세션"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ny tmux-økt på %@"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nowa sesja tmux na %@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nova sessão tmux em %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новая сессия tmux на %@"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "เซสชัน tmux ใหม่บน %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ üzerinde yeni tmux oturumu"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Новий сеанс tmux на %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上新建 tmux 会话"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 %@ 上新增 tmux 工作階段"
           }
         }
       }

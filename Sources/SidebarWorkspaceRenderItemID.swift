@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Stable, allocation-free identity for a `SidebarWorkspaceRenderItem`.
@@ -17,6 +18,10 @@ struct SidebarWorkspaceRenderItemID: Hashable {
         Self(kind: 2, uuid: uuid)
     }
 
+    static func remoteHostSection(_ uuid: UUID) -> Self {
+        Self(kind: 3, uuid: uuid)
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.uuid == rhs.uuid
     }
@@ -24,5 +29,29 @@ struct SidebarWorkspaceRenderItemID: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(kind)
         hasher.combine(uuid)
+    }
+}
+
+/// Derives the stable row UUID for a remote tmux machine section from the
+/// machine's endpoint identity (`RemoteTmuxHost.connectionHash`).
+///
+/// The UUID must be a pure function of the host key so the row keeps its
+/// SwiftUI/AppKit identity across render passes, re-attaches, and app
+/// launches (collapse state and scroll anchoring both key off it). The first
+/// 16 bytes of a SHA-256 over the key give a collision-safe, deterministic
+/// UUID without storing any registry.
+enum SidebarRemoteHostSectionIdentity {
+    static func uuid(forHostKey hostKey: String) -> UUID {
+        let digest = SHA256.hash(data: Data(hostKey.utf8))
+        var bytes = [UInt8](repeating: 0, count: 16)
+        for (index, byte) in digest.enumerated() where index < 16 {
+            bytes[index] = byte
+        }
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 }

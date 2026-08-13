@@ -297,6 +297,7 @@ class TabManager: ObservableObject {
             pendingProjectedNotificationFocusRequestID = nil
             if !isRestoringSessionSnapshot {
                 workspaces.expandWorkspaceGroupForSelectionIfNeeded()
+                expandRemoteTmuxHostForSelectionIfNeeded()
             }
             sentryBreadcrumb("workspace.switch", data: [
                 "tabCount": tabs.count
@@ -2002,6 +2003,62 @@ class TabManager: ObservableObject {
 
     func setWorkspaceGroupCollapsed(groupId: UUID, isCollapsed: Bool) {
         workspaceGrouping.setWorkspaceGroupCollapsed(groupId: groupId, isCollapsed: isCollapsed)
+    }
+
+    // MARK: - Remote tmux host sections
+
+    /// Collapsed per-machine sidebar sections for remote tmux mirrors, keyed
+    /// by the machine's stable endpoint identity
+    /// (`RemoteTmuxHost.connectionHash`). Published so the sidebar's
+    /// render-item projection rebuilds on toggle. Persisted app-globally (not
+    /// per window): a machine's collapse preference survives detach/reattach
+    /// and app restarts regardless of which window its mirrors land in next.
+    @Published private(set) var collapsedRemoteTmuxHostKeys: Set<String> =
+        TabManager.loadCollapsedRemoteTmuxHostKeys()
+
+    private static let collapsedRemoteTmuxHostKeysDefaultsKey =
+        "sidebarCollapsedRemoteTmuxHostKeys"
+
+    private static func loadCollapsedRemoteTmuxHostKeys() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(
+            forKey: collapsedRemoteTmuxHostKeysDefaultsKey
+        ) ?? [])
+    }
+
+    func isRemoteTmuxHostCollapsed(hostKey: String) -> Bool {
+        collapsedRemoteTmuxHostKeys.contains(hostKey)
+    }
+
+    func toggleRemoteTmuxHostCollapsed(hostKey: String) {
+        setRemoteTmuxHostCollapsed(
+            hostKey: hostKey,
+            isCollapsed: !collapsedRemoteTmuxHostKeys.contains(hostKey)
+        )
+    }
+
+    func setRemoteTmuxHostCollapsed(hostKey: String, isCollapsed: Bool) {
+        guard collapsedRemoteTmuxHostKeys.contains(hostKey) != isCollapsed else { return }
+        if isCollapsed {
+            collapsedRemoteTmuxHostKeys.insert(hostKey)
+        } else {
+            collapsedRemoteTmuxHostKeys.remove(hostKey)
+        }
+        UserDefaults.standard.set(
+            Array(collapsedRemoteTmuxHostKeys).sorted(),
+            forKey: Self.collapsedRemoteTmuxHostKeysDefaultsKey
+        )
+    }
+
+    /// A collapsed section must never hide the active workspace: selecting a
+    /// mirror workspace under a collapsed machine section (keyboard cycling,
+    /// notification jump, socket select) expands that machine. This is the
+    /// host section counterpart of `expandWorkspaceGroupForSelectionIfNeeded()`.
+    func expandRemoteTmuxHostForSelectionIfNeeded() {
+        guard let selectedTabId,
+              let workspace = tabs.first(where: { $0.id == selectedTabId }),
+              let hostKey = workspace.remoteTmuxHostKey,
+              collapsedRemoteTmuxHostKeys.contains(hostKey) else { return }
+        setRemoteTmuxHostCollapsed(hostKey: hostKey, isCollapsed: false)
     }
 
     func toggleWorkspaceGroupPinned(groupId: UUID) {
@@ -6581,6 +6638,10 @@ extension Notification.Name {
     static let workspaceTitleDidChange = Notification.Name("cmux.workspaceTitleDidChange")
     static let workspaceCurrentDirectoryDidChange = Notification.Name("cmux.workspaceCurrentDirectoryDidChange")
     static let tabManagerFocusHistoryRevisionDidChange = Notification.Name("cmux.tabManagerFocusHistoryRevisionDidChange")
+    /// Posted when a remote tmux machine's needs-reauthentication state flips
+    /// (reconnect loops parked or resumed); the sidebar's machine section
+    /// headers repaint their auth badge on this.
+    static let remoteTmuxHostAuthStateDidChange = Notification.Name("cmux.remoteTmuxHostAuthStateDidChange")
 }
 
 enum BrowserFirstResponderNotificationUserInfoKey {

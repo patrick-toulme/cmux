@@ -9378,14 +9378,21 @@ struct CMUXCLI {
         )
     }
 
-    /// Mirrors a remote host's tmux sessions; interactive SSH authentication runs
-    /// inline in the caller's terminal before retrying over the shared master.
+    /// Mirrors one or more remote hosts' tmux sessions into ONE window;
+    /// interactive SSH authentication runs inline in the caller's terminal (at
+    /// most once per machine) before retrying over that machine's shared master.
+    ///
+    /// `cmux ssh-tmux xxl xxl2 xxl3` (or comma separated: `xxl,xxl2,xxl3`)
+    /// attaches the machines sequentially: the first resolves the target window
+    /// exactly like a single-host attach, and every later machine joins that
+    /// same window explicitly, so the sidebar carries all machines grouped by
+    /// host.
     private func runRemoteTmux(
         commandArgs: [String],
         client: SocketClient,
         jsonOutput: Bool
     ) throws {
-        var destination: String?
+        var destinations: [String] = []
         var port: Int?
         var identityFile: String?
         var noFocus = false
@@ -9424,33 +9431,97 @@ struct CMUXCLI {
                         message: "ssh-tmux: destination must be <user@host> or an ssh alias. Use --port/--identity for SSH flags."
                     )
                 }
-                if destination == nil {
-                    destination = arg
-                } else {
-                    throw CLIError(message: "ssh-tmux: unexpected extra argument '\(arg)'")
+                // Several machines arrive as separate arguments, one
+                // comma-separated argument, or the shell-natural mix of both
+                // (`cmux ssh-tmux xxl, xxl2, xxl3` word-splits into pieces
+                // with trailing commas).
+                for piece in arg.split(separator: ",") {
+                    let destination = piece.trimmingCharacters(in: .whitespaces)
+                    if !destination.isEmpty, !destinations.contains(destination) {
+                        destinations.append(destination)
+                    }
                 }
                 index += 1
             }
         }
 
-        guard let destination else {
-            throw CLIError(message: "ssh-tmux requires a destination (example: cmux ssh-tmux user@host)")
+        guard !destinations.isEmpty else {
+            throw CLIError(message: "ssh-tmux requires a destination (example: cmux ssh-tmux user@host, or several: cmux ssh-tmux host-a host-b)")
         }
 
-        var params: [String: Any] = ["host": destination]
-        if let port { params["port"] = port }
-        if let identityFile, !identityFile.isEmpty { params["identity_file"] = identityFile }
-        params["activate"] = !noFocus
+        var callerContextParams: [String: Any] = [:]
         if !newWindow {
-            try applyWindowOrCallerContext(to: &params, client: client, windowRaw: nil)
-        }
-        // BatchMode discovery can take a couple of seconds; show progress.
-        if !jsonOutput {
-            print("Connecting to \(destination)…")
+            try applyWindowOrCallerContext(to: &callerContextParams, client: client, windowRaw: nil)
         }
 
-        // Retry interactive authentication once; never spin on auth-required.
-        let method = newWindow ? "remote.tmux.window" : "remote.tmux.mirror"
+        // Every machine after the first joins the window the first one resolved,
+        // so one invocation builds ONE window whose sidebar carries every
+        // machine. Sequential on purpose: interactive authentication (a
+        // password or security-key touch per machine) must own the terminal
+        // one machine at a time.
+        var joinedWindowId: String?
+        var hostResults: [[String: Any]] = []
+        for (position, destination) in destinations.enumerated() {
+            var params: [String: Any] = ["host": destination]
+            if let port { params["port"] = port }
+            if let identityFile, !identityFile.isEmpty { params["identity_file"] = identityFile }
+            // Only the first machine may take focus; the rest attach quietly
+            // into the same window.
+            params["activate"] = !noFocus && position == 0
+            let method: String
+            if let joinedWindowId {
+                params["window_id"] = joinedWindowId
+                method = "remote.tmux.mirror"
+            } else if newWindow {
+                method = "remote.tmux.window"
+            } else {
+                for (key, value) in callerContextParams { params[key] = value }
+                method = "remote.tmux.mirror"
+            }
+            // BatchMode discovery can take a couple of seconds; show progress.
+            if !jsonOutput {
+                print("Connecting to \(destination)…")
+            }
+            let result = try mirrorRemoteTmuxHost(
+                destination: destination,
+                method: method,
+                params: params,
+                client: client,
+                jsonOutput: jsonOutput
+            )
+            hostResults.append(result)
+            if joinedWindowId == nil {
+                joinedWindowId = result["window_id"] as? String
+            }
+            if !jsonOutput {
+                let windowId = (result["window_id"] as? String) ?? ""
+                let count = (result["workspace_ids"] as? [Any])?.count ?? 0
+                print("OK host=\(destination) workspaces=\(count) window=\(windowId)")
+            }
+        }
+
+        if jsonOutput {
+            if hostResults.count == 1, let only = hostResults.first {
+                // Single destination keeps the historical payload shape.
+                print(jsonString(only))
+            } else {
+                var summary: [String: Any] = ["mirrored": true, "hosts": hostResults]
+                if let joinedWindowId { summary["window_id"] = joinedWindowId }
+                print(jsonString(summary))
+            }
+        }
+    }
+
+    /// One machine's mirror round-trip: sends `method`, runs the interactive
+    /// authentication handoff at most once, and returns the mirrored payload.
+    /// Never spins on auth-required.
+    private func mirrorRemoteTmuxHost(
+        destination: String,
+        method: String,
+        params: [String: Any],
+        client: SocketClient,
+        jsonOutput: Bool
+    ) throws -> [String: Any] {
         var didAuthenticate = false
         while true {
             let result = try client.sendV2(
@@ -9459,14 +9530,7 @@ struct CMUXCLI {
                 responseTimeout: 75  // > the app-side 60s timeout, so the app's result/error always arrives first
             )
             if (result["mirrored"] as? Bool) == true {
-                if jsonOutput {
-                    print(jsonString(result))
-                } else {
-                    let windowId = (result["window_id"] as? String) ?? ""
-                    let count = (result["workspace_ids"] as? [Any])?.count ?? 0
-                    print("OK host=\(destination) workspaces=\(count) window=\(windowId)")
-                }
-                return
+                return result
             }
             if (result["auth_required"] as? Bool) == true {
                 guard !didAuthenticate else {
@@ -16713,7 +16777,7 @@ struct CMUXCLI {
             return Self.moshTmuxCommandUsage
         case "ssh-tmux":
             let help = String(localized: "cli.help.ssh-tmux", defaultValue: """
-            Usage: cmux ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus]
+            Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]
 
             Mirror a remote host's tmux sessions into the current window's sidebar over
             SSH tmux control mode (tmux -CC). Each session becomes a workspace, each
@@ -16733,8 +16797,18 @@ struct CMUXCLI {
 
             Example:
               cmux ssh-tmux dev@my-host
+              cmux ssh-tmux host-a host-b host-c
               cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519
             """)
+            let multiHostHelp = String(
+                localized: "cli.help.ssh-tmux.multiHost",
+                defaultValue: """
+                Multiple machines:
+                  Pass several destinations (space or comma separated) to mirror them all
+                  into the same window. The sidebar groups each machine's tmux sessions
+                  under its own collapsible section. Machines authenticate one at a time.
+                """
+            )
             let newWindowHelp = String(
                 localized: "cli.help.ssh-tmux.newWindow",
                 defaultValue: """
@@ -16742,7 +16816,7 @@ struct CMUXCLI {
                   --new-window        Open the mirror in a dedicated new window
                 """
             )
-            return "\(help)\n\n\(newWindowHelp)"
+            return "\(help)\n\n\(multiHostHelp)\n\n\(newWindowHelp)"
         case "ssh-session-list":
             return """
             Usage: cmux ssh-session-list [--workspace <id|ref|index> | --all-workspaces]
@@ -36854,7 +36928,7 @@ export default CMUXSessionRestore;
           ssh <destination> [--transport <ssh|mosh>] [--name <title>] [--command <text>] [--port <n>] [--identity <path>] [-A|--forward-agent] [-a|--no-forward-agent] [--ssh-option <opt>] [--window <id|ref|index>] [--no-focus] [-- <remote-command-args>]
           mosh <destination> [--name <title>] [--command <text>] [--port <n>] [--identity <path>] [-A|--forward-agent] [-a|--no-forward-agent] [--ssh-option <opt>] [--window <id|ref|index>] [--no-focus] [-- <remote-command-args>]
           mosh-tmux <destination> [--session <name>] [--name <title>] [--command <text>] [--port <n>] [--identity <path>] [-A|--forward-agent] [-a|--no-forward-agent] [--ssh-option <opt>] [--window <id|ref|index>] [--no-focus]
-          ssh-tmux <destination> [--port <n>] [--identity <path>] [--no-focus] [--new-window]
+          ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus] [--new-window]
           ssh-session-list [--workspace <id|ref|index> | --all-workspaces]
           ssh-session-attach --session-id <id> [--workspace <id|ref|index>] [--pane <id|ref|index> | --split <left|right|up|down>]
           ssh-session-cleanup [--workspace <id|ref|index> | --all-workspaces] (--session-id <id> | --all)
