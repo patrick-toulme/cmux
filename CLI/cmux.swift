@@ -9637,17 +9637,35 @@ struct CMUXCLI {
         let fastFailureThreshold: TimeInterval = 5
         let start = Date()
         var status = try runInteractiveAuthSSHOnce(sshArgv: sshArgv, destination: destination)
+        var retriedFastFailure = false
         if status != 0, Date().timeIntervalSince(start) < fastFailureThreshold {
+            retriedFastFailure = true
             FileHandle.standardError.write(
                 Data("Connection to \(destination) dropped before authentication; retrying once…\n".utf8)
             )
             Thread.sleep(forTimeInterval: 2)
+            let retryStart = Date()
             status = try runInteractiveAuthSSHOnce(sshArgv: sshArgv, destination: destination)
+            // Two silent pre-auth closures in a row is the signature of the
+            // machine being unreachable through a relay that rejects the
+            // caller: most often EXPIRED LOCAL CREDENTIALS (SSO certificates
+            // the relay checks before any ssh auth begins). Say so —
+            // otherwise the user debugs cmux instead of refreshing certs.
+            if status != 0, Date().timeIntervalSince(retryStart) < fastFailureThreshold {
+                FileHandle.standardError.write(Data(
+                    ("Both attempts to \(destination) were closed before authentication. "
+                        + "This usually means your local SSO/certificate credentials expired "
+                        + "(refresh them, then retry), or the relay is rejecting connections. "
+                        + "Compare with a plain `ssh \(destination)` in another terminal.\n").utf8
+                ))
+            }
         }
         guard status == 0 else {
-            throw CLIError(
-                message: "ssh-tmux: ssh authentication to \(destination) failed (exit \(status))"
-            )
+            var message = "ssh-tmux: ssh authentication to \(destination) failed (exit \(status))"
+            if retriedFastFailure {
+                message += " — the connection closed before authentication twice; check your local SSO/certificate credentials"
+            }
+            throw CLIError(message: message)
         }
     }
 
