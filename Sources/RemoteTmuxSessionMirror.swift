@@ -67,6 +67,38 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
             ] }
     }
 
+    /// Publishes the heuristic remote agent-activity signal for a pane whose
+    /// foreground command CHANGED: a recognized agent binary in the foreground
+    /// marks the pane's panel `.running` under that agent's lifecycle status
+    /// key (the sidebar spinner comes free), and leaving the agent clears the
+    /// entry. Richer states published for the SAME key by the opencode plugin
+    /// over the forwarded socket (idle at prompt, needs input) overwrite this
+    /// heuristic value and stand until the foreground command changes again —
+    /// the connection deliberately emits change events only.
+    func applyPaneForegroundStateToAgentLifecycle(
+        paneId: Int,
+        state: RemoteTmuxPaneForegroundState
+    ) {
+        guard let workspace else { return }
+        let newKey = RemoteTmuxAgentActivityClassifier.lifecycleStatusKey(forCommand: state.command)
+        let previousKey = agentLifecycleKeysByPaneId[paneId]
+        guard newKey != previousKey else { return }
+        guard let windowId = windowIdByPane[paneId],
+              let panel = windowMirrorByWindowId[windowId]?.panelsByPaneId[paneId] else {
+            agentLifecycleKeysByPaneId.removeValue(forKey: paneId)
+            return
+        }
+        if let previousKey {
+            _ = workspace.clearAgentLifecycle(key: previousKey, panelId: panel.id)
+        }
+        if let newKey {
+            workspace.setAgentLifecycle(key: newKey, panelId: panel.id, lifecycle: .running)
+            agentLifecycleKeysByPaneId[paneId] = newKey
+        } else {
+            agentLifecycleKeysByPaneId.removeValue(forKey: paneId)
+        }
+    }
+
     /// Whether a pane's hosted view is actually presented — the same predicate
     /// ``RemoteTmuxWindowMirror/isEffectivelyVisibleForSizing`` judges with.
     private static func isOnScreen(_ panel: TerminalPanel) -> Bool {
@@ -116,6 +148,13 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
     /// Last-known working directory per tmux pane, so switching the active pane
     /// can re-project that pane's directory onto the tab.
     var cwdByPane: [Int: String] = [:]
+
+    /// Lifecycle status key currently published for a pane's foreground agent
+    /// command (heuristic spinner). Tracked so a command change can clear the
+    /// PREVIOUS key's entry — the lifecycle map is keyed (panel, status key),
+    /// and a pane switching from `claude` to `opencode` must not leave a stale
+    /// `claude_code: running` entry spinning forever.
+    var agentLifecycleKeysByPaneId: [Int: String] = [:]
     /// Per-pane filter that strips the screen/tmux `ESC k <title> ST` window-title
     /// escape from `%output` (stateful across chunk boundaries).
     var titleFilters: [Int: RemoteTmuxScreenTitleFilter] = [:]
@@ -212,6 +251,9 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
             },
             onPaneReflow: { [weak self] paneId, noReflow in
                 self?.routeNoReflow(paneId: paneId, noReflow: noReflow)
+            },
+            onPaneForegroundStateChanged: { [weak self] paneId, state in
+                self?.applyPaneForegroundStateToAgentLifecycle(paneId: paneId, state: state)
             },
             onActivePaneChanged: { [weak self] windowId, paneId in
                 self?.handleActivePaneChanged(windowId: windowId, paneId: paneId)
@@ -315,6 +357,22 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
             rebuildTopology(in: workspace)
         }
         focusExplicitlyRequestedWindowIfAvailable()
+        // Foreground classifications can arrive BEFORE a pane's panel exists
+        // (the connection classifies during attach, the topology builds here),
+        // and tmux only re-emits them on change — so an agent already running
+        // at attach would stay invisible forever without this replay against
+        // the freshly built pane→panel mapping. Already-applied panes no-op
+        // (same key), so richer plugin-published states are never stomped.
+        for (paneId, state) in connection.paneForegroundStates {
+            applyPaneForegroundStateToAgentLifecycle(paneId: paneId, state: state)
+        }
+        // Panes tmux removed took their lifecycle entries with them
+        // (`onTerminalPanelRemoved` → `clearAgentLifecycleStates`); drop the
+        // key bookkeeping too. tmux never reuses pane ids within a server
+        // run, so this is hygiene, not correctness.
+        agentLifecycleKeysByPaneId = agentLifecycleKeysByPaneId.filter {
+            windowIdByPane[$0.key] != nil
+        }
     }
 
     private func rebuildTopology(in workspace: Workspace) {

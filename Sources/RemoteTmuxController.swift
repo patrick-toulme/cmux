@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import CmuxSettings
 import OSLog
@@ -962,6 +963,99 @@ final class RemoteTmuxController {
             cmuxDebugLog("remote-tmux: new session on host failed")
             #endif
         }
+    }
+
+    // MARK: - Remote agent bridge
+
+    /// Where a machine reaches THIS cmux instance's control socket: a
+    /// reverse-forwarded unix socket in the remote /tmp, keyed by both the
+    /// local socket path and the endpoint identity so two local cmux
+    /// instances (production + a tagged dev build) can never collide on one
+    /// remote path.
+    nonisolated static func remoteAgentSocketPath(localSocketPath: String, connectionHash: String) -> String {
+        let digest = SHA256.hash(data: Data("\(localSocketPath)\u{1}\(connectionHash)".utf8))
+        let hex = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
+        return "/tmp/cmux-agent-\(hex).sock"
+    }
+
+    /// Sets up the remote agent bridge after a successful attach: forwards the
+    /// local control socket onto the machine over the EXISTING master (`-O
+    /// forward` cannot authenticate, so the single-auth guarantee holds),
+    /// publishes the forwarded path plus the machine identity into the remote
+    /// tmux server environment (new panes inherit them), and installs the
+    /// opencode plugin so agents in the machine's tmux sessions self-report
+    /// lifecycle, feed activity, and notifications exactly like local ones.
+    /// Best-effort throughout: any failure logs and leaves the zero-install
+    /// pane-command heuristic in charge.
+    func configureRemoteAgentBridge(host: RemoteTmuxHost) async {
+        guard Self.isEnabled else { return }
+        let localSocketPath = TerminalController.shared.socketServer.currentSocketPath
+        guard !localSocketPath.isEmpty,
+              TerminalController.shared.socketServer.isRunning else {
+            Self.logger.info("remote-tmux: agent bridge skipped, no local socket [\(host.connectionHash, privacy: .public)]")
+            return
+        }
+        let transport = transport(for: host)
+        let remoteSocketPath = Self.remoteAgentSocketPath(
+            localSocketPath: localSocketPath,
+            connectionHash: host.connectionHash
+        )
+        do {
+            // A stale socket file from a previous run blocks the re-bind
+            // (sshd rarely enables StreamLocalBindUnlink); clear it first.
+            _ = try await transport.run(["rm", "-f", remoteSocketPath])
+            guard try await transport.requestReverseUnixForward(
+                remoteSocketPath: remoteSocketPath,
+                localSocketPath: localSocketPath
+            ) else {
+                Self.logger.info("remote-tmux: agent bridge forward failed [\(host.connectionHash, privacy: .public)]")
+                return
+            }
+            _ = try await transport.runTmux(
+                ["set-environment", "-g", "CMUX_SOCKET_PATH", remoteSocketPath]
+            )
+            _ = try await transport.runTmux(
+                ["set-environment", "-g", "CMUX_REMOTE_HOST_KEY", host.connectionHash]
+            )
+            await installOpencodePluginIfNeeded(host: host)
+            Self.logger.info("remote-tmux: agent bridge ready [\(host.connectionHash, privacy: .public)]")
+        } catch {
+            Self.logger.info("remote-tmux: agent bridge setup failed [\(host.connectionHash, privacy: .public)]")
+        }
+    }
+
+    /// Pushes the bundled opencode plugin onto the machine
+    /// (`~/.config/opencode/plugins/cmux-feed.js`, the same path the local
+    /// `cmux hooks opencode install` uses). Content-compared before replacing
+    /// so an unchanged plugin is never rewritten, and written via a temp file
+    /// so a dropped connection cannot leave a torn plugin behind.
+    private func installOpencodePluginIfNeeded(host: RemoteTmuxHost) async {
+        guard let url = Bundle.main.url(forResource: "opencode-plugin", withExtension: "js"),
+              let content = try? Data(contentsOf: url) else { return }
+        let base64 = content.base64EncodedString()
+        let file = ".config/opencode/plugins/cmux-feed.js"
+        let script = """
+        mkdir -p "$HOME/.config/opencode/plugins" && \
+        printf %s '\(base64)' | base64 -d > "$HOME/\(file).cmux-tmp" && \
+        if cmp -s "$HOME/\(file).cmux-tmp" "$HOME/\(file)" 2>/dev/null; then \
+        rm -f "$HOME/\(file).cmux-tmp"; else mv "$HOME/\(file).cmux-tmp" "$HOME/\(file)"; fi
+        """
+        _ = try? await transport(for: host).run(["/bin/sh", "-c", script])
+    }
+
+    /// Resolves a machine's tmux pane to its mirrored (workspace, panel) pair.
+    /// The remote agent bridge's plugin calls this once at startup — agents on
+    /// the machine know only their `$TMUX_PANE` and the injected machine
+    /// identity, while every socket command addresses local UUIDs.
+    func resolveRemotePane(connectionHash: String, paneId: Int) -> (workspaceId: UUID, panelId: UUID)? {
+        for mirror in hostMirrors(connectionHash: connectionHash) {
+            guard let workspace = mirror.mirroredWorkspace,
+                  let windowId = mirror.windowIdByPane[paneId],
+                  let panel = mirror.windowMirrorByWindowId[windowId]?.panelsByPaneId[paneId]
+            else { continue }
+            return (workspace.id, panel.id)
+        }
+        return nil
     }
 
     /// Detaches every control connection on app quit and closes the shared SSH

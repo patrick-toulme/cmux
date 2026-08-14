@@ -235981,6 +235981,23 @@
         }
       }
     },
+    "socket.remoteTmux.resolvePaneParamsRequired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "host_key and pane_id are required"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "host_key と pane_id が必要です"
+          }
+        }
+      }
+    },
     "socket.remoteTmux.sessionRequired": {
       "extractionState": "manual",
       "localizations": {

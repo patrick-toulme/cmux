@@ -146,7 +146,13 @@ extension TerminalController: ControlSidebarContext {
             // Unreachable: the coordinator only forwards a value this app produced.
             return
         }
-        controlSidebarSchedulePanelOwnedMutation(target: target, panelID: panelID) { _, owner in
+        // Remote tmux mirror panes are valid lifecycle targets: agents on a
+        // mirrored machine self-report over the forwarded control socket.
+        controlSidebarSchedulePanelOwnedMutation(
+            target: target,
+            panelID: panelID,
+            includeRemoteTmuxPanes: true
+        ) { _, owner in
             owner.setAgentLifecycle(key: key, panelId: panelID, lifecycle: lifecycle)
         }
     }

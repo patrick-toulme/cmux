@@ -299,6 +299,44 @@ extension TerminalController {
         }
     }
 
+    /// `remote.tmux.resolve_pane` — map (machine identity, tmux pane) to the
+    /// mirrored workspace/panel UUIDs.
+    ///
+    /// The remote agent bridge's opencode plugin calls this once at startup:
+    /// an agent inside a mirrored tmux pane knows only its `$TMUX_PANE` and
+    /// the `CMUX_REMOTE_HOST_KEY` cmux injected into the tmux server
+    /// environment, while every lifecycle/feed/notification command addresses
+    /// local UUIDs. Params: `host_key` (the connectionHash), `pane_id`
+    /// (`%N` or bare N).
+    nonisolated func v2RemoteTmuxResolvePane(id: Any?, params: [String: Any]) -> String {
+        guard RemoteTmuxController.isEnabled else {
+            return v2Error(id: id, code: "disabled", message: String(localized: "socket.remoteTmux.disabled", defaultValue: "remote tmux beta is disabled"))
+        }
+        guard let hostKey = (params["host_key"] as? String)?.trimmingCharacters(in: .whitespaces),
+              !hostKey.isEmpty,
+              let rawPane = (params["pane_id"] as? String)?.trimmingCharacters(in: .whitespaces),
+              let paneId = Int(rawPane.hasPrefix("%") ? String(rawPane.dropFirst()) : rawPane)
+        else {
+            return v2Error(id: id, code: "invalid_params", message: String(localized: "socket.remoteTmux.resolvePaneParamsRequired", defaultValue: "host_key and pane_id are required"))
+        }
+        return v2VmCall(id: id, timeoutSeconds: 10) {
+            let resolved: (workspaceId: UUID, panelId: UUID)? = await MainActor.run {
+                AppDelegate.shared?.remoteTmuxController.resolveRemotePane(
+                    connectionHash: hostKey,
+                    paneId: paneId
+                )
+            }
+            guard let resolved else {
+                return ["resolved": false]
+            }
+            return [
+                "resolved": true,
+                "workspace_id": resolved.workspaceId.uuidString,
+                "surface_id": resolved.panelId.uuidString,
+            ]
+        }
+    }
+
     /// `remote.tmux.pane_surfaces` — the tmux pane id → cmux surface id map for
     /// EVERY mirrored window, single-pane windows included.
     ///

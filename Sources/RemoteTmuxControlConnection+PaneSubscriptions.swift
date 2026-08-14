@@ -86,6 +86,7 @@ extension RemoteTmuxControlConnection {
     /// plain shell; defaults to no-reflow on an empty/unparseable value (safe).
     func classifyAndEmitReflow(paneId: Int, rawValue: String, source: String) {
         let state = PaneForegroundState(rawValue: rawValue)
+        let previous = paneForegroundStates[paneId]
         paneForegroundStates[paneId] = state
         let noReflow = state.suppressesReflow
         #if DEBUG
@@ -95,6 +96,13 @@ extension RemoteTmuxControlConnection {
         )
         #endif
         observers.emitPaneReflow(paneId, noReflow)
+        // Agent-activity detection listens for CHANGES only: tmux re-emits the
+        // subscribed value about once a second regardless, and re-publishing an
+        // unchanged classification would overwrite richer lifecycle states
+        // (e.g. the opencode plugin's idle) with the coarse heuristic.
+        if previous != state {
+            observers.emitPaneForegroundState(paneId, state)
+        }
     }
 
 

@@ -122,9 +122,16 @@ extension TerminalController {
 
     /// Resolves a UUID-addressed panel's current owner. Callers that schedule
     /// mutations invoke this at drain time so updates follow a moved pane.
+    ///
+    /// `includeRemoteTmuxPanes` widens panel membership to remote tmux mirror
+    /// panes (which live in the mirror registries, never in `panels`) for the
+    /// verbs that support them — currently agent lifecycle, so remote agents
+    /// reporting over the forwarded socket reach the same mutation path as
+    /// local ones. Everything else keeps the strict `panels` check.
     func controlSidebarResolvePanelOwner(
         target: ControlSidebarTabTarget,
-        panelID: UUID?
+        panelID: UUID?,
+        includeRemoteTmuxPanes: Bool = false
     ) -> ControlSidebarPanelOwner? {
         if let panelID,
            let dock = DockSplitStore.liveStores.first(where: { $0.containsPanel(panelID) }) {
@@ -137,7 +144,10 @@ extension TerminalController {
             tab = owner.workspace
         }
         guard let tab else { return nil }
-        if let panelID, !tab.panels.keys.contains(panelID) { return nil }
+        if let panelID, !tab.panels.keys.contains(panelID) {
+            guard includeRemoteTmuxPanes,
+                  tab.remoteTmuxControlPane(surfaceID: panelID) != nil else { return nil }
+        }
         return .workspace(tab)
     }
 
@@ -207,13 +217,15 @@ extension TerminalController {
     nonisolated func controlSidebarSchedulePanelOwnedMutation(
         target: ControlSidebarTabTarget,
         panelID: UUID?,
+        includeRemoteTmuxPanes: Bool = false,
         mutation: @escaping @MainActor (TerminalController, ControlSidebarPanelOwner) -> Void
     ) {
         TerminalMutationBus.shared.enqueueMainActorMutation { [weak self] in
             guard let self,
                   let owner = self.controlSidebarResolvePanelOwner(
                       target: target,
-                      panelID: panelID
+                      panelID: panelID,
+                      includeRemoteTmuxPanes: includeRemoteTmuxPanes
                   ) else {
                 return
             }

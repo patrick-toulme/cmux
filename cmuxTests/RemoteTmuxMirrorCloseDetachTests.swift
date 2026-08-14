@@ -396,6 +396,18 @@ import Testing
         let host = RemoteTmuxHost(destination: "focus-\(UUID().uuidString)@example.test")
         defer { harness.controller.detach(host: host, sessionName: "one") }
         harness.cacheConnection(host: host, session: "one")
+        // Earlier suites tear windows down with `performClose`, which resolves
+        // asynchronously; a stale window closing mid-test makes AppKit promote
+        // a different main window, and the neutrality assertions below would
+        // read that unrelated churn as a socket focus steal. Settle the window
+        // population before capturing the baseline.
+        var previousWindowIDs: [ObjectIdentifier]? = nil
+        for _ in 0..<40 {
+            let current = NSApp.windows.filter(\.isVisible).map(ObjectIdentifier.init)
+            if current == previousWindowIDs { break }
+            previousWindowIDs = current
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
         #expect(harness.appDelegate.focusMainWindow(windowId: harness.windowId))
         #expect(harness.appDelegate.tabManager === harness.manager)
         #expect(TerminalController.shared.activeTabManagerForCallerNotification() === harness.manager)

@@ -1,6 +1,7 @@
-// cmux-feed-plugin-marker v1
+// cmux-feed-plugin-marker v2
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
-// Installed by `cmux hooks setup` or `cmux hooks opencode install`.
+// Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
+// onto remote tmux machines by the cmux remote agent bridge.
 // DO NOT EDIT MANUALLY - cmux upgrades this file in place.
 
 const net = require("node:net");
@@ -13,9 +14,25 @@ const SOCKET_PATH = process.env.CMUX_SOCKET_PATH || DEFAULT_SOCKET;
 const REPLY_TIMEOUT_MS = 120_000;
 const MAX_PLAN_BYTES = 128 * 1024;
 
+// Remote mode: this opencode runs inside a tmux pane on a machine that a
+// cmux instance mirrors over SSH. The remote agent bridge injects
+// CMUX_REMOTE_HOST_KEY (the machine identity) and CMUX_SOCKET_PATH (a
+// reverse-forwarded unix socket back to that cmux) into the tmux server
+// environment; $TMUX_PANE identifies which mirrored pane this agent lives
+// in. In remote mode the plugin resolves its pane to the mirrored
+// workspace/surface UUIDs once, then self-reports lifecycle over the
+// socket (there is no local PID for cmux to watch).
+const REMOTE_HOST_KEY = (process.env.CMUX_REMOTE_HOST_KEY || "").trim() || null;
+const REMOTE_TMUX_PANE = (process.env.TMUX_PANE || "").trim() || null;
+const IS_REMOTE = Boolean(REMOTE_HOST_KEY && REMOTE_TMUX_PANE);
+const REMOTE_RESOLVE_TIMEOUT_MS = 10_000;
+const REMOTE_RESOLVE_ATTEMPTS = 3;
+
 export const CMUXFeed = async (ctx) => {
   let client = null;
   let buffered = "";
+  let remoteTarget = null;
+  let remoteResolvePromise = null;
   const pending = new Map();
   const messageRoles = new Map();
   const sessions = new Map();
@@ -401,6 +418,88 @@ export const CMUXFeed = async (ctx) => {
     }
   };
 
+  // Raw V1 line on the same connection. The socket dispatches per line
+  // (JSON frame -> V2, anything else -> V1 text command), and the data
+  // handler above ignores non-JSON replies like "OK", so V1 and V2 mix
+  // safely on one connection.
+  const writeLine = (line) => {
+    if (!client) client = connect();
+    if (!client) return false;
+    try {
+      client.write(line + "\n");
+      return true;
+    } catch (e) {
+      failPending();
+      return false;
+    }
+  };
+
+  // V2 request/reply for non-feed verbs, reusing the pending map: replies
+  // correlate through the frame id (`opencode-<requestId>`).
+  const requestWithReply = (method, params, requestId, timeoutMs) => {
+    const reply = new Promise((resolve) => {
+      pending.set(requestId, resolve);
+      setTimeout(() => {
+        if (pending.has(requestId)) {
+          pending.delete(requestId);
+          resolve({ status: "timed_out" });
+        }
+      }, timeoutMs);
+    });
+    const wrote = write({
+      id: `opencode-${requestId}`,
+      method,
+      params,
+    });
+    if (!wrote) {
+      resolvePending(requestId, { status: "timed_out" });
+    }
+    return reply;
+  };
+
+  // Maps this agent's tmux pane to the mirrored workspace/surface UUIDs.
+  // Resolved once and cached; retried with backoff because the mirror may
+  // still be building panels in the seconds right after attach. A total
+  // miss (pane not mirrored, old cmux) leaves events unbound - the feed
+  // still works, only sidebar attribution is lost.
+  const resolveRemoteTarget = () => {
+    if (!IS_REMOTE) return Promise.resolve(null);
+    if (remoteTarget) return Promise.resolve(remoteTarget);
+    if (!remoteResolvePromise) {
+      remoteResolvePromise = (async () => {
+        for (let attempt = 0; attempt < REMOTE_RESOLVE_ATTEMPTS; attempt++) {
+          if (attempt > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+          }
+          const result = await requestWithReply(
+            "remote.tmux.resolve_pane",
+            { host_key: REMOTE_HOST_KEY, pane_id: REMOTE_TMUX_PANE },
+            `resolve-pane-${Date.now()}-${attempt}`,
+            REMOTE_RESOLVE_TIMEOUT_MS
+          );
+          const workspaceId = firstString(result?.workspace_id);
+          const surfaceId = firstString(result?.surface_id);
+          if (result?.resolved === true && workspaceId && surfaceId) {
+            remoteTarget = { workspaceId, surfaceId };
+            return remoteTarget;
+          }
+        }
+        remoteResolvePromise = null; // allow a later event to retry
+        return null;
+      })();
+    }
+    return remoteResolvePromise;
+  };
+
+  // Remote agents self-report lifecycle: there is no local PID for cmux's
+  // process watcher, so running/idle comes from opencode's own event bus.
+  const sendRemoteLifecycle = (state) => {
+    if (!IS_REMOTE || !remoteTarget) return;
+    writeLine(
+      `set_agent_lifecycle opencode ${state} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+    );
+  };
+
   const base = (sessionId, extra) => {
     const state = sessionState(sessionId);
     const context = extra?.context || contextForSession(sessionId);
@@ -411,11 +510,20 @@ export const CMUXFeed = async (ctx) => {
     const event = {
       session_id: `opencode-${sessionId}`,
       _source: "opencode",
-      _ppid: process.pid,
       cwd: extra?.cwd || state.cwd || ctx?.directory,
       ...extra,
     };
-    if (workspaceId) event.workspace_id = workspaceId;
+    if (IS_REMOTE) {
+      // PID quarantine: never send a remote PID - the local cmux would
+      // watch (or signal) an unrelated local process with that id.
+      if (remoteTarget) {
+        event.workspace_id = remoteTarget.workspaceId;
+        event.surface_id = remoteTarget.surfaceId;
+      }
+    } else {
+      event._ppid = process.pid;
+      if (workspaceId) event.workspace_id = workspaceId;
+    }
     if (context) event.context = context;
     return event;
   };
@@ -489,8 +597,12 @@ export const CMUXFeed = async (ctx) => {
 
   return {
     event: async ({ event }) => {
+      if (IS_REMOTE) await resolveRemoteTarget();
       const tracked = trackMessage(event);
       if (tracked) {
+        if (tracked.hook_event_name === "UserPromptSubmit") {
+          sendRemoteLifecycle("running");
+        }
         pushTelemetry(tracked);
         return;
       }
@@ -499,6 +611,7 @@ export const CMUXFeed = async (ctx) => {
           const info = event.properties?.info || {};
           const state = sessionState(info.id || "unknown");
           state.cwd = info.directory || ctx?.directory || state.cwd;
+          sendRemoteLifecycle("running");
           pushTelemetry(base(info.id || "unknown", {
             hook_event_name: "SessionStart",
             cwd: state.cwd,
@@ -508,6 +621,7 @@ export const CMUXFeed = async (ctx) => {
         case "session.idle": {
           const sid = event.properties?.sessionID;
           if (!sid) break;
+          sendRemoteLifecycle("idle");
           pushTelemetry(base(sid, {
             hook_event_name: "Stop",
           }));
@@ -517,6 +631,7 @@ export const CMUXFeed = async (ctx) => {
           const sid = event.properties?.info?.id;
           if (!sid) break;
           sessions.delete(sid);
+          sendRemoteLifecycle("idle");
           pushTelemetry(base(sid, {
             hook_event_name: "SessionEnd",
           }));

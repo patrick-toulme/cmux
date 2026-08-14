@@ -110,6 +110,11 @@ extension RemoteTmuxController {
             selectFirstMirrorWorkspace(for: host, in: targetManager)
             _ = appDelegate.focusMainWindow(windowId: resolvedWindowId)
         }
+        // Fire-and-forget so bridge setup (forward + env + plugin push, all
+        // best-effort mux-client work) never adds latency to the attach.
+        Task { [weak self] in
+            await self?.configureRemoteAgentBridge(host: host)
+        }
         return .mirrored(windowId: resolvedWindowId, workspaceIds: workspaceIds)
     }
 

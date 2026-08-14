@@ -514,7 +514,10 @@ extension Workspace {
         lifecycle: AgentHibernationLifecycleState
     ) {
         let targetPanelId = panelId ?? focusedPanelId
-        guard let targetPanelId, panels[targetPanelId] != nil else { return }
+        // Remote tmux mirror panes are live panels too (registered in the
+        // mirror registries, not `panels`): remote agents report lifecycle
+        // through the same entry point as local ones.
+        guard let targetPanelId, ownsLivePanelOrRemoteTmuxPane(targetPanelId) else { return }
         agentLifecycleStatesByPanelId[targetPanelId, default: [:]][key] = lifecycle
         if !AgentHibernationLifecycleStatusKeys.isManualKey(key) {
             recordAgentLifecycleChange(panelId: targetPanelId)

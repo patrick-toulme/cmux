@@ -5622,6 +5622,11 @@ final class Workspace: Identifiable, ObservableObject, FilePreviewTabMetadataHos
                         panel,
                         workspace: self
                     )
+                // Mirror panes never pass through the ordinary panel-close
+                // path, so their agent lifecycle entries (remote heuristic +
+                // plugin-reported) must be dropped here or a closed pane's
+                // spinner would run forever.
+                clearAgentLifecycleStates(panelId: panel.id)
             }
             for panel in mirror.panelsByPaneId.values {
                 terminalFontSizeChangeCoordinator?

@@ -71,6 +71,15 @@ extension Workspace {
             || remoteTmuxWindowMirrors[panelID] != nil
     }
 
+    /// Whether `panelID` addresses a live panel this workspace presents: an
+    /// ordinary workspace-owned panel, or a remote tmux mirror pane (mirror
+    /// panes live in the mirror registries, never in `panels`). Membership
+    /// checks that gate per-panel state (e.g. agent lifecycle entries) use
+    /// this so remote agents get the same machinery as local ones.
+    func ownsLivePanelOrRemoteTmuxPane(_ panelID: UUID) -> Bool {
+        panels[panelID] != nil || remoteTmuxControlPane(surfaceID: panelID) != nil
+    }
+
     func activeRemoteTmuxControlPane(
         containerPanelID: UUID
     ) -> RemoteTmuxControlPaneLocation? {

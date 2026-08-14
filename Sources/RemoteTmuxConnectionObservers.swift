@@ -18,6 +18,7 @@ final class RemoteTmuxConnectionObservers {
     private var paneSeedObservers: [Token: (_ paneId: Int, _ seed: RemoteTmuxPaneSeed) -> Void] = [:]
     private var paneCwdObservers: [Token: (_ paneId: Int, _ path: String) -> Void] = [:]
     private var paneReflowObservers: [Token: (_ paneId: Int, _ noReflow: Bool) -> Void] = [:]
+    private var paneForegroundObservers: [Token: (_ paneId: Int, _ state: RemoteTmuxPaneForegroundState) -> Void] = [:]
     private var activePaneObservers: [Token: (_ windowId: Int, _ paneId: Int) -> Void] = [:]
     private var sessionChangedObservers: [Token: (_ oldName: String, _ newName: String) -> Void] = [:]
     private var topologyObservers: [Token: () -> Void] = [:]
@@ -66,6 +67,7 @@ final class RemoteTmuxConnectionObservers {
         onPaneSeed: ((_ paneId: Int, _ seed: RemoteTmuxPaneSeed) -> Void)?,
         onPaneCwd: ((_ paneId: Int, _ path: String) -> Void)?,
         onPaneReflow: ((_ paneId: Int, _ noReflow: Bool) -> Void)?,
+        onPaneForegroundStateChanged: ((_ paneId: Int, _ state: RemoteTmuxPaneForegroundState) -> Void)? = nil,
         onActivePaneChanged: ((_ windowId: Int, _ paneId: Int) -> Void)?,
         onSessionChanged: ((_ oldName: String, _ newName: String) -> Void)?,
         onTopologyChanged: (() -> Void)?,
@@ -79,6 +81,7 @@ final class RemoteTmuxConnectionObservers {
         if let onPaneSeed { paneSeedObservers[token] = onPaneSeed }
         if let onPaneCwd { paneCwdObservers[token] = onPaneCwd }
         if let onPaneReflow { paneReflowObservers[token] = onPaneReflow }
+        if let onPaneForegroundStateChanged { paneForegroundObservers[token] = onPaneForegroundStateChanged }
         if let onActivePaneChanged { activePaneObservers[token] = onActivePaneChanged }
         if let onSessionChanged { sessionChangedObservers[token] = onSessionChanged }
         if let onTopologyChanged { topologyObservers[token] = onTopologyChanged }
@@ -95,6 +98,7 @@ final class RemoteTmuxConnectionObservers {
         paneSeedObservers[token] = nil
         paneCwdObservers[token] = nil
         paneReflowObservers[token] = nil
+        paneForegroundObservers[token] = nil
         activePaneObservers[token] = nil
         sessionChangedObservers[token] = nil
         topologyObservers[token] = nil
@@ -129,6 +133,13 @@ final class RemoteTmuxConnectionObservers {
     /// Fans a pane's reflow classification out to every reflow observer.
     func emitPaneReflow(_ paneId: Int, _ noReflow: Bool) {
         for callback in Array(paneReflowObservers.values) { callback(paneId, noReflow) }
+    }
+
+    /// Notifies observers that a pane's foreground classification
+    /// (`#{alternate_on}|#{pane_current_command}`) CHANGED — the input for
+    /// remote agent-activity detection (sidebar spinner).
+    func emitPaneForegroundState(_ paneId: Int, _ state: RemoteTmuxPaneForegroundState) {
+        for callback in Array(paneForegroundObservers.values) { callback(paneId, state) }
     }
 
     /// Fans a window's new active pane out to every active-pane observer.

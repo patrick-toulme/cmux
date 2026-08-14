@@ -319,6 +319,28 @@ actor RemoteTmuxSSHTransport {
         return false
     }
 
+    /// Adds a reverse unix-socket forward (remote path → local path) to the
+    /// LIVE master via `ssh -O forward`, so processes on the remote host can
+    /// reach this cmux instance's control socket (the remote agent bridge).
+    /// `-O forward` talks only to the local control socket of an existing
+    /// master — it can never authenticate on its own and fails fast when no
+    /// master is serving, preserving the single-auth guarantee.
+    func requestReverseUnixForward(
+        remoteSocketPath: String,
+        localSocketPath: String
+    ) async throws -> Bool {
+        let result = try await Self.runProcess(
+            executable: sshExecutablePath,
+            arguments: [
+                "-O", "forward",
+                "-o", "ControlPath=\(host.controlSocketPath)",
+                "-R", "\(remoteSocketPath):\(localSocketPath)",
+                "--", host.destination,
+            ]
+        )
+        return result.succeeded
+    }
+
     /// Whether the shared ControlMaster is live and accepting sessions, via the
     /// local `ssh -O check` control command. `-O check` hits the LOCAL control
     /// socket only (identified by `ControlPath`), so it never opens a network
