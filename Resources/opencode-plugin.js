@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v2
+// cmux-feed-plugin-marker v3
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -8,9 +8,9 @@ const net = require("node:net");
 const os = require("node:os");
 const fs = require("node:fs");
 const path = require("node:path");
+const childProcess = require("node:child_process");
 
 const DEFAULT_SOCKET = `${os.homedir()}/.config/cmux/cmux.sock`;
-const SOCKET_PATH = process.env.CMUX_SOCKET_PATH || DEFAULT_SOCKET;
 const REPLY_TIMEOUT_MS = 120_000;
 const MAX_PLAN_BYTES = 128 * 1024;
 
@@ -22,11 +22,43 @@ const MAX_PLAN_BYTES = 128 * 1024;
 // in. In remote mode the plugin resolves its pane to the mirrored
 // workspace/surface UUIDs once, then self-reports lifecycle over the
 // socket (there is no local PID for cmux to watch).
-const REMOTE_HOST_KEY = (process.env.CMUX_REMOTE_HOST_KEY || "").trim() || null;
-const REMOTE_TMUX_PANE = (process.env.TMUX_PANE || "").trim() || null;
-const IS_REMOTE = Boolean(REMOTE_HOST_KEY && REMOTE_TMUX_PANE);
+//
+// The bridge can only pin those vars into tmux's environment TABLES
+// (`set-environment`), which reach processes started in panes created
+// AFTER the pin. A shell in a pane older than the first attach never saw
+// them, so an agent launched from it would silently stay in local mode.
+// tmux itself always sets $TMUX/$TMUX_PANE, and `tmux show-environment`
+// reads the LIVE tables, so identity is resolved tmux-first (session
+// scope, then global) with birth-time process env as the fallback. The
+// live tables also win when process env is stale, e.g. a shell pinned by
+// a previous cmux instance whose socket path has since changed.
+const TMUX_ENV_LOOKUP_TIMEOUT_MS = 3_000;
 const REMOTE_RESOLVE_TIMEOUT_MS = 10_000;
 const REMOTE_RESOLVE_ATTEMPTS = 3;
+
+const tmuxEnvLookup = async (name) => {
+  if (!(process.env.TMUX || "").trim()) return null;
+  for (const args of [["show-environment", name], ["show-environment", "-g", name]]) {
+    const stdout = await new Promise((resolve) => {
+      try {
+        childProcess.execFile(
+          "tmux",
+          args,
+          { timeout: TMUX_ENV_LOOKUP_TIMEOUT_MS, encoding: "utf8" },
+          (error, out) => resolve(error ? null : out)
+        );
+      } catch (_) {
+        resolve(null);
+      }
+    });
+    if (!stdout) continue;
+    // A removed variable prints as `-NAME`; the prefix match skips it.
+    const line = stdout.split("\n").find((entry) => entry.startsWith(`${name}=`));
+    const value = line ? line.slice(name.length + 1).trim() : "";
+    if (value) return value;
+  }
+  return null;
+};
 
 export const CMUXFeed = async (ctx) => {
   let client = null;
@@ -36,6 +68,29 @@ export const CMUXFeed = async (ctx) => {
   const pending = new Map();
   const messageRoles = new Map();
   const sessions = new Map();
+
+  // Identity is mutable: tmux-first with process env fallback, refreshed
+  // after a socket drop so a new cmux instance's pins are picked up live.
+  let socketPath = (process.env.CMUX_SOCKET_PATH || "").trim() || null;
+  let remoteHostKey = (process.env.CMUX_REMOTE_HOST_KEY || "").trim() || null;
+  const remotePaneId = (process.env.TMUX_PANE || "").trim() || null;
+  let identityPromise = null;
+
+  const ensureIdentity = () => {
+    if (!identityPromise) {
+      identityPromise = (async () => {
+        if (remotePaneId) {
+          const liveHostKey = await tmuxEnvLookup("CMUX_REMOTE_HOST_KEY");
+          if (liveHostKey) remoteHostKey = liveHostKey;
+          const liveSocketPath = await tmuxEnvLookup("CMUX_SOCKET_PATH");
+          if (liveSocketPath) socketPath = liveSocketPath;
+        }
+      })();
+    }
+    return identityPromise;
+  };
+
+  const isRemote = () => Boolean(remoteHostKey && remotePaneId);
 
   const isObject = (value) => value && typeof value === "object" && !Array.isArray(value);
 
@@ -368,7 +423,7 @@ export const CMUXFeed = async (ctx) => {
 
   const connect = () => {
     try {
-      const conn = net.createConnection(SOCKET_PATH);
+      const conn = net.createConnection(socketPath || DEFAULT_SOCKET);
       conn.setEncoding("utf8");
       conn.on("data", (chunk) => {
         buffered += chunk;
@@ -398,15 +453,18 @@ export const CMUXFeed = async (ctx) => {
         // A dropped socket usually means the cmux app restarted. Mirror
         // workspace/surface ids are minted per attach, so the cached pane
         // resolution is stale the moment the connection dies: forget it and
-        // re-resolve lazily against the new app instance.
+        // re-resolve lazily against the new app instance. Identity is
+        // re-read from tmux too: a replacement cmux may pin a new socket.
         remoteTarget = null;
         remoteResolvePromise = null;
+        identityPromise = null;
         failPending();
       });
       conn.on("error", () => {
         client = null;
         remoteTarget = null;
         remoteResolvePromise = null;
+        identityPromise = null;
         failPending();
       });
       return conn;
@@ -473,7 +531,7 @@ export const CMUXFeed = async (ctx) => {
   // miss (pane not mirrored, old cmux) leaves events unbound - the feed
   // still works, only sidebar attribution is lost.
   const resolveRemoteTarget = () => {
-    if (!IS_REMOTE) return Promise.resolve(null);
+    if (!isRemote()) return Promise.resolve(null);
     if (remoteTarget) return Promise.resolve(remoteTarget);
     if (!remoteResolvePromise) {
       remoteResolvePromise = (async () => {
@@ -483,7 +541,7 @@ export const CMUXFeed = async (ctx) => {
           }
           const result = await requestWithReply(
             "remote.tmux.resolve_pane",
-            { host_key: REMOTE_HOST_KEY, pane_id: REMOTE_TMUX_PANE },
+            { host_key: remoteHostKey, pane_id: remotePaneId },
             `resolve-pane-${Date.now()}-${attempt}`,
             REMOTE_RESOLVE_TIMEOUT_MS
           );
@@ -491,6 +549,15 @@ export const CMUXFeed = async (ctx) => {
           const surfaceId = firstString(result?.surface_id);
           if (result?.resolved === true && workspaceId && surfaceId) {
             remoteTarget = { workspaceId, surfaceId };
+            // A fresh resolution usually follows a socket drop (cmux
+            // restarted mid-turn). Repaint the current state now instead
+            // of leaving the sidebar blank until the next busy/idle flip.
+            const busy = [...sessions.values()].some((state) => state.isBusy);
+            if (busy) {
+              writeLine(
+                `set_agent_lifecycle opencode running --tab=${workspaceId} --panel=${surfaceId}`
+              );
+            }
             return remoteTarget;
           }
         }
@@ -506,7 +573,7 @@ export const CMUXFeed = async (ctx) => {
   // A missing target (first event, or invalidated by a socket drop after an
   // app restart) re-resolves asynchronously so the state still lands.
   const sendRemoteLifecycle = (state) => {
-    if (!IS_REMOTE) return;
+    if (!isRemote()) return;
     if (!remoteTarget) {
       void resolveRemoteTarget().then((target) => {
         if (!target) return;
@@ -531,7 +598,7 @@ export const CMUXFeed = async (ctx) => {
   // this: the locally installed hooks own local notifications, and sending
   // here too would double-notify.
   const sendRemoteTurnCompleteNotification = (sid) => {
-    if (!IS_REMOTE) return;
+    if (!isRemote()) return;
     const state = sessionState(sid);
     const subtitle = sanitizeNotifyField(state.lastUserMessage, 120);
     const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
@@ -584,7 +651,7 @@ export const CMUXFeed = async (ctx) => {
       cwd: extra?.cwd || state.cwd || ctx?.directory,
       ...extra,
     };
-    if (IS_REMOTE) {
+    if (isRemote()) {
       // PID quarantine: never send a remote PID - the local cmux would
       // watch (or signal) an unrelated local process with that id.
       if (remoteTarget) {
@@ -668,7 +735,8 @@ export const CMUXFeed = async (ctx) => {
 
   return {
     event: async ({ event }) => {
-      if (IS_REMOTE) await resolveRemoteTarget();
+      await ensureIdentity();
+      if (isRemote()) await resolveRemoteTarget();
       const tracked = trackMessage(event);
       if (tracked) {
         if (tracked.hook_event_name === "UserPromptSubmit") {
