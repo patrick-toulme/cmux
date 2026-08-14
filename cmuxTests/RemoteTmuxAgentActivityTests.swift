@@ -231,6 +231,30 @@ struct RemoteTmuxAgentActivityMirrorTests {
         #expect(harness.lifecycle(panelId: panelId, key: "opencode") == .idle)
     }
 
+    /// An agent behind a wrapper binary the classifier cannot recognize
+    /// publishes running over the forwarded socket, but cannot say goodbye
+    /// when it dies. The pane returning to a plain shell is the death
+    /// signal: plugin-reported entries are dropped.
+    @Test func shellForegroundClearsPluginPublishedEntriesForWrapperAgents() throws {
+        let harness = try RemoteTmuxAgentActivityHarness()
+        defer { harness.tearDown() }
+        let panelId = try harness.panelId(forPane: 4)
+
+        // Wrapper binary comes to the foreground (classifier: unknown).
+        harness.emitForeground(paneId: 4, rawValue: "0|acme-agent")
+        // The agent's plugin reports running over the socket.
+        harness.workspace.setAgentLifecycle(key: "opencode", panelId: panelId, lifecycle: .running)
+
+        // Switching to another non-shell command must NOT clear (the agent
+        // may still own the pane, e.g. it spawned a pager).
+        harness.emitForeground(paneId: 4, rawValue: "0|less")
+        #expect(harness.lifecycle(panelId: panelId, key: "opencode") == .running)
+
+        // The wrapper exits: shell foreground drops the plugin's entry.
+        harness.emitForeground(paneId: 4, rawValue: "0|zsh")
+        #expect(harness.lifecycle(panelId: panelId, key: "opencode") == nil)
+    }
+
     /// An agent already running at attach is only visible via replay: tmux
     /// emits foreground values before the pane topology exists, then never
     /// re-emits unchanged ones.

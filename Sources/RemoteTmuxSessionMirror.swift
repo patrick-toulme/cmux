@@ -82,7 +82,14 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
         guard let workspace else { return }
         let newKey = RemoteTmuxAgentActivityClassifier.lifecycleStatusKey(forCommand: state.command)
         let previousKey = agentLifecycleKeysByPaneId[paneId]
-        guard newKey != previousKey else { return }
+        // A plain shell in the foreground means no agent process is attached
+        // to this pane anymore, and it must be handled even when the key
+        // bookkeeping is a no-op (nil → nil): an agent behind a wrapper
+        // binary (comm the classifier cannot recognize) publishes running
+        // over the socket but can never say goodbye when it is killed or
+        // suspended, and its entry would spin forever.
+        let isPlainShell = RemoteTmuxPaneForegroundState.plainShellCommands.contains(state.command)
+        guard newKey != previousKey || isPlainShell else { return }
         guard let windowId = windowIdByPane[paneId],
               let panel = windowMirrorByWindowId[windowId]?.panelsByPaneId[paneId] else {
             agentLifecycleKeysByPaneId.removeValue(forKey: paneId)
@@ -96,6 +103,15 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
             agentLifecycleKeysByPaneId[paneId] = newKey
         } else {
             agentLifecycleKeysByPaneId.removeValue(forKey: paneId)
+            if isPlainShell {
+                // Only agent keys — manual loader keys belong to
+                // workspace_loading, not to a pane process.
+                let agentKeys = workspace.agentLifecycleStatesByPanelId[panel.id]?
+                    .keys.filter(AgentHibernationLifecycleStatusKeys.isAllowed) ?? []
+                for key in agentKeys {
+                    _ = workspace.clearAgentLifecycle(key: key, panelId: panel.id)
+                }
+            }
         }
     }
 

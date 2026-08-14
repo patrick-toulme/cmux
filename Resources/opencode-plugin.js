@@ -627,6 +627,21 @@ export const CMUXFeed = async (ctx) => {
           }));
           break;
         }
+        case "session.status": {
+          // The authoritative busy/idle stream on current opencode builds
+          // ("session.idle" is deprecated there and can be cut off by
+          // process exit in one-shot runs). Lifecycle only: the Stop feed
+          // event still rides "session.idle" so feed semantics are
+          // unchanged where both fire.
+          const status = event.properties?.status;
+          const statusType = typeof status === "string" ? status : status?.type;
+          if (statusType === "idle") {
+            sendRemoteLifecycle("idle");
+          } else if (statusType === "busy" || statusType === "retry") {
+            sendRemoteLifecycle("running");
+          }
+          break;
+        }
         case "session.deleted": {
           const sid = event.properties?.info?.id;
           if (!sid) break;
