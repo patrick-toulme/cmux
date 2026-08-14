@@ -63,6 +63,23 @@ extension TerminalController {
         )
     }
 
+    /// Extracts the optional CLI-captured local `SSH_AUTH_SOCK` hint
+    /// (`agent_socket`): the agent the user's terminal was using when they ran
+    /// `cmux ssh-tmux`. Recorded per endpoint so an app-side master reopen
+    /// forwards the SAME agent the user authenticated with (shell rcs can
+    /// point terminals at gpg/1Password/hardware-token agents the GUI env lacks).
+    /// Must be an absolute path free of hidden characters; anything else is
+    /// dropped at the trust boundary.
+    nonisolated static func remoteTmuxAgentSocket(from params: [String: Any]) -> String? {
+        guard let raw = (params["agent_socket"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty,
+            raw.hasPrefix("/"),
+            !Self.remoteTmuxValueHasHiddenCharacter(raw)
+        else { return nil }
+        return raw
+    }
+
     /// Rejects control / format / separator scalars in an SSH destination or
     /// identity-file path. These hidden characters never appear in a legitimate
     /// `user@host` / alias / key path, and refusing them at the socket boundary
@@ -95,9 +112,13 @@ extension TerminalController {
             return v2Error(id: id, code: "invalid_params", message: String(localized: "socket.remoteTmux.sessionRequired", defaultValue: "session is required"))
         }
         let createIfMissing = (params["create"] as? Bool) ?? false
+        let agentSocket = Self.remoteTmuxAgentSocket(from: params)
         return v2VmCall(id: id, timeoutSeconds: 60) {
             guard let controller = await MainActor.run(body: { AppDelegate.shared?.remoteTmuxController }) else {
                 throw RemoteTmuxError.unreachable("app not ready")
+            }
+            if let agentSocket {
+                await MainActor.run { controller.recordAgentSocketHint(agentSocket, host: host) }
             }
             if let sshArgv = try await controller.attachControlStreamWhenReady(
                 host: host,
@@ -131,10 +152,14 @@ extension TerminalController {
         }
         let activate = Self.remoteTmuxActivate(from: params)
         let routing = remoteTmuxRouting(from: params)
+        let agentSocket = Self.remoteTmuxAgentSocket(from: params)
         return v2VmCall(id: id, timeoutSeconds: 60) {
             guard let controller = await MainActor.run(body: { AppDelegate.shared?.remoteTmuxController })
             else {
                 throw RemoteTmuxError.unreachable("app not ready")
+            }
+            if let agentSocket {
+                await MainActor.run { controller.recordAgentSocketHint(agentSocket, host: host) }
             }
             let windowTarget = await MainActor.run {
                 self.remoteTmuxAttachWindowTarget(routing: routing)
@@ -173,10 +198,14 @@ extension TerminalController {
             return v2Error(id: id, code: "invalid_params", message: String(localized: "socket.remoteTmux.hostRequired", defaultValue: "host is required"))
         }
         let activate = Self.remoteTmuxActivate(from: params)
+        let agentSocket = Self.remoteTmuxAgentSocket(from: params)
         return v2VmCall(id: id, timeoutSeconds: 60) {
             guard let controller = await MainActor.run(body: { AppDelegate.shared?.remoteTmuxController })
             else {
                 throw RemoteTmuxError.unreachable("app not ready")
+            }
+            if let agentSocket {
+                await MainActor.run { controller.recordAgentSocketHint(agentSocket, host: host) }
             }
             let outcome = try await controller.attachHost(
                 host: host,

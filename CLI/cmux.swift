@@ -9461,10 +9461,19 @@ struct CMUXCLI {
         // one machine at a time.
         var joinedWindowId: String?
         var hostResults: [[String: Any]] = []
+        // The terminal's live agent socket, so app-side master reopens after
+        // outages forward the SAME agent the user authenticates with here
+        // (shell rcs can point terminals at gpg/1Password/hardware-token agents the
+        // GUI environment lacks). Absent/dead socket: omitted, the app
+        // inherits its own environment.
+        let agentSocketPath = existingSSHAgentSocketPath(
+            ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
+        )
         for (position, destination) in destinations.enumerated() {
             var params: [String: Any] = ["host": destination]
             if let port { params["port"] = port }
             if let identityFile, !identityFile.isEmpty { params["identity_file"] = identityFile }
+            if let agentSocketPath { params["agent_socket"] = agentSocketPath }
             // Only the first machine may take focus; the rest attach quietly
             // into the same window.
             params["activate"] = !noFocus && position == 0

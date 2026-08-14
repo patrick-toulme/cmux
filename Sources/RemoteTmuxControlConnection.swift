@@ -167,6 +167,15 @@ final class RemoteTmuxControlConnection {
     /// what actually brings the master back. `nil` (tests, or a connection the
     /// controller has not adopted) spawns directly, preserving the old behavior.
     var masterGate: (@MainActor () async -> RemoteTmuxMasterGateOutcome)?
+    /// Builds the tmux control line that pins the server's `SSH_AUTH_SOCK`
+    /// to the endpoint's stable forwarded-agent link (see
+    /// ``RemoteTmuxHost/agentEnvPinCommand(home:connectionHash:)``). Injected
+    /// by the controller; called after EVERY attach drain — first connect and
+    /// each reconnect re-attach — because each re-attach lets tmux's
+    /// `update-environment` overwrite the session env with that connection's
+    /// raw per-generation socket path, and the pin must win afterwards every
+    /// time. `nil` result (home unresolved/unsafe) skips silently.
+    var agentEnvPinCommandProvider: (@MainActor () -> String?)?
     /// The in-flight master-gate query for the current reconnect attempt.
     /// Cancelled on `stop()` / genuine end alongside the backoff task.
     private var reconnectGateTask: Task<Void, Never>?
@@ -1048,6 +1057,14 @@ final class RemoteTmuxControlConnection {
             // the positional FIFO (see ``attachBlockDrained``).
             if !attachBlockDrained {
                 attachBlockDrained = true
+                // Pin the forwarded-agent env to the stable link now: the
+                // server has processed this attach (so `update-environment`
+                // already ran and cannot clobber the pin afterwards), and the
+                // refresh snippet in this connection's own remote command has
+                // already retargeted the link at the live socket.
+                if let pinCommand = agentEnvPinCommandProvider?() {
+                    _ = send(pinCommand)
+                }
                 requestWindows()
             } else {
                 handleCommandResult(lines: lines, isError: isError)

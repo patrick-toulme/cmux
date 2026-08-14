@@ -181,6 +181,11 @@ import Testing
             remoteCommand.contains(
                 "'cmux-remote-executable' 'tmux' '\(RemoteTmuxHost.tmuxNotFoundSentinel)'"))
         #expect(remoteCommand.hasSuffix("'-CC' 'attach-session' '-t' 'work session'"))
+        // The agent-link refresh is a PREFIX wrap: it execs the untouched
+        // resolver words, so the resolver/suffix pins above stay meaningful.
+        #expect(remoteCommand.hasPrefix("'/bin/sh' '-c' '"))
+        #expect(remoteCommand.contains("'cmux-agent-link'"))
+        #expect(remoteCommand.contains("cmux-agent-\(host.connectionHash).sock"))
     }
 
     @Test func controlArgsAppendPortAndIdentity() {
@@ -422,8 +427,17 @@ import Testing
         #expect(!argv.contains(where: { $0.hasPrefix("StrictHostKeyChecking=") }))
         // Opens the SAME shared master that discovery / the -CC client multiplex over.
         #expect(consecutive(argv, "-o", "ControlPath=\(host.controlSocketPath)"))
-        // `--` guards the destination; the remote command is the trivial `true`.
-        #expect(Array(argv.suffix(3)) == ["--", "user@host", "true"])
+        // `--` guards the destination; the remote command refreshes the
+        // forwarded-agent link and then succeeds like the old bare `true`
+        // (rerunning `cmux ssh-tmux` heals stable-path panes at auth time).
+        let dashDash = argv.firstIndex(of: "--")
+        #expect(dashDash != nil && argv[argv.index(after: dashDash!)] == "user@host")
+        let remoteCommand = argv.last ?? ""
+        #expect(remoteCommand == RemoteTmuxHost.interactiveAuthRemoteCommand(
+            connectionHash: host.connectionHash
+        ))
+        #expect(!remoteCommand.contains("\n"))
+        #expect(remoteCommand.hasSuffix("; true'"))
     }
 
     @Test func interactiveAuthInvocationGuardsDashPrefixedDestination() {

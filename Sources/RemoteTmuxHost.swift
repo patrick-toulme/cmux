@@ -343,7 +343,10 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
                 batchMode: false,
                 role: .opener
             )
-            + ["-o", "BatchMode=no", "-n", "-T", "--", destination, "true"]
+            + [
+                "-o", "BatchMode=no", "-n", "-T", "--", destination,
+                Self.interactiveAuthRemoteCommand(connectionHash: connectionHash),
+            ]
     }
 
     /// Single-quotes a value for safe interpolation into a `/bin/sh` command.
@@ -365,6 +368,132 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
 
     /// Stable stderr marker the resolver emits with exit 127 when no tmux binary is usable.
     static let tmuxNotFoundSentinel = RemoteTmuxCommandBuilder.notFoundSentinel
+
+    // MARK: - Forwarded-agent stable link
+
+    /// The remote directory expression the agent-link snippet writes into.
+    ///
+    /// Production uses `$HOME/.ssh`, expanded by the REMOTE shell (the app
+    /// cannot know the remote home when it builds the snippet). DEBUG builds
+    /// honor `CMUX_REMOTE_TMUX_AGENT_LINK_DIR_FOR_TESTING` — a literal
+    /// absolute path — because the e2e ssh shim executes remote commands
+    /// locally with the developer's real `$HOME`, and an unredirected snippet
+    /// would write symlinks into their actual `~/.ssh`.
+    static func agentLinkDirectoryExpression() -> String {
+        #if DEBUG
+        if let override = ProcessInfo.processInfo
+            .environment["CMUX_REMOTE_TMUX_AGENT_LINK_DIR_FOR_TESTING"],
+            !override.isEmpty, !override.contains("'"), !override.contains("\"") {
+            return override
+        }
+        #endif
+        return "$HOME/.ssh"
+    }
+
+    /// The stable forwarded-agent symlink path for this endpoint, relative to
+    /// the remote home. One link per connection identity: same granularity as
+    /// the ControlMaster whose per-generation socket it caches.
+    static func agentLinkRelativePath(connectionHash: String) -> String {
+        ".ssh/cmux-agent-\(connectionHash).sock"
+    }
+
+    /// One-line POSIX snippet that retargets the endpoint's stable agent
+    /// symlink at the CURRENT connection's forwarded `SSH_AUTH_SOCK`.
+    ///
+    /// Forwarded-agent sockets live exactly as long as one SSH connection,
+    /// but tmux panes capture the path into their environment forever — so
+    /// every master reopen (reconnect, app restart, `cmux ssh-tmux` rerun)
+    /// strands panes on a dead socket and `ssh-add`/SSO auth fail. Pointing
+    /// the panes at a stable symlink instead (see ``agentEnvPinCommand``)
+    /// and retargeting the link on every attach keeps one authentication
+    /// working across master generations.
+    ///
+    /// Contract (each clause maps to an existing failure classifier that
+    /// must not trip):
+    /// - never writes to stdout (pre-`%enter` stdout feeds session-gone
+    ///   classification on reconnect),
+    /// - never writes to stderr (transport stderr feeds
+    ///   `indicatesAuthRequired`; a stray `ln: Permission denied` would be
+    ///   misread as an authentication failure),
+    /// - always exits 0 (a nonzero opener probe aborts master readiness),
+    /// - silently does nothing unless `SSH_AUTH_SOCK` names a live socket
+    ///   (no ForwardAgent configured → behavior byte-identical to before).
+    static func agentLinkRefreshScript(connectionHash: String) -> String {
+        let dir = agentLinkDirectoryExpression()
+        let link = "\(dir)/cmux-agent-\(connectionHash).sock"
+        // /bin/mkdir and /bin/ln by absolute path: a non-interactive remote
+        // shell can start with a degenerate PATH, and this snippet must work
+        // (or no-op) everywhere without ever printing an error.
+        return "cmux_l=\"\(link)\"; "
+            + "if [ -n \"$SSH_AUTH_SOCK\" ] && [ -S \"$SSH_AUTH_SOCK\" ] && "
+            + "[ \"$SSH_AUTH_SOCK\" != \"$cmux_l\" ]; then "
+            + "{ /bin/mkdir -p \"\(dir)\" && /bin/ln -sfn \"$SSH_AUTH_SOCK\" \"$cmux_l\"; } "
+            + ">/dev/null 2>&1; fi"
+    }
+
+    /// Wraps an already-quoted remote command string so the agent-link
+    /// refresh runs first, then the original command execs with its argv
+    /// untouched: `'/bin/sh' '-c' '<snippet>; exec "$@"' 'cmux-agent-link'
+    /// <original words>`. A PREFIX wrap by design — every existing assertion
+    /// on the resolver command (`contains`, `hasSuffix`) stays true, and the
+    /// remote login shell only needs to word-split quoted words, the same
+    /// portability contract as the tmux resolver itself.
+    static func agentLinkWrappedRemoteCommand(
+        _ remoteCommand: String,
+        connectionHash: String
+    ) -> String {
+        let script = agentLinkRefreshScript(connectionHash: connectionHash) + "; exec \"$@\""
+        return "'/bin/sh' '-c' \(shellSingleQuoted(script)) 'cmux-agent-link' " + remoteCommand
+    }
+
+    /// The interactive auth invocation's remote command: refresh the agent
+    /// link, then succeed like the old bare `true`. Rerunning `cmux ssh-tmux`
+    /// therefore heals every stable-path pane at authentication time.
+    static func interactiveAuthRemoteCommand(connectionHash: String) -> String {
+        let script = agentLinkRefreshScript(connectionHash: connectionHash) + "; true"
+        return "'/bin/sh' '-c' \(shellSingleQuoted(script))"
+    }
+
+    /// One tmux control-mode line that pins the server's `SSH_AUTH_SOCK` to
+    /// the endpoint's stable link — session-scoped (overwrites what
+    /// `update-environment` captured from this attach) plus `-g` for sessions
+    /// later created detached. Guarded by a server-side `test -S` so users
+    /// without ForwardAgent keep tmux's native behavior bit-for-bit, and a
+    /// dangling link is never pinned over a live value.
+    ///
+    /// Returns `nil` when `home` cannot be embedded safely (relative, control
+    /// characters, or quote characters) — the pin silently skips and the next
+    /// reconnect retries with a fresh resolution.
+    static func agentEnvPinCommand(home: String, connectionHash: String) -> String? {
+        #if DEBUG
+        let dir = agentLinkDirectoryExpression()
+        let link: String
+        if dir != "$HOME/.ssh" {
+            link = "\(dir)/cmux-agent-\(connectionHash).sock"
+        } else {
+            guard let validated = validatedRemoteHome(home) else { return nil }
+            link = "\(validated)/\(agentLinkRelativePath(connectionHash: connectionHash))"
+        }
+        #else
+        guard let validated = validatedRemoteHome(home) else { return nil }
+        let link = "\(validated)/\(agentLinkRelativePath(connectionHash: connectionHash))"
+        #endif
+        return "if-shell -b 'test -S \"\(link)\"' "
+            + "'set-environment -g SSH_AUTH_SOCK \"\(link)\" ; "
+            + "set-environment SSH_AUTH_SOCK \"\(link)\"'"
+    }
+
+    /// Validates a remote home directory for safe embedding in the agent
+    /// pin line: absolute, line-safe, and free of quote characters (either
+    /// would break the nested tmux/if-shell quoting).
+    static func validatedRemoteHome(_ home: String) -> String? {
+        let trimmed = home.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/"),
+              controlModeLineSafeName(trimmed) != nil,
+              !trimmed.contains("'"),
+              !trimmed.contains("\"") else { return nil }
+        return trimmed == "/" ? trimmed : (trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed)
+    }
 
     /// Returns a non-empty tmux control-mode command argument, or `nil` when the
     /// value could break the line-oriented control stream. Shell quoting is not
@@ -419,7 +548,14 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
         let remoteCommand = Self.tmuxRemoteCommand(arguments: createIfMissing
             ? ["-CC", "new-session", "-A", "-s", sessionName]
             : ["-CC", "attach-session", "-t", sessionName])
-        args.append(contentsOf: ["--", destination, remoteCommand])
+        // Every attach (first connect AND each reconnect re-attach) refreshes
+        // the endpoint's stable forwarded-agent link before tmux starts, so
+        // the post-attach env pin always names a live socket.
+        let wrappedRemoteCommand = Self.agentLinkWrappedRemoteCommand(
+            remoteCommand,
+            connectionHash: connectionHash
+        )
+        args.append(contentsOf: ["--", destination, wrappedRemoteCommand])
         return args
     }
 

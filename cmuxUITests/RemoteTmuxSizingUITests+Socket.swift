@@ -34,6 +34,11 @@ extension RemoteTmuxSizingUITests {
         // both use this TMUX_TMPDIR to reach the one lab server.
         app.launchEnvironment["CMUX_REMOTE_TMUX_SSH_FOR_TESTING"] = shimPath
         app.launchEnvironment["TMUX_TMPDIR"] = tmuxTmpDir
+        // The shim executes "remote" commands locally: without this override
+        // the forwarded-agent link refresh would write symlinks into the
+        // developer's real ~/.ssh (dev Macs have a live launchd
+        // SSH_AUTH_SOCK; CI scrubs it).
+        app.launchEnvironment["CMUX_REMOTE_TMUX_AGENT_LINK_DIR_FOR_TESTING"] = tmuxTmpDir
         if let path = ProcessInfo.processInfo.environment["PATH"], !path.isEmpty {
             app.launchEnvironment["PATH"] = path
         }

@@ -30,6 +30,27 @@ actor RemoteTmuxSSHTransport {
     /// once even though the actor is reentrant across awaits (see that method).
     private var readinessTask: Task<Bool, Error>?
 
+    /// Remote `$HOME`, resolved once per endpoint (double-optional: `nil` =
+    /// never asked, `.some(nil)` = asked and unusable). Needed to build the
+    /// ABSOLUTE agent-link path for the post-attach env pin — programs read
+    /// `SSH_AUTH_SOCK` literally, so `~` or `$HOME` cannot ride in the value.
+    private var cachedRemoteHome: String??
+
+    /// The local `SSH_AUTH_SOCK` hint the CLI captured in the user's terminal
+    /// (see the `agent_socket` param of the remote-tmux socket verbs). Agent
+    /// relays are served by the MASTER process's agent, so when the app — not
+    /// the terminal — reopens the master after an outage, spawning it with
+    /// the terminal's agent keeps forwarding aligned with the user's real
+    /// agent even when a shell rc points the terminal at a non-launchd agent
+    /// (gpg, 1Password, hardware-token). Empty/vanished sockets fall back to the app
+    /// environment.
+    private var agentSocketHint: String?
+
+    /// Records the CLI-captured agent socket for this endpoint.
+    func setAgentSocketHint(_ path: String?) {
+        agentSocketHint = path
+    }
+
     /// - Parameters:
     ///   - host: the remote destination.
     ///   - sshExecutablePath: the local `ssh` binary (overridable for tests).
@@ -236,7 +257,52 @@ actor RemoteTmuxSSHTransport {
                 role: role
             )
             + ["--", host.destination, remoteCommand]
-        return try await Self.runProcess(executable: sshExecutablePath, arguments: sshArgs)
+        return try await Self.runProcess(
+            executable: sshExecutablePath,
+            arguments: sshArgs,
+            environment: spawnEnvironment()
+        )
+    }
+
+    /// The environment for transport spawns: the app environment, with
+    /// `SSH_AUTH_SOCK` overridden by the CLI-captured hint while that socket
+    /// still exists. Only the master opener's agent matters for relays, but
+    /// applying it uniformly keeps every spawn consistent (mux clients ignore
+    /// it). `nil` = inherit unchanged.
+    private func spawnEnvironment() -> [String: String]? {
+        guard let hint = agentSocketHint, !hint.isEmpty,
+              FileManager.default.fileExists(atPath: hint) else {
+            return nil
+        }
+        var environment = ProcessInfo.processInfo.environment
+        environment["SSH_AUTH_SOCK"] = hint
+        return environment
+    }
+
+    /// Resolves (and caches) the remote account's `$HOME` over the shared
+    /// master — a mux-only client, so it can never authenticate on its own.
+    /// Returns `nil` when the probe fails or the value cannot be embedded
+    /// safely in a control-mode line; callers skip the env pin then.
+    func remoteHomeDirectory() async -> String? {
+        if let cached = cachedRemoteHome { return cached }
+        let resolved: String?
+        do {
+            let result = try await run(
+                ["/bin/sh", "-c", "printf %s \"$HOME\""],
+                reopeningMasterIfNeeded: false
+            )
+            resolved = result.succeeded
+                ? RemoteTmuxHost.validatedRemoteHome(result.stdout)
+                : nil
+        } catch {
+            resolved = nil
+        }
+        // Cache failures too: one probe per master generation is plenty, and
+        // the attach path re-warms after reconnects (a fresh transport call
+        // clears nothing — the home of an endpoint does not change while the
+        // app runs; a wrong nil self-heals on the next app launch).
+        cachedRemoteHome = .some(resolved)
+        return resolved
     }
 
     /// Opens the shared SSH ControlMaster (if it isn't already up) and confirms it
@@ -310,8 +376,20 @@ actor RemoteTmuxSSHTransport {
         // Warm the shared master once, then confirm. The open's exit code is not
         // trusted (a non-multiplexed fallback can make the open exit 0 with no
         // live master — see the doc comment); the post-open `ssh -O check` is
-        // authoritative.
-        let opened = try await execute(["true"], role: .opener)
+        // authoritative. The probe also refreshes the endpoint's stable
+        // forwarded-agent link: this opener is the FIRST session of every new
+        // master generation, so the new connection's `SSH_AUTH_SOCK` is
+        // already in its env (sshd installs the agent listener before exec),
+        // and master reopens with no immediate control re-attach still
+        // retarget the link. The snippet is stdout/stderr-silent and always
+        // exits 0, so the readiness classification is untouched.
+        let opened = try await execute(
+            [
+                "/bin/sh", "-c",
+                RemoteTmuxHost.agentLinkRefreshScript(connectionHash: host.connectionHash) + "; true",
+            ],
+            role: .opener
+        )
         if try await masterIsRunning() { return true }
         if !opened.succeeded {
             throw RemoteTmuxError.commandFailed(exitCode: opened.exitCode, stderr: opened.stderr)
@@ -518,11 +596,15 @@ actor RemoteTmuxSSHTransport {
     /// alive because `process` retains them until this function returns.
     private static func runProcess(
         executable: String,
-        arguments: [String]
+        arguments: [String],
+        environment: [String: String]? = nil
     ) async throws -> RemoteTmuxCommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if let environment {
+            process.environment = environment
+        }
 
         let outPipe = Pipe()
         let errPipe = Pipe()

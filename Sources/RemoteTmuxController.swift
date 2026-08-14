@@ -39,6 +39,12 @@ final class RemoteTmuxController {
     /// dedupes the per-host "re-authenticate" notification.
     private var hostsAwaitingReauth: Set<String> = []
 
+    /// Remote `$HOME` per endpoint (``RemoteTmuxHost/connectionHash``), warmed
+    /// by the master gates so the synchronous
+    /// ``RemoteTmuxControlConnection/agentEnvPinCommandProvider`` can build
+    /// the absolute forwarded-agent link path at attach-drain time.
+    private var remoteHomesByConnectionHash: [String: String] = [:]
+
     init() {}
 
     /// Synchronous read of the `remoteTmux` beta flag for AppKit/socket paths
@@ -96,6 +102,46 @@ final class RemoteTmuxController {
         // reconnect loops parked awaiting re-authentication on this host (they
         // suspend rather than blink the security key; see the master gate).
         clearReauthStateAndResumeSuspended(host: host)
+        await warmRemoteHome(host: host)
+    }
+
+    /// Resolves and caches the endpoint's remote `$HOME` while a serving
+    /// master is confirmed, so the agent env pin has an absolute link path by
+    /// the time the control client's attach block drains. One transport round
+    /// trip per endpoint per app run; failures leave the cache empty and the
+    /// pin silently skips (the next gate pass retries).
+    private func warmRemoteHome(host: RemoteTmuxHost) async {
+        guard remoteHomesByConnectionHash[host.connectionHash] == nil else { return }
+        guard let home = await transport(for: host).remoteHomeDirectory() else { return }
+        remoteHomesByConnectionHash[host.connectionHash] = home
+    }
+
+    /// The tmux control line pinning `SSH_AUTH_SOCK` to this endpoint's
+    /// stable agent link, or `nil` while the remote home is unknown (or the
+    /// endpoint's home cannot be embedded safely).
+    func agentEnvPinCommand(for host: RemoteTmuxHost) -> String? {
+        #if DEBUG
+        // The test link-dir override builds an absolute path on its own, so
+        // no remote home is needed (the e2e shim runs commands locally).
+        if ProcessInfo.processInfo
+            .environment["CMUX_REMOTE_TMUX_AGENT_LINK_DIR_FOR_TESTING"] != nil {
+            return RemoteTmuxHost.agentEnvPinCommand(home: "/", connectionHash: host.connectionHash)
+        }
+        #endif
+        guard let home = remoteHomesByConnectionHash[host.connectionHash] else { return nil }
+        return RemoteTmuxHost.agentEnvPinCommand(home: home, connectionHash: host.connectionHash)
+    }
+
+    /// Records the CLI-captured local `SSH_AUTH_SOCK` for an endpoint and
+    /// hands it to the transport: when the APP (not the user's terminal)
+    /// reopens the master after an outage, spawning ssh with the terminal's
+    /// agent keeps forwarded-agent relays aligned with the agent the user
+    /// authenticated with, even when their shell rc overrides the launchd
+    /// default (gpg/1Password/hardware-token agents).
+    func recordAgentSocketHint(_ path: String?, host: RemoteTmuxHost) {
+        guard let path, !path.isEmpty else { return }
+        let transport = transport(for: host)
+        Task { await transport.setAgentSocketHint(path) }
     }
 
     // MARK: - Master gate (single-auth reconnect coordination)
@@ -114,6 +160,7 @@ final class RemoteTmuxController {
             // The master is serving again: any sibling connection parked on
             // auth can ride it now.
             clearReauthStateAndResumeSuspended(host: host)
+            await warmRemoteHome(host: host)
             return .ready
         } catch is CancellationError {
             return .retryLater
@@ -220,6 +267,12 @@ final class RemoteTmuxController {
         connection.masterGate = { [weak self] in
             guard let self else { return .retryLater }
             return await self.masterGateOutcome(host: host)
+        }
+        // Pin the forwarded-agent env after every attach drain (first connect
+        // and each reconnect re-attach). The provider is synchronous: it reads
+        // the home cache the master gates warm.
+        connection.agentEnvPinCommandProvider = { [weak self] in
+            self?.agentEnvPinCommand(for: host)
         }
         // Insert only after a successful launch, so a failed `start()` never
         // leaves a dead (never-started, `exited == false`) connection that a
@@ -340,6 +393,10 @@ final class RemoteTmuxController {
 
         do {
             try await transport.assertMinimumTmuxVersion(checkClientWhenNoServer: createIfMissing)
+            // The preflight proves a serving master: warm the remote-home
+            // cache now so the attach drain's agent env pin can fire on the
+            // very first connect, not only after the first reconnect.
+            await warmRemoteHome(host: host)
             let existing = try await transport.runTmux(["has-session", "-t", sessionName])
             if existing.succeeded {
                 return nil
