@@ -164,12 +164,17 @@ final class SidebarRowPullRequestIconView: NSView {
     }
 }
 
-/// The wordless colored agent-attention dot in a session row's status slot
-/// (amber approval / indigo input / green unseen-done). Working renders as
-/// the tinted activity spinner instead, so this view never spins.
+/// The wordless colored agent-attention dot in a session row's status slot:
+/// a solid filled circle (amber approval / indigo input / green unseen-done)
+/// that PULSES while the agent works (t3code's "sky pulse" discipline) —
+/// solid color reads at a glance where the thin spoke spinner was too faint.
 @MainActor
 final class SidebarRowAttentionDotView: NSView {
+    private static let pulseKey = "cmux.attentionDot.pulse"
+    private static let pulseDuration: CFTimeInterval = 0.9
+
     private var dotColor: NSColor = .clear
+    private var isPulsing = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -180,14 +185,16 @@ final class SidebarRowAttentionDotView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(color: NSColor, tooltip: String) {
+    func configure(color: NSColor, tooltip: String, pulsing: Bool) {
         dotColor = color
+        isPulsing = pulsing
         toolTip = tooltip
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel(tooltip)
         needsLayout = true
         applyLayerStyle()
+        updatePulseState()
     }
 
     override func layout() {
@@ -195,11 +202,35 @@ final class SidebarRowAttentionDotView: NSView {
         applyLayerStyle()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updatePulseState()
+    }
+
     private func applyLayerStyle() {
-        // The dot fills ~2/3 of the slot: same visual weight as the SwiftUI
-        // indicator, centered by the frame the slot layout assigns.
         layer?.backgroundColor = dotColor.cgColor
         layer?.cornerRadius = bounds.height / 2
+    }
+
+    private func updatePulseState() {
+        let shouldPulse = isPulsing
+            && window != nil
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard shouldPulse else {
+            layer?.removeAnimation(forKey: Self.pulseKey)
+            layer?.opacity = 1
+            return
+        }
+        guard layer?.animation(forKey: Self.pulseKey) == nil else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.35
+        pulse.duration = Self.pulseDuration
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulse.isRemovedOnCompletion = false
+        layer?.add(pulse, forKey: Self.pulseKey)
     }
 }
 

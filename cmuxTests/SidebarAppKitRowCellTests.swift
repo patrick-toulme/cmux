@@ -268,21 +268,24 @@ struct SidebarAppKitRowCellTests {
         #expect((dot?.frame.width ?? 0) > 0)
     }
 
-    /// Working shows the activity spinner even when the legacy agent spinner
-    /// inputs (experiment flag context + active agent count) are off.
+    /// Working renders the attention dot too (pulsing, solid color — the
+    /// thin spoke spinner was too faint to notice), independent of the
+    /// legacy agent spinner inputs (experiment flag context + agent count).
     @Test
-    func workingPhaseShowsSpinnerWithoutLegacySpinnerInputs() {
+    func workingPhaseShowsAttentionDotWithoutLegacySpinnerInputs() {
         let model = Self.makeModel(attentionPhase: .working)
         let cell = Self.configuredCell(model: model)
         _ = cell.layoutContent(model: model, width: 320, apply: true)
-        let spinner = Self.descendants(of: cell)
-            .compactMap { $0 as? GPUSpinnerNSView }
-            .first { !$0.isHidden }
-        #expect(spinner != nil)
         let dot = Self.descendants(of: cell)
             .compactMap { $0 as? SidebarRowAttentionDotView }
             .first
-        #expect(dot == nil || dot?.isHidden == true)
+        #expect(dot != nil)
+        #expect(dot?.isHidden == false)
+        #expect((dot?.frame.width ?? 0) > 0)
+        let spinner = Self.descendants(of: cell)
+            .compactMap { $0 as? GPUSpinnerNSView }
+            .first { !$0.isHidden }
+        #expect(spinner == nil)
     }
 
     /// Resting rows show neither the dot nor a spinner.

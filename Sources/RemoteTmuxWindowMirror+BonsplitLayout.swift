@@ -17,9 +17,24 @@ extension RemoteTmuxWindowMirror {
         nativeLayoutMetrics()?.clientGrid(layout: layout, contentSize: contentSize)
     }
 
+    /// The per-pane tab bar height the sizing engine must plan around: the
+    /// bar's EFFECTIVE height, not its nominal one. Mirror panes hold exactly
+    /// one tab each (see `remoteTmuxEmbedded`), so any visibility that hides
+    /// single-tab bars renders no bar at all — planning with the nominal
+    /// height then shorts every pane by a bar's worth of rows, tmux gets a
+    /// smaller grid than the view fits, and the difference shows as a dead
+    /// band at the bottom of every pane.
+    nonisolated static func effectivePaneTabBarHeight(
+        visibility: TabBarVisibility,
+        nominalHeight: CGFloat
+    ) -> CGFloat {
+        visibility.showsTabBar(tabCount: 1) ? nominalHeight : 0
+    }
+
     func nativeLayoutMetrics() -> RemoteTmuxNativeLayoutMetrics? {
         guard let geometry = currentGeometry() else { return nil }
-        let appearance = bonsplitController.configuration.appearance
+        let configuration = bonsplitController.configuration
+        let appearance = configuration.appearance
         return RemoteTmuxNativeLayoutMetrics(
             cellSize: CGSize(
                 width: CGFloat(geometry.cellWidthPx) / geometry.scale,
@@ -29,7 +44,10 @@ extension RemoteTmuxWindowMirror {
                 width: CGFloat(geometry.surfacePadWidthPx) / geometry.scale,
                 height: CGFloat(geometry.surfacePadHeightPx) / geometry.scale
             ),
-            tabBarHeight: appearance.tabBarHeight,
+            tabBarHeight: Self.effectivePaneTabBarHeight(
+                visibility: configuration.tabBarVisibility,
+                nominalHeight: appearance.tabBarHeight
+            ),
             dividerThickness: appearance.dividerThickness,
             paneTitleRowHeight: tmuxTitleRowPlacement != nil
                 ? CGFloat(geometry.cellHeightPx) / geometry.scale

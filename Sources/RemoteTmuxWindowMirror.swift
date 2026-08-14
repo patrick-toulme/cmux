@@ -276,7 +276,14 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
     /// from `lastCompletedSizingInputs` because a re-arm nils that field —
     /// folding the two together would reset the counter on every re-arm and
     /// unbound the loop.
-    @ObservationIgnored var outputParityRearmsSpent = 0
+    /// Output-parity re-arm budgets, one per mismatch KIND. A hosted-frame
+    /// miss (plan points never reached the views) and a grid-lag miss (the
+    /// pin never followed the assignment) have independent causes and
+    /// repairs, so each spends its own bounded budget: a pane that genuinely
+    /// cannot match its assignment must not drain the recovery the frame
+    /// side still needs.
+    @ObservationIgnored var outputParityFrameRearmsSpent = 0
+    @ObservationIgnored var outputParityGridRearmsSpent = 0
     @ObservationIgnored var outputParityRearmInputs: SizingInputs?
     @ObservationIgnored var outputParityCheckScheduled = false
 

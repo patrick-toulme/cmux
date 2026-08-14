@@ -410,7 +410,8 @@ extension RemoteTmuxWindowMirror {
         // spending the old one, or the re-arm edge would loop unbounded.
         if outputParityRearmInputs != inputs {
             outputParityRearmInputs = inputs
-            outputParityRearmsSpent = 0
+            outputParityFrameRearmsSpent = 0
+            outputParityGridRearmsSpent = 0
         }
         if inputs.visible {
             let frameBefore = renderFrameSize
@@ -492,18 +493,33 @@ extension RemoteTmuxWindowMirror {
               let completed = lastCompletedSizingInputs,
               completed == currentSizingInputs()
         else { return }
-        guard outputParityRearmsSpent < 3 else { return }
         // Re-arm on EITHER a hosted-frame miss (the plan's points never
         // reached the views) OR a grid-lag miss (the pin never followed an
         // assignment that grew); the recovery pass re-imposes the plan and
-        // re-applies the pin, and the cap bounds a miss that genuinely cannot
-        // converge.
-        guard let mismatch = outputParityMismatch() ?? gridParityMismatch() else { return }
-        outputParityRearmsSpent += 1
+        // re-applies the pin. Each KIND spends its own bounded budget: a
+        // pane that genuinely cannot match its assignment (tmux squeezed it
+        // to a floor, stale fixture geometry) would otherwise drain the
+        // shared budget in consecutive checks and starve the frame recovery
+        // a later divider miss still needs.
+        let kind: String
+        let attempt: Int
+        if let frameMismatch = outputParityMismatch() {
+            guard outputParityFrameRearmsSpent < 3 else { return }
+            outputParityFrameRearmsSpent += 1
+            kind = frameMismatch
+            attempt = outputParityFrameRearmsSpent
+        } else if let gridMismatch = gridParityMismatch() {
+            guard outputParityGridRearmsSpent < 3 else { return }
+            outputParityGridRearmsSpent += 1
+            kind = gridMismatch
+            attempt = outputParityGridRearmsSpent
+        } else {
+            return
+        }
         #if DEBUG
         RemoteTmuxSizingDiagnostics.parityRearmCount += 1
         cmuxDebugLog(
-            "remote.parity.rearm @\(windowId) \(mismatch) attempt=\(outputParityRearmsSpent)/3"
+            "remote.parity.rearm @\(windowId) \(kind) attempt=\(attempt)/3"
         )
         #endif
         setNeedsSizingPassIgnoringInputs()

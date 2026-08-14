@@ -45,6 +45,12 @@ final class RemoteTmuxController {
     /// the absolute forwarded-agent link path at attach-drain time.
     private var remoteHomesByConnectionHash: [String: String] = [:]
 
+    /// Hosts whose park has not been announced yet, coalesced into one
+    /// combined re-authentication notification (see
+    /// ``noteReconnectAuthRequired(host:)``).
+    private var pendingReauthHosts: [RemoteTmuxHost] = []
+    private var pendingReauthFlush: DispatchWorkItem?
+
     init() {}
 
     /// Synchronous read of the `remoteTmux` beta flag for AppKit/socket paths
@@ -182,16 +188,70 @@ final class RemoteTmuxController {
     }
 
     /// Records that a connection's reconnect loop parked for interactive
-    /// authentication and surfaces ONE per-host notification telling the user
-    /// how to recover — instead of the old behavior of every session retrying
+    /// authentication and surfaces ONE notification telling the user how to
+    /// recover — instead of the old behavior of every session retrying
     /// forever with a fresh silent auth attempt each round (the security-key
-    /// touch storm).
+    /// touch storm). Hosts parking together (a lid-close wake drops every
+    /// machine at once) coalesce into ONE notification carrying the single
+    /// combined `cmux ssh-tmux host1 host2 …` that re-authenticates the
+    /// whole fleet, not N copies of the per-host command.
     func noteReconnectAuthRequired(host: RemoteTmuxHost) {
         guard !hostsAwaitingReauth.contains(host.connectionHash) else { return }
         hostsAwaitingReauth.insert(host.connectionHash)
         Self.logger.warning("remote-tmux: reconnect parked, interactive auth required [\(host.connectionHash, privacy: .public)]")
         NotificationCenter.default.post(name: .remoteTmuxHostAuthStateDidChange, object: nil)
-        postReauthNotification(host: host)
+        enqueueReauthNotification(host: host)
+    }
+
+    /// Debounces per-host parks into one combined notification. Two seconds
+    /// is enough for a wake-time batch (every host's gate fails within the
+    /// same probe round) while barely delaying the single-host case.
+    private func enqueueReauthNotification(host: RemoteTmuxHost) {
+        if !pendingReauthHosts.contains(where: { $0.connectionHash == host.connectionHash }) {
+            pendingReauthHosts.append(host)
+        }
+        pendingReauthFlush?.cancel()
+        let flush = DispatchWorkItem { [weak self] in
+            self?.flushReauthNotification()
+        }
+        pendingReauthFlush = flush
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: flush)
+    }
+
+    private func flushReauthNotification() {
+        pendingReauthFlush = nil
+        let hosts = pendingReauthHosts
+        pendingReauthHosts = []
+        guard let firstHost = hosts.first else { return }
+        guard hosts.count > 1 else {
+            postReauthNotification(host: firstHost)
+            return
+        }
+        guard let workspaceId = sessionMirrors.values
+            .first(where: { $0.host.connectionHash == firstHost.connectionHash })?
+            .mirroredWorkspaceId else { return }
+        let destinations = hosts.map(\.destination)
+        let title = String(
+            localized: "remoteTmux.notification.reauthRequired.title",
+            defaultValue: "SSH authentication needed"
+        )
+        let body = String(
+            format: String(
+                localized: "remoteTmux.notification.reauthRequired.bulkBody",
+                defaultValue: "The connections to %lld machines were lost and reconnecting needs you to authenticate again. Run: cmux ssh-tmux %@"
+            ),
+            hosts.count,
+            destinations.joined(separator: " ")
+        )
+        TerminalNotificationStore.shared.addNotification(
+            tabId: workspaceId,
+            surfaceId: nil,
+            title: title,
+            subtitle: destinations.joined(separator: ", "),
+            body: body,
+            cooldownKey: "remote-tmux-reauth-bulk",
+            cooldownInterval: 300
+        )
     }
 
     /// Clears a host's awaiting-reauth state and immediately retries every
@@ -402,6 +462,7 @@ final class RemoteTmuxController {
                 return nil
             }
             if let sshArgv = Self.authRequiredAttachArgv(host: host, result: existing) {
+                await transport.shutdownMaster()
                 return sshArgv
             }
 
@@ -412,6 +473,7 @@ final class RemoteTmuxController {
             let created = try await transport.runTmux(["new-session", "-d", "-s", sessionName])
             guard created.succeeded else {
                 if let sshArgv = Self.authRequiredAttachArgv(host: host, result: created) {
+                    await transport.shutdownMaster()
                     return sshArgv
                 }
                 throw RemoteTmuxError.commandFailed(exitCode: created.exitCode, stderr: created.stderr)
@@ -422,6 +484,9 @@ final class RemoteTmuxController {
             // ``RemoteTmuxSSHTransport/indicatesInteractiveAttachRetryWillHelp``.
             if case .commandFailed(_, let stderr) = error,
                RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
+                // Clear any wake-stale master before the terminal ssh runs
+                // (see the identical step in attachHost's discovery catch).
+                await transport.shutdownMaster()
                 return host.interactiveAuthInvocation()
             }
             throw error

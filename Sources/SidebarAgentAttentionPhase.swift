@@ -156,10 +156,11 @@ struct SidebarAgentAttentionPill: View {
     }
 }
 
-/// The compact wordless state indicator on a session row: the agent
-/// activity spinner tinted by phase while work is in motion, a static
-/// colored dot for the act-now and unseen-done phases. The inbox rows
-/// carry the labels; the session row only needs the color.
+/// The compact wordless state indicator on a session row: a solid colored
+/// dot (amber approval / indigo input / green unseen-done) that PULSES
+/// while the agent works — t3code's "sky pulse" discipline. A filled
+/// circle reads at a glance where a thin spinner was too faint. The inbox
+/// rows carry the labels; the session row only needs the color.
 struct SidebarAgentAttentionStatusIndicator: View {
     let phase: SidebarAgentAttentionPhase
     let side: CGFloat
@@ -169,26 +170,26 @@ struct SidebarAgentAttentionStatusIndicator: View {
     /// color signal matters on the rows that are not).
     var usesInvertedForeground: Bool = false
 
-    private var dotColor: Color {
-        usesInvertedForeground ? Color.white.opacity(0.92) : phase.pillColor.opacity(0.92)
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pulseDimmed = false
 
-    private var spinnerColor: NSColor {
-        usesInvertedForeground ? NSColor.white.withAlphaComponent(0.85) : phase.indicatorNSColor
+    private var dotColor: Color {
+        usesInvertedForeground ? Color.white.opacity(0.95) : phase.pillColor
     }
 
     var body: some View {
-        Group {
-            if phase == .working {
-                SidebarAgentActivityIndicator(spinnerColor: spinnerColor, side: side)
-            } else {
-                Circle()
-                    .fill(dotColor)
-                    .frame(width: side * 0.66, height: side * 0.66)
-                    .frame(width: side, height: side)
+        Circle()
+            .fill(dotColor)
+            .frame(width: side * 0.74, height: side * 0.74)
+            .frame(width: side, height: side)
+            .opacity(phase == .working && pulseDimmed ? 0.35 : 1)
+            .onAppear {
+                guard phase == .working, !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                    pulseDimmed = true
+                }
             }
-        }
-        .safeHelp(phase.pillTooltip)
-        .accessibilityLabel(phase.pillTooltip)
+            .safeHelp(phase.pillTooltip)
+            .accessibilityLabel(phase.pillTooltip)
     }
 }

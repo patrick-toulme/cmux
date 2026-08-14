@@ -41,6 +41,12 @@ extension RemoteTmuxController {
             // PATHs) apply correctly. The reconnect gate stays strict.
             if case .commandFailed(_, let stderr) = error,
                RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
+                // A wake-stale master (process alive, tunnel dead — or the
+                // relay still holding the old tunnel's slot) can swallow the
+                // upcoming interactive connection with a silent
+                // "Connection closed by UNKNOWN port 65535". `-O exit` is
+                // local and fast; a dead socket fails fast harmlessly.
+                await transport(for: host).shutdownMaster()
                 return .authRequired(sshArgv: host.interactiveAuthInvocation())
             }
             throw error

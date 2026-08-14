@@ -10,6 +10,24 @@ import Testing
 #endif
 
 @Suite struct RemoteTmuxMirrorLayoutMathTests {
+    /// Mirror panes hold exactly one tab each, so `.multipleTabs` renders no
+    /// per-pane bar and sizing must plan with the bar's EFFECTIVE height.
+    /// The regression: after the nested bar was hidden, sizing kept planning
+    /// with its nominal height, tmux got one bar's worth fewer rows than the
+    /// view fits, and every pane showed a dead band at the bottom.
+    @MainActor
+    @Test func effectivePaneTabBarHeightFollowsVisibility() {
+        #expect(RemoteTmuxWindowMirror.effectivePaneTabBarHeight(
+            visibility: .multipleTabs, nominalHeight: 30
+        ) == 0)
+        #expect(RemoteTmuxWindowMirror.effectivePaneTabBarHeight(
+            visibility: .always, nominalHeight: 30
+        ) == 30)
+        // The embedded mirror configuration pins the hidden-bar policy this
+        // rule exists for.
+        #expect(BonsplitConfiguration().remoteTmuxEmbedded.tabBarVisibility == .multipleTabs)
+    }
+
     @Test func verticalStackSubtractsTabBarsAndDividerFromRows() {
         let layout = RemoteTmuxLayoutNode(
             width: 80, height: 24, x: 0, y: 0,

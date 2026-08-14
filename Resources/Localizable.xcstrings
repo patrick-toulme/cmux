@@ -204,6 +204,131 @@
         "ja": { "stringUnit": { "state": "translated", "value": "その他…" } }
       }
     },
+    "remoteTmux.notification.reauthRequired.bulkBody": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "فُقد الاتصال بـ %lld من الأجهزة وتحتاج إعادة الاتصال إلى المصادقة مرة أخرى. نفّذ: cmux ssh-tmux %@"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Veze sa %lld mašina su izgubljene i ponovno povezivanje zahtijeva ponovnu autentifikaciju. Pokrenite: cmux ssh-tmux %@"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forbindelserne til %lld maskiner blev afbrudt, og gentilslutning kræver, at du godkender igen. Kør: cmux ssh-tmux %@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Verbindungen zu %lld Maschinen sind abgebrochen; zum erneuten Verbinden musst du dich neu authentifizieren. Führe aus: cmux ssh-tmux %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The connections to %lld machines were lost and reconnecting needs you to authenticate again. Run: cmux ssh-tmux %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se perdieron las conexiones con %lld máquinas y volver a conectar requiere autenticarse de nuevo. Ejecuta: cmux ssh-tmux %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les connexions à %lld machines ont été perdues ; la reconnexion nécessite une nouvelle authentification. Exécutez : cmux ssh-tmux %@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le connessioni a %lld macchine sono state perse e la riconnessione richiede una nuova autenticazione. Esegui: cmux ssh-tmux %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 台のマシンへの接続が失われました。再接続には再認証が必要です。実行: cmux ssh-tmux %@"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ការតភ្ជាប់ទៅម៉ាស៊ីន %lld បានបាត់បង់ ហើយការតភ្ជាប់ឡើងវិញត្រូវការការផ្ទៀងផ្ទាត់ម្តងទៀត។ ដំណើរការ: cmux ssh-tmux %@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld대의 머신과의 연결이 끊겼으며 다시 연결하려면 재인증이 필요합니다. 실행: cmux ssh-tmux %@"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tilkoblingene til %lld maskiner ble brutt, og du må autentisere på nytt for å koble til igjen. Kjør: cmux ssh-tmux %@"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Połączenia z %lld maszynami zostały utracone, a ponowne połączenie wymaga ponownego uwierzytelnienia. Uruchom: cmux ssh-tmux %@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As conexões com %lld máquinas foram perdidas e reconectar exige autenticação novamente. Execute: cmux ssh-tmux %@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Соединения с %lld машинами потеряны; для переподключения нужно снова пройти аутентификацию. Выполните: cmux ssh-tmux %@"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "การเชื่อมต่อกับเครื่อง %lld เครื่องขาดหาย และการเชื่อมต่อใหม่ต้องยืนยันตัวตนอีกครั้ง เรียกใช้: cmux ssh-tmux %@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld makineyle bağlantı kesildi; yeniden bağlanmak için tekrar kimlik doğrulamanız gerekiyor. Çalıştırın: cmux ssh-tmux %@"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "З'єднання з %lld машинами втрачено; для повторного підключення потрібно знову пройти автентифікацію. Виконайте: cmux ssh-tmux %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与 %lld 台机器的连接已断开，重新连接需要再次进行身份验证。运行：cmux ssh-tmux %@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "與 %lld 台機器的連線已中斷，重新連線需要再次進行身分驗證。執行：cmux ssh-tmux %@"
+          }
+        }
+      }
+    },
     "remoteTmuxWindowRow.a11yHint": {
       "extractionState": "manual",
       "localizations": {

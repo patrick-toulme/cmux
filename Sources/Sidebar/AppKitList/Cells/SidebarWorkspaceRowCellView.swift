@@ -480,12 +480,11 @@ final class SidebarWorkspaceRowTableCellView: NSTableCellView {
         titleView.textColor = palette.primaryText
 
         // Badges / spinner / attention dot / close. The attention phase is
-        // already setting-gated in the snapshot factory: Working joins the
-        // spinner (phase-tinted), the act-now and unseen-done phases render
-        // the colored dot in the spinner's slot.
+        // already setting-gated in the snapshot factory: every phase renders
+        // the solid colored dot in the spinner's slot (pulsing while
+        // Working); the thin spoke spinner stays the legacy experiment's.
         let attentionPhase = snapshot.attentionPhase
-        let legacySpinner = model.showsAgentActivity && snapshot.activeCodingAgentCount > 0
-        let showsSpinner = legacySpinner || attentionPhase == .working
+        let showsSpinner = model.showsAgentActivity && snapshot.activeCodingAgentCount > 0
         let badgeVisible = model.unreadCount > 0
         configureStatusSlot(
             model: model,
@@ -646,11 +645,8 @@ final class SidebarWorkspaceRowTableCellView: NSTableCellView {
         let badgeFont = NSFont.systemFont(ofSize: model.scaled(9), weight: .semibold)
 
         // The dot shares the spinner's configured position and outranks it:
-        // an act-now signal must not be masked by motion or unread counts.
-        let dotPhase: SidebarAgentAttentionPhase? = {
-            guard let attentionPhase, attentionPhase != .working else { return nil }
-            return attentionPhase
-        }()
+        // an attention signal must not be masked by motion or unread counts.
+        let dotPhase = attentionPhase
         let dotOnLeading = dotPhase != nil && model.settings.loadingSpinnerPosition == .leading
         let dotOnTrailing = dotPhase != nil && model.settings.loadingSpinnerPosition == .trailing
 
@@ -671,14 +667,7 @@ final class SidebarWorkspaceRowTableCellView: NSTableCellView {
             trailingBadge.configure(count: model.unreadCount, fillColor: badgeFill, textColor: badgeText, font: badgeFont)
         }
 
-        // Working tints the spinner with the phase color on resting rows;
-        // the selected row keeps the palette tone like every other accessory.
-        let spinnerColor: NSColor = {
-            if attentionPhase == .working, !model.isActive {
-                return SidebarAgentAttentionPhase.working.indicatorNSColor
-            }
-            return palette.secondary(0.55)
-        }()
+        let spinnerColor = palette.secondary(0.55)
         leadingSpinner = Self.updateSpinner(
             existing: leadingSpinner,
             visible: leadingSpinnerVisible,
@@ -700,9 +689,10 @@ final class SidebarWorkspaceRowTableCellView: NSTableCellView {
             }
             dot.configure(
                 color: model.isActive
-                    ? palette.primaryText.withAlphaComponent(0.92)
+                    ? palette.primaryText.withAlphaComponent(0.95)
                     : dotPhase.indicatorNSColor,
-                tooltip: dotPhase.pillTooltip
+                tooltip: dotPhase.pillTooltip,
+                pulsing: dotPhase == .working
             )
             dot.isHidden = false
             attentionDot = dot
@@ -710,17 +700,12 @@ final class SidebarWorkspaceRowTableCellView: NSTableCellView {
             attentionDot?.isHidden = true
         }
         let agentCount = model.snapshot.activeCodingAgentCount
-        let tooltip: String = {
-            if attentionPhase == .working, agentCount == 0 {
-                return SidebarAgentAttentionPhase.working.pillTooltip
-            }
-            return agentCount == 1
-                ? String(localized: "sidebar.agentActivity.tooltip.one", defaultValue: "Loading (1 active task)")
-                : String.localizedStringWithFormat(
-                    String(localized: "sidebar.agentActivity.tooltip.many", defaultValue: "Loading (%lld active tasks)"),
-                    agentCount
-                )
-        }()
+        let tooltip = agentCount == 1
+            ? String(localized: "sidebar.agentActivity.tooltip.one", defaultValue: "Loading (1 active task)")
+            : String.localizedStringWithFormat(
+                String(localized: "sidebar.agentActivity.tooltip.many", defaultValue: "Loading (%lld active tasks)"),
+                agentCount
+            )
         leadingSpinner?.toolTip = tooltip
         trailingSpinner?.toolTip = tooltip
     }
@@ -1187,7 +1172,7 @@ final class SidebarWorkspaceRowTableCellView: NSTableCellView {
             )
         }
 
-        let dotSide = max(6, spinnerSide * 0.62)
+        let dotSide = max(7, spinnerSide * 0.74)
         let dotOnLeading = attentionDot?.isHidden == false
             && model.settings.loadingSpinnerPosition == .leading
         let leadingSlotActive = (!leadingBadge.isHidden) || (leadingSpinner?.isHidden == false)

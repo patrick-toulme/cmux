@@ -9626,6 +9626,36 @@ struct CMUXCLI {
                 message: "ssh-tmux: \(destination) needs interactive authentication, which requires a terminal. Run `cmux ssh-tmux \(destination)` directly from an interactive shell."
             )
         }
+        // Right after a wake, the corp relay can close the FIRST fresh
+        // connection silently ("Connection closed by UNKNOWN port 65535")
+        // while its own state catches up. Retry a non-zero ssh EXIT once
+        // when it failed faster than any credential exchange plausibly
+        // takes: a declined or timed-out security-key touch takes far
+        // longer, so the bounded retry never re-blinks a key the user just
+        // ignored. Setup failures (bad ssh path, launch or terminal-handoff
+        // errors) propagate immediately — retrying cannot change those.
+        let fastFailureThreshold: TimeInterval = 5
+        let start = Date()
+        var status = try runInteractiveAuthSSHOnce(sshArgv: sshArgv, destination: destination)
+        if status != 0, Date().timeIntervalSince(start) < fastFailureThreshold {
+            FileHandle.standardError.write(
+                Data("Connection to \(destination) dropped before authentication; retrying once…\n".utf8)
+            )
+            Thread.sleep(forTimeInterval: 2)
+            status = try runInteractiveAuthSSHOnce(sshArgv: sshArgv, destination: destination)
+        }
+        guard status == 0 else {
+            throw CLIError(
+                message: "ssh-tmux: ssh authentication to \(destination) failed (exit \(status))"
+            )
+        }
+    }
+
+    /// One interactive ssh run: returns the exit status; throws only for
+    /// setup failures (path guard, launch, terminal handoff).
+    private func runInteractiveAuthSSHOnce(
+        sshArgv: [String], destination: String
+    ) throws -> Int32 {
         // The app builds this argv with a hardcoded /usr/bin/ssh; require exactly
         // that. A basename check would accept a planted /tmp/ssh — pin the full
         // path so the CLI never execs an arbitrary command returned over the socket.
@@ -9690,11 +9720,7 @@ struct CMUXCLI {
             }
         }
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw CLIError(
-                message: "ssh-tmux: ssh authentication to \(destination) failed (exit \(process.terminationStatus))"
-            )
-        }
+        return process.terminationStatus
     }
 
     /// Generic "open a workspace, SSH into the remote, bootstrap cmuxd-remote, forward socket,
