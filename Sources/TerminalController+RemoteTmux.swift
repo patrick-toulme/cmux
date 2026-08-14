@@ -140,6 +140,42 @@ extension TerminalController {
         }
     }
 
+    /// `remote.tmux.probe` — the parallel-attach preflight: proves (or opens
+    /// via BatchMode) the host's shared SSH master WITHOUT materializing any
+    /// workspace. The CLI probes every machine concurrently, serializes only
+    /// the interactive authentications this reports, and then mirrors in
+    /// command order. Params: `host` (required), optional `port`,
+    /// `identity_file`, `agent_socket`. Returns `{ready: true}` or
+    /// `{auth_required: true, ssh_argv: […]}`.
+    nonisolated func v2RemoteTmuxProbe(id: Any?, params: [String: Any]) -> String {
+        guard RemoteTmuxController.isEnabled else {
+            return v2Error(id: id, code: "disabled", message: String(localized: "socket.remoteTmux.disabled", defaultValue: "remote tmux beta is disabled"))
+        }
+        guard let host = Self.remoteTmuxHost(from: params) else {
+            return v2Error(id: id, code: "invalid_params", message: String(localized: "socket.remoteTmux.hostRequired", defaultValue: "host is required"))
+        }
+        let agentSocket = Self.remoteTmuxAgentSocket(from: params)
+        return v2VmCall(id: id, timeoutSeconds: 45) {
+            guard let controller = await MainActor.run(body: { AppDelegate.shared?.remoteTmuxController }) else {
+                throw RemoteTmuxError.unreachable("app not ready")
+            }
+            if let agentSocket {
+                await MainActor.run { controller.recordAgentSocketHint(agentSocket, host: host) }
+            }
+            if let sshArgv = try await controller.probeAttachReadiness(host: host) {
+                return [
+                    "host": host.destination,
+                    "auth_required": true,
+                    "ssh_argv": sshArgv,
+                ]
+            }
+            return [
+                "host": host.destination,
+                "ready": true,
+            ]
+        }
+    }
+
     /// `remote.tmux.mirror` — mirror every tmux session on a host as its own
     /// sidebar workspace in the resolved window. Params: `host` (required),
     /// optional `port`, `identity_file`, `activate`, and routing selectors.

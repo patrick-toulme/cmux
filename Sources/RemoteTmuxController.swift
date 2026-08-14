@@ -122,6 +122,36 @@ final class RemoteTmuxController {
         remoteHomesByConnectionHash[host.connectionHash] = home
     }
 
+    /// The parallel-attach preflight: proves (or opens, via BatchMode) the
+    /// shared master WITHOUT materializing any workspace, so every machine
+    /// can probe concurrently while workspace creation stays in command
+    /// order. Returns `nil` when a serving master is ready, or the
+    /// interactive ssh argv when the terminal must authenticate first
+    /// (wake-stale masters are torn down before the handover, same as the
+    /// attach paths).
+    func probeAttachReadiness(host: RemoteTmuxHost) async throws -> [String]? {
+        let transport = transport(for: host)
+        do {
+            guard try await transport.ensureMasterReady() else {
+                // Readiness unconfirmed without a classifiable failure:
+                // fail closed like the burst path (the mirror call retries).
+                throw RemoteTmuxError.unreachable("SSH master not ready for \(host.destination)")
+            }
+            // Same recovery edge as a confirmed-serving master anywhere
+            // else: parked reconnect loops for this host can ride it now.
+            clearReauthStateAndResumeSuspended(host: host)
+            await warmRemoteHome(host: host)
+            return nil
+        } catch let error as RemoteTmuxError {
+            if case .commandFailed(_, let stderr) = error,
+               RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
+                await transport.shutdownMaster()
+                return host.interactiveAuthInvocation()
+            }
+            throw error
+        }
+    }
+
     /// The tmux control line pinning `SSH_AUTH_SOCK` to this endpoint's
     /// stable agent link, or `nil` while the remote home is unknown (or the
     /// endpoint's home cannot be embedded safely).

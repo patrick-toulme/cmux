@@ -9454,17 +9454,6 @@ struct CMUXCLI {
             try applyWindowOrCallerContext(to: &callerContextParams, client: client, windowRaw: nil)
         }
 
-        // Every machine after the first joins the window the first one resolved,
-        // so one invocation builds ONE window whose sidebar carries every
-        // machine. Sequential on purpose: interactive authentication (a
-        // password or security-key touch per machine) must own the terminal
-        // one machine at a time.
-        var joinedWindowId: String?
-        var hostResults: [[String: Any]] = []
-        // One unreachable machine must not strand the rest of the fleet:
-        // record the failure, keep attaching the others, report at the end.
-        // The command exits non-zero only when EVERY machine failed.
-        var failedHosts: [(destination: String, message: String)] = []
         // The terminal's live agent socket, so app-side master reopens after
         // outages forward the SAME agent the user authenticates with here
         // (shell rcs can point terminals at gpg/1Password/hardware-token agents the
@@ -9473,7 +9462,39 @@ struct CMUXCLI {
         let agentSocketPath = existingSSHAgentSocketPath(
             ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
         )
-        for (position, destination) in destinations.enumerated() {
+
+        // PIPELINE (multi-machine): every machine probes concurrently; only
+        // the interactive authentications serialize (one terminal, one
+        // security key, in command order), and each machine's mirror opens
+        // in the background the moment its auth lands — while the next
+        // machine's prompt already owns the terminal. Wall time collapses
+        // from Σ(probe + auth + mirror) to ≈ Σ(auth) + the last mirror.
+        // Workspace materialization keeps command order, so the sidebar's
+        // machine sections are stable across runs. Single machine (or an
+        // app predating remote.tmux.probe): the sequential path below.
+        var joinedWindowId: String?
+        var hostResults: [[String: Any]] = []
+        // One unreachable machine must not strand the rest of the fleet:
+        // record the failure, keep attaching the others, report at the end.
+        // The command exits non-zero only when EVERY machine failed.
+        var failedHosts: [(destination: String, message: String)] = []
+        if destinations.count >= 2, remoteTmuxProbeSupported(client: client) {
+            let bundle = try runRemoteTmuxParallelAttach(
+                destinations: destinations,
+                port: port,
+                identityFile: identityFile,
+                agentSocketPath: agentSocketPath,
+                callerContextParams: callerContextParams,
+                newWindow: newWindow,
+                noFocus: noFocus,
+                socketPath: client.socketPath,
+                jsonOutput: jsonOutput
+            )
+            joinedWindowId = bundle.joinedWindowId
+            hostResults = bundle.hostResults
+            failedHosts = bundle.failedHosts
+        } else {
+            for (position, destination) in destinations.enumerated() {
             var params: [String: Any] = ["host": destination]
             if let port { params["port"] = port }
             if let identityFile, !identityFile.isEmpty { params["identity_file"] = identityFile }
@@ -9522,6 +9543,7 @@ struct CMUXCLI {
                 let count = (result["workspace_ids"] as? [Any])?.count ?? 0
                 print("OK host=\(destination) workspaces=\(count) window=\(windowId)")
             }
+            }
         }
 
         if jsonOutput {
@@ -9557,6 +9579,257 @@ struct CMUXCLI {
         }
     }
 
+    /// Whether the app serves `remote.tmux.probe` (the parallel pipeline's
+    /// preflight). Probed with EMPTY params: a supporting app rejects them
+    /// as `invalid_params`, an older app answers `method_not_found` — either
+    /// way no network traffic and no authentication side effects.
+    private func remoteTmuxProbeSupported(client: SocketClient) -> Bool {
+        do {
+            _ = try client.sendV2(method: "remote.tmux.probe", params: [:], responseTimeout: 10)
+            return true
+        } catch let error as CLIError {
+            return error.v2Code != nil && error.v2Code != "method_not_found"
+        } catch {
+            return false
+        }
+    }
+
+    private struct RemoteTmuxAttachBundle {
+        var joinedWindowId: String?
+        var hostResults: [[String: Any]]
+        var failedHosts: [(destination: String, message: String)]
+    }
+
+    /// Shared mutable state for the parallel attach workers; every access
+    /// goes through `lock`. `@unchecked Sendable` is honest here: the class
+    /// is a lock plus locked fields.
+    private final class RemoteTmuxParallelAttachState: @unchecked Sendable {
+        let lock = NSLock()
+        var resultsByIndex: [Int: [String: Any]] = [:]
+        var failuresByIndex: [Int: String] = [:]
+        var firstWindowId: String?
+
+        func withLock<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
+    }
+
+    /// The multi-machine attach pipeline. Per machine: a concurrent PROBE
+    /// (auth discovery over the app socket, no workspaces), the interactive
+    /// AUTH leg under the terminal baton (strictly one at a time, in
+    /// command order), then the MIRROR under the materialization baton
+    /// (command order, so sidebar sections are stable) — which overlaps the
+    /// NEXT machine's authentication.
+    private func runRemoteTmuxParallelAttach(
+        destinations: [String],
+        port: Int?,
+        identityFile: String?,
+        agentSocketPath: String?,
+        callerContextParams: [String: Any],
+        newWindow: Bool,
+        noFocus: Bool,
+        socketPath: String,
+        jsonOutput: Bool
+    ) throws -> RemoteTmuxAttachBundle {
+        let state = RemoteTmuxParallelAttachState()
+        let authTurns = RemoteTmuxAttachTurnQueue(count: destinations.count)
+        let mirrorTurns = RemoteTmuxAttachTurnQueue(count: destinations.count)
+        let outputLock = NSLock()
+        func emit(_ line: String, toStderr: Bool = false) {
+            guard !jsonOutput else { return }
+            outputLock.lock()
+            defer { outputLock.unlock() }
+            if toStderr {
+                FileHandle.standardError.write(Data((line + "\n").utf8))
+            } else {
+                print(line)
+            }
+        }
+
+        let group = DispatchGroup()
+        for (index, destination) in destinations.enumerated() {
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                // Both batons ALWAYS pass, success or failure, so one broken
+                // machine can never wedge the machines behind it.
+                defer {
+                    authTurns.pass(index)
+                    mirrorTurns.pass(index)
+                    group.leave()
+                }
+                do {
+                    let workerClient = SocketClient(path: socketPath)
+                    try workerClient.connect()
+                    defer { workerClient.close() }
+
+                    var baseParams: [String: Any] = ["host": destination]
+                    if let port { baseParams["port"] = port }
+                    if let identityFile, !identityFile.isEmpty {
+                        baseParams["identity_file"] = identityFile
+                    }
+                    if let agentSocketPath { baseParams["agent_socket"] = agentSocketPath }
+
+                    emit("Connecting to \(destination)…")
+
+                    // PROBE (concurrent across machines): opens the shared
+                    // master via BatchMode when it can, or reports the
+                    // interactive argv the terminal must run.
+                    let probe = try workerClient.sendV2(
+                        method: "remote.tmux.probe",
+                        params: baseParams,
+                        responseTimeout: 75
+                    )
+                    var authArgv: [String]?
+                    if (probe["auth_required"] as? Bool) == true {
+                        guard let argv = probe["ssh_argv"] as? [String], !argv.isEmpty else {
+                            throw CLIError(
+                                message: "ssh-tmux: cmux did not return an ssh command for authentication"
+                            )
+                        }
+                        authArgv = argv
+                    }
+
+                    // AUTH (serialized, command order): the terminal and the
+                    // security key belong to exactly one machine at a time.
+                    if let authArgv {
+                        authTurns.acquire(index)
+                        emit("Authenticating to \(destination) — complete it in this terminal (password, MFA, or security key touch)…")
+                        try runInteractiveAuthSSH(sshArgv: authArgv, destination: destination)
+                        authTurns.pass(index)
+                        emit("Authenticated; opening remote tmux mirror for \(destination)…")
+                    } else {
+                        authTurns.pass(index)
+                    }
+
+                    // MIRROR (command order): workspaces materialize while
+                    // the next machine authenticates.
+                    mirrorTurns.acquire(index)
+                    var mirrorParams = baseParams
+                    mirrorParams["activate"] = !noFocus && index == 0
+                    let method: String
+                    if newWindow {
+                        if index == 0 {
+                            method = "remote.tmux.window"
+                        } else {
+                            guard let windowId = state.withLock({ state.firstWindowId }) else {
+                                throw CLIError(
+                                    message: "ssh-tmux: the first machine failed to open the shared window; rerun for \(destination)"
+                                )
+                            }
+                            mirrorParams["window_id"] = windowId
+                            method = "remote.tmux.mirror"
+                        }
+                    } else {
+                        if let windowId = state.withLock({ state.firstWindowId }) {
+                            // Join whatever window the first machine landed
+                            // in — identical to the sequential daisy-chain.
+                            mirrorParams["window_id"] = windowId
+                        } else {
+                            for (key, value) in callerContextParams {
+                                mirrorParams[key] = value
+                            }
+                        }
+                        method = "remote.tmux.mirror"
+                    }
+                    let result = try mirrorRemoteTmuxHost(
+                        destination: destination,
+                        method: method,
+                        params: mirrorParams,
+                        client: workerClient,
+                        jsonOutput: jsonOutput,
+                        allowInteractiveAuth: false
+                    )
+                    state.withLock {
+                        state.resultsByIndex[index] = result
+                        if state.firstWindowId == nil {
+                            state.firstWindowId = result["window_id"] as? String
+                        }
+                    }
+                    mirrorTurns.pass(index)
+                    let windowId = (result["window_id"] as? String) ?? ""
+                    let count = (result["workspace_ids"] as? [Any])?.count ?? 0
+                    emit("OK host=\(destination) workspaces=\(count) window=\(windowId)")
+                } catch let error as CLIError {
+                    state.withLock { state.failuresByIndex[index] = error.message }
+                    emit("FAILED host=\(destination): \(error.message)", toStderr: true)
+                } catch {
+                    let message = String(describing: error)
+                    state.withLock { state.failuresByIndex[index] = message }
+                    emit("FAILED host=\(destination): \(message)", toStderr: true)
+                }
+            }
+        }
+        group.wait()
+
+        var bundle = RemoteTmuxAttachBundle(
+            joinedWindowId: state.withLock { state.firstWindowId },
+            hostResults: [],
+            failedHosts: []
+        )
+        for (index, destination) in destinations.enumerated() {
+            if let result = state.withLock({ state.resultsByIndex[index] }) {
+                bundle.hostResults.append(result)
+            } else if let message = state.withLock({ state.failuresByIndex[index] }) {
+                bundle.failedHosts.append((destination, message))
+            }
+        }
+        return bundle
+    }
+
+    /// A strict FIFO baton for resources the parallel attach workers must
+    /// use one at a time and in command-line order: the terminal (one tty,
+    /// one security key — concurrent prompts would be unattributable) and
+    /// workspace materialization (so the sidebar's machine sections always
+    /// land in the order the user typed).
+    ///
+    /// Turn 0 starts available. `acquire(i)` blocks until every earlier
+    /// index has passed its turn; `pass(i)` hands the baton to `i + 1`
+    /// (acquiring first if the holder never did — turns pass strictly in
+    /// order even for workers that skip the resource). Both are idempotent
+    /// per index, so workers can `defer` a pass unconditionally.
+    private final class RemoteTmuxAttachTurnQueue {
+        private let count: Int
+        private let semaphores: [DispatchSemaphore]
+        private let lock = NSLock()
+        private var acquired = Set<Int>()
+        private var passed = Set<Int>()
+
+        init(count: Int) {
+            self.count = count
+            // All semaphores start at 0 and turn 0 is opened with a SIGNAL,
+            // never with an initial value of 1: libdispatch traps when a
+            // semaphore deallocates below its INITIAL value, and a waited
+            // turn would end at 0 against an initial 1. Signaled-but-never-
+            // waited turns (tail indices) deallocate above initial, which
+            // is allowed.
+            semaphores = (0..<max(count, 1)).map { _ in DispatchSemaphore(value: 0) }
+            semaphores[0].signal()
+        }
+
+        func acquire(_ index: Int) {
+            lock.lock()
+            let alreadyAcquired = acquired.contains(index)
+            if !alreadyAcquired { acquired.insert(index) }
+            lock.unlock()
+            guard !alreadyAcquired else { return }
+            semaphores[index].wait()
+        }
+
+        func pass(_ index: Int) {
+            lock.lock()
+            let alreadyPassed = passed.contains(index)
+            if !alreadyPassed { passed.insert(index) }
+            lock.unlock()
+            guard !alreadyPassed else { return }
+            acquire(index)
+            if index + 1 < count {
+                semaphores[index + 1].signal()
+            }
+        }
+    }
+
     /// One machine's mirror round-trip: sends `method`, runs the interactive
     /// authentication handoff at most once, and returns the mirrored payload.
     /// Never spins on auth-required.
@@ -9565,7 +9838,8 @@ struct CMUXCLI {
         method: String,
         params: [String: Any],
         client: SocketClient,
-        jsonOutput: Bool
+        jsonOutput: Bool,
+        allowInteractiveAuth: Bool = true
     ) throws -> [String: Any] {
         var didAuthenticate = false
         while true {
@@ -9578,6 +9852,16 @@ struct CMUXCLI {
                 return result
             }
             if (result["auth_required"] as? Bool) == true {
+                // The parallel pipeline authenticates under its terminal
+                // baton BEFORE mirroring; a re-auth here would prompt out
+                // of order against another machine's prompt. The window
+                // between probe and mirror is seconds, so treat the rare
+                // race as a per-machine failure with a rerun hint.
+                guard allowInteractiveAuth else {
+                    throw CLIError(
+                        message: "ssh-tmux: \(destination) needs authentication again (the connection dropped mid-attach); rerun: cmux ssh-tmux \(destination)"
+                    )
+                }
                 guard !didAuthenticate else {
                     throw CLIError(
                         message: "ssh-tmux: authentication did not open the connection to \(destination)"
@@ -9621,7 +9905,16 @@ struct CMUXCLI {
         // Interactive auth needs a controlling tty to prompt on. In a non-tty
         // context (script, pipe, URL handler) ssh can't prompt and would hang or
         // fail opaquely, so refuse early with an actionable message.
-        guard isatty(STDIN_FILENO) == 1 else {
+        var hasInteractiveTerminal = isatty(STDIN_FILENO) == 1
+#if DEBUG
+        // The e2e harness drives the auth pipeline through a fake ssh with a
+        // piped stdin; the shim never prompts, so the tty requirement is the
+        // only thing standing between the tests and the real code path.
+        if ProcessInfo.processInfo.environment["CMUX_REMOTE_TMUX_ALLOW_NON_TTY_AUTH_FOR_TESTING"] == "1" {
+            hasInteractiveTerminal = true
+        }
+#endif
+        guard hasInteractiveTerminal else {
             throw CLIError(
                 message: "ssh-tmux: \(destination) needs interactive authentication, which requires a terminal. Run `cmux ssh-tmux \(destination)` directly from an interactive shell."
             )
