@@ -794,6 +794,67 @@ extension FeedCoordinator {
         }
     }
 
+    /// Pending blocking feed decisions attributed to `workspaceId`, with
+    /// their kinds. Matches the "Needs input" badge semantics exactly: only
+    /// decisions that parked a hook AND surfaced an attention overlay count
+    /// (zero-wait or requestId-less pushes never did either). Kind comes
+    /// from the store's pending items via the payload requestId; workspace
+    /// attribution from the waiter's attention target, resolving panel
+    /// targets to their CURRENT owner so a moved pane counts against its
+    /// live workspace. Dock-scoped targets are window-owned and excluded.
+    @MainActor
+    func pendingBlockingDecisions(forWorkspace workspaceId: UUID) -> [FeedPendingBlockingDecision] {
+        let bindings = liveWaiterAttentionBindings()
+        guard !bindings.isEmpty, let store else { return [] }
+        var kindsByRequestId: [String: WorkstreamKind] = [:]
+        for item in store.pending {
+            switch item.payload {
+            case .permissionRequest(let requestId, _, _, _),
+                 .exitPlan(let requestId, _, _),
+                 .question(let requestId, _):
+                kindsByRequestId[requestId] = item.kind
+            default:
+                continue
+            }
+        }
+        return bindings.compactMap { binding in
+            guard let kind = kindsByRequestId[binding.requestId] else { return nil }
+            let ownerWorkspaceId: UUID?
+            switch binding.target {
+            case .workspace(let id, _):
+                ownerWorkspaceId = id
+            case .panel:
+                guard let fallback = pendingAttentionStates[binding.target]?.fallbackOwner else {
+                    return nil
+                }
+                switch liveAttentionOwner(for: binding.target, fallback: fallback) {
+                case .workspace(let workspace): ownerWorkspaceId = workspace.id
+                case .dock: ownerWorkspaceId = nil
+                }
+            case .dock:
+                ownerWorkspaceId = nil
+            }
+            guard ownerWorkspaceId == workspaceId else { return nil }
+            return FeedPendingBlockingDecision(
+                kind: kind,
+                requestId: binding.requestId,
+                panelId: binding.target.panelId
+            )
+        }
+    }
+
+    /// Thread-safe copy of the live waiters' attention bindings: requestIds
+    /// still blocking a parked hook, paired with the overlay target surfaced
+    /// for them.
+    private func liveWaiterAttentionBindings() -> [(requestId: String, target: FeedAttentionTarget)] {
+        waiterLock.lock()
+        defer { waiterLock.unlock() }
+        return waiters.compactMap { requestId, waiter in
+            guard waiter.decision == nil, let target = waiter.attentionTarget else { return nil }
+            return (requestId, target)
+        }
+    }
+
     /// Resolves a pending overlay's current mutation owner. A panel target is
     /// looked up at conclusion time so transfer-carried runtime is cleared at
     /// its destination; the retained owner is only a best-effort fallback for

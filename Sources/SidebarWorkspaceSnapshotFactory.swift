@@ -101,6 +101,19 @@ struct SidebarWorkspaceSnapshotFactory {
                 showsAgentActivity: showsAgentActivity,
                 statesByPanelId: workspace.agentLifecycleStatesByPanelId
             ),
+            // Gated by the Show Agent Activity SETTING only (default on) —
+            // deliberately NOT by the spinner experiment flag, which gates
+            // the spinner glyph alone.
+            attentionPhase: settings.details.showAgentActivity
+                ? SidebarAgentAttentionResolver.phase(
+                    pendingDecisionKinds: FeedCoordinator.shared
+                        .pendingBlockingDecisions(forWorkspace: workspace.id)
+                        .map(\.kind),
+                    statesByPanelId: workspace.agentLifecycleStatesByPanelId,
+                    hasUnreadTurnComplete: TerminalNotificationStore.shared
+                        .hasUnreadTurnComplete(forTabId: workspace.id)
+                )
+                : nil,
             compactGitBranchSummaryText: compactGitBranchSummaryText,
             compactDirectoryCandidates: compactDirectoryCandidates,
             compactBranchDirectoryCandidates: compactBranchDirectoryCandidates,

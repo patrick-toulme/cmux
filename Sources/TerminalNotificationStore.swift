@@ -143,6 +143,13 @@ final class TerminalNotificationStore: ObservableObject {
         var unreadByTabSurface = Set<TabSurfaceKey>()
         var latestUnreadByTabId: [UUID: TerminalNotification] = [:]
         var latestByTabId: [UUID: TerminalNotification] = [:]
+        /// Workspaces with an UNREAD turn-complete notification: the t3code
+        /// "completed after last visit" signal behind the sidebar Done pill.
+        var unreadTurnCompleteTabIds: Set<UUID> = []
+        /// Same signal at surface granularity (tab+surface, plus the panel
+        /// alias), so per-window rows can show Done for exactly the window
+        /// whose agent finished.
+        var unreadTurnCompleteTabSurfaceKeys: Set<TabSurfaceKey> = []
     }
 
     static let shared = TerminalNotificationStore(
@@ -1017,6 +1024,24 @@ final class TerminalNotificationStore: ObservableObject {
         unreadCount(forTabId: tabId) > 0
     }
 
+    /// Whether the workspace has an UNREAD turn-complete notification — the
+    /// "agent finished after the user last visited" signal. Visiting the
+    /// workspace clears it through the ordinary read lifecycle.
+    func hasUnreadTurnComplete(forTabId tabId: UUID) -> Bool {
+        indexes.unreadTurnCompleteTabIds.contains(tabId)
+    }
+
+    /// Surface-scoped variant for per-window rows: whether any of
+    /// `surfaceIds` (surface or panel identity) carries an unread
+    /// turn-complete notification in this workspace.
+    func hasUnreadTurnComplete(forTabId tabId: UUID, surfaceIds: Set<UUID>) -> Bool {
+        surfaceIds.contains { surfaceId in
+            indexes.unreadTurnCompleteTabSurfaceKeys.contains(
+                TabSurfaceKey(tabId: tabId, surfaceId: surfaceId)
+            )
+        }
+    }
+
     func canMarkWorkspaceRead(forTabIds tabIds: [UUID]) -> Bool {
         tabIds.contains { workspaceIsUnread(forTabId: $0) }
     }
@@ -1095,6 +1120,7 @@ final class TerminalNotificationStore: ObservableObject {
         subtitle: String,
         body: String,
         replyShape: TerminalNotificationReplyShape = .none,
+        agentCategory: AgentNotifyCategory? = nil,
         retargetsToLiveSurfaceOwner: Bool = true,
         cooldownKey: String? = nil,
         cooldownInterval: TimeInterval? = nil,
@@ -1142,6 +1168,7 @@ final class TerminalNotificationStore: ObservableObject {
             subtitle: subtitle,
             body: body,
             replyShape: replyShape,
+            agentCategory: agentCategory,
             retargetsToLiveSurfaceOwner: retargetsToLiveSurfaceOwner,
             correlationKey: cooldownKey,
             resolvedHooks: resolvedHooks
@@ -1310,6 +1337,7 @@ final class TerminalNotificationStore: ObservableObject {
         subtitle: String,
         body: String,
         replyShape: TerminalNotificationReplyShape = .none,
+        agentCategory: AgentNotifyCategory? = nil,
         retargetsToLiveSurfaceOwner: Bool,
         correlationKey: String?,
         resolvedHooks: [CmuxResolvedNotificationHook]?
@@ -1352,6 +1380,7 @@ final class TerminalNotificationStore: ObservableObject {
                 subtitle: subtitle,
                 body: body,
                 replyShape: replyShape,
+                agentCategory: agentCategory,
                 cwd: cwd,
                 isAppFocused: isAppFocused,
                 isFocusedPanel: isFocusedPanel
@@ -1383,6 +1412,7 @@ final class TerminalNotificationStore: ObservableObject {
                 subtitle: payload.subtitle,
                 body: payload.body,
                 replyShape: request.replyShape,
+                agentCategory: request.agentCategory,
                 cwd: request.cwd,
                 isAppFocused: request.isAppFocused,
                 isFocusedPanel: request.isFocusedPanel
@@ -1424,7 +1454,8 @@ final class TerminalNotificationStore: ObservableObject {
             paneFlash: effects.paneFlash,
             scrollPosition: scrollPosition,
             clickAction: clickAction,
-            replyShape: request.replyShape
+            replyShape: request.replyShape,
+            agentCategory: request.agentCategory
         )
         if effects.record {
             recordNotification(
@@ -2501,6 +2532,17 @@ final class TerminalNotificationStore: ObservableObject {
             }
             if indexes.latestUnreadByTabId[notification.tabId] == nil {
                 indexes.latestUnreadByTabId[notification.tabId] = notification
+            }
+            if notification.agentCategory == .turnComplete {
+                indexes.unreadTurnCompleteTabIds.insert(notification.tabId)
+                indexes.unreadTurnCompleteTabSurfaceKeys.insert(
+                    TabSurfaceKey(tabId: notification.tabId, surfaceId: notification.surfaceId)
+                )
+                if let panelId = notification.panelId, panelId != notification.surfaceId {
+                    indexes.unreadTurnCompleteTabSurfaceKeys.insert(
+                        TabSurfaceKey(tabId: notification.tabId, surfaceId: panelId)
+                    )
+                }
             }
         }
         return indexes

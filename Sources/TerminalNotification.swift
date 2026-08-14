@@ -17,6 +17,11 @@ struct TerminalNotification: Identifiable, Hashable, Sendable {
     var scrollPosition: TerminalNotificationScrollPosition?
     var clickAction: TerminalNotificationClickAction?
     var replyShape: TerminalNotificationReplyShape = .none
+    /// The agent hook category this notification was gated under
+    /// (turn-complete / needs-permission / idle-reminder), retained so unread
+    /// projections can distinguish "agent finished a turn" from other unread
+    /// noise. `nil` for uncategorized producers.
+    var agentCategory: AgentNotifyCategory?
 
     init(
         id: UUID,
@@ -33,7 +38,8 @@ struct TerminalNotification: Identifiable, Hashable, Sendable {
         paneFlash: Bool = true,
         scrollPosition: TerminalNotificationScrollPosition? = nil,
         clickAction: TerminalNotificationClickAction? = nil,
-        replyShape: TerminalNotificationReplyShape = .none
+        replyShape: TerminalNotificationReplyShape = .none,
+        agentCategory: AgentNotifyCategory? = nil
     ) {
         self.id = id
         self.tabId = tabId
@@ -50,6 +56,7 @@ struct TerminalNotification: Identifiable, Hashable, Sendable {
         self.scrollPosition = scrollPosition
         self.clickAction = clickAction
         self.replyShape = replyShape
+        self.agentCategory = agentCategory
     }
 
     func matches(tabId targetTabId: UUID, surfaceId targetSurfaceId: UUID?) -> Bool {

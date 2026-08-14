@@ -16,6 +16,7 @@ extension SidebarWorkspaceSnapshotBuilder.Snapshot {
         let checklistTotalCount: Int
         let checklistFirstUncheckedText: String?
         let activeCodingAgentCount: Int
+        let attentionPhase: SidebarAgentAttentionPhase?
     }
 
     var contextMenuImmediateFields: ContextMenuImmediateFields {
@@ -33,7 +34,8 @@ extension SidebarWorkspaceSnapshotBuilder.Snapshot {
             checklistCompletedCount: checklistCompletedCount,
             checklistTotalCount: checklistTotalCount,
             checklistFirstUncheckedText: checklistFirstUncheckedText,
-            activeCodingAgentCount: activeCodingAgentCount
+            activeCodingAgentCount: activeCodingAgentCount,
+            attentionPhase: attentionPhase
         )
     }
 
@@ -58,6 +60,8 @@ extension SidebarWorkspaceSnapshotBuilder.Snapshot {
             // The loading spinner is a leading row glyph like mediaActivity, so
             // it also updates immediately while the context menu is open.
             activeCodingAgentCount: snapshot.activeCodingAgentCount,
+            // The attention pill carries the same act-now urgency.
+            attentionPhase: snapshot.attentionPhase,
             compactGitBranchSummaryText: compactGitBranchSummaryText,
             compactDirectoryCandidates: compactDirectoryCandidates,
             compactBranchDirectoryCandidates: compactBranchDirectoryCandidates,

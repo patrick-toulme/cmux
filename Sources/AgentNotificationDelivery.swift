@@ -46,6 +46,7 @@ struct AgentNotificationDelivery: Sendable {
             subtitle: subtitle,
             body: body,
             replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: category?.rawValue),
+            agentCategory: category,
             coalesces: coalesces
         )
         return true

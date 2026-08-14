@@ -195,6 +195,7 @@ struct TerminalNotificationPolicyRequest: Sendable {
     let subtitle: String
     let body: String
     let replyShape: TerminalNotificationReplyShape
+    let agentCategory: AgentNotifyCategory?
     let cwd: String?
     let isAppFocused: Bool
     let isFocusedPanel: Bool
@@ -208,6 +209,7 @@ struct TerminalNotificationPolicyRequest: Sendable {
         subtitle: String,
         body: String,
         replyShape: TerminalNotificationReplyShape = .none,
+        agentCategory: AgentNotifyCategory? = nil,
         cwd: String?,
         isAppFocused: Bool,
         isFocusedPanel: Bool
@@ -221,6 +223,7 @@ struct TerminalNotificationPolicyRequest: Sendable {
         self.subtitle = subtitle
         self.body = body
         self.replyShape = replyShape
+        self.agentCategory = agentCategory
         self.cwd = cwd
         self.isAppFocused = isAppFocused
         self.isFocusedPanel = isFocusedPanel

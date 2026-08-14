@@ -48,6 +48,8 @@ struct SidebarWorkspaceSnapshotBuilder {
         let latestLog: SidebarLogEntry?
         let progress: SidebarProgressState?
         let activeCodingAgentCount: Int
+        /// t3code-style attention phase for the row pill; nil = resting.
+        let attentionPhase: SidebarAgentAttentionPhase?
         let compactGitBranchSummaryText: String?
         let compactDirectoryCandidates: [String]
         let compactBranchDirectoryCandidates: [String]

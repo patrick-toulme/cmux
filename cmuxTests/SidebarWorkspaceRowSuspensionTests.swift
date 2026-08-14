@@ -33,6 +33,7 @@ struct SidebarWorkspaceRowSuspensionTests {
             latestLog: nil,
             progress: nil,
             activeCodingAgentCount: 0,
+            attentionPhase: nil,
             compactGitBranchSummaryText: nil,
             compactDirectoryCandidates: [],
             compactBranchDirectoryCandidates: [],

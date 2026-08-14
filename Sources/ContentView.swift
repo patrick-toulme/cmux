@@ -11237,6 +11237,10 @@ struct VerticalTabsSidebar: View, Equatable {
         let memberWorkspaceIdsByRemoteHostKey: [String: [UUID]]
         let collapsedRemoteHostKeys: Set<String>
         let remoteHostAuthRequiredKeys: Set<String>
+        /// The agent inbox (t3code-style): mirrored tmux windows whose agent
+        /// needs the user right now, decisions first, in stable
+        /// machine/session order. Empty means no inbox section renders.
+        let agentInboxItems: [SidebarAgentInboxItemRef]
         let workspaceRenderItems: [SidebarWorkspaceRenderItem]
         let visibleWorkspaceRowIds: [UUID]
 
@@ -11373,20 +11377,33 @@ struct VerticalTabsSidebar: View, Equatable {
                     .hostAwaitsReauthentication(connectionHash: hostKey) == true
             }
         )
+        // The agent inbox (t3code-style): every mirrored tmux window whose
+        // agent needs the user right now — a decision to approve, a question
+        // to answer, or a finish to review. Built outside the ViewBuilder
+        // (bare loops are not statements there).
+        let agentInboxItems = Self.agentInboxItems(
+            tabs: tabs,
+            remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
+            showsAttentionStates: tabItemSettings.details.showAgentActivity
+        )
         let workspaceRenderItems = SidebarWorkspaceRenderItem.renderItems(
             tabs: tabs,
             groupsById: workspaceGroupById,
             remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
-            collapsedRemoteHostKeys: collapsedRemoteHostKeys
+            collapsedRemoteHostKeys: collapsedRemoteHostKeys,
+            agentInboxItems: agentInboxItems
         )
         let numberedWorkspaceIndexById = SidebarWorkspaceRenderItem.numberedWorkspaceIndexById(
             from: workspaceRenderItems
         )
-        // Machine section headers are containers, not reorder/drop rows: keep
-        // them out of the row-id projection the drag machinery consumes.
+        // Machine section headers and agent inbox rows are containers, not
+        // reorder/drop rows: keep them out of the row-id projection the drag
+        // machinery consumes.
         let visibleWorkspaceRowIds = workspaceRenderItems.compactMap { item -> UUID? in
-            if case .remoteHostSection = item { return nil }
-            return item.rowWorkspaceId
+            switch item {
+            case .remoteHostSection, .agentInboxHeader, .remoteTmuxWindow: return nil
+            case .groupHeader, .workspace: return item.rowWorkspaceId
+            }
         }
         let draggedSidebarTabId = dragState.draggedTabId
         let dropIndicatorScope = dragState.dropIndicatorScope
@@ -11440,6 +11457,7 @@ struct VerticalTabsSidebar: View, Equatable {
             memberWorkspaceIdsByRemoteHostKey: memberWorkspaceIdsByRemoteHostKey,
             collapsedRemoteHostKeys: collapsedRemoteHostKeys,
             remoteHostAuthRequiredKeys: remoteHostAuthRequiredKeys,
+            agentInboxItems: agentInboxItems,
             workspaceRenderItems: workspaceRenderItems,
             visibleWorkspaceRowIds: visibleWorkspaceRowIds
         )
@@ -11604,6 +11622,16 @@ struct VerticalTabsSidebar: View, Equatable {
         ) { workspaceId in
             guard isPresented else { return }
             scheduleWorkspaceSnapshotRefresh(workspaceId: workspaceId)
+        }
+        // The attention pill's unseen-done phase reads notification unread
+        // state, which changes outside the workspace observation models
+        // (delivery, visit clears, mark read/unread). Coalesced refresh;
+        // snapshot equality bails untouched rows.
+        .onReceive(notificationStore.$notifications) { _ in
+            guard isPresented else { return }
+            for workspaceId in renderContext.workspaceIds {
+                scheduleWorkspaceSnapshotRefresh(workspaceId: workspaceId)
+            }
         }
         .onAppear {
             if isPresented, !featureFlags.isAppKitSidebarListEnabled {
@@ -12016,6 +12044,17 @@ struct VerticalTabsSidebar: View, Equatable {
                 return sidebarRemoteHostSectionTableConfiguration(
                     hostKey: hostKey,
                     firstWorkspaceId: firstWorkspaceId,
+                    renderContext: renderContext
+                )
+            case .agentInboxHeader(let firstWorkspaceId):
+                return sidebarAgentInboxHeaderTableConfiguration(
+                    firstWorkspaceId: firstWorkspaceId,
+                    renderContext: renderContext
+                )
+            case .remoteTmuxWindow(let workspaceId, let windowPanelId):
+                return sidebarRemoteTmuxWindowTableConfiguration(
+                    workspaceId: workspaceId,
+                    windowPanelId: windowPanelId,
                     renderContext: renderContext
                 )
             case .workspace(let workspaceId):
@@ -13700,6 +13739,14 @@ struct VerticalTabsSidebar: View, Equatable {
                         unreadCountForWorkspace: {
                             unreadSummariesByWorkspaceId[$0]?.unreadCount ?? 0
                         }
+                    )
+                case .agentInboxHeader:
+                    sidebarAgentInboxHeader(renderContext: renderContext)
+                case .remoteTmuxWindow(let workspaceId, let windowPanelId):
+                    sidebarRemoteTmuxWindowRow(
+                        workspaceId: workspaceId,
+                        windowPanelId: windowPanelId,
+                        renderContext: renderContext
                     )
                 case .workspace(let workspaceId):
                     if let input = listSnapshot.workspaceRowsById[workspaceId] {
@@ -15898,6 +15945,20 @@ struct TabItemView: View, Equatable {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .alignmentGuide(.sidebarTitleFirstLineCenter) { _ in titleFirstLineCenter }
                         .layoutPriority(1)
+                }
+
+                // Attention indicator: approval > input > working > unseen
+                // done, as a wordless colored spinner/dot (the agent inbox
+                // rows carry the labels). The Working phase yields to the
+                // loading spinner when it already carries that signal here.
+                if let attentionPhase = workspaceSnapshot.attentionPhase,
+                   !(attentionPhase == .working && showsLoadingSpinner) {
+                    SidebarAgentAttentionStatusIndicator(
+                        phase: attentionPhase,
+                        side: scaledFontSize(11),
+                        usesInvertedForeground: usesInvertedActiveForeground
+                    )
+                    .alignmentGuide(.sidebarTitleFirstLineCenter) { $0[VerticalAlignment.center] }
                 }
 
                 if trailingStatusActive || canCloseWorkspace {

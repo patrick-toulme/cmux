@@ -14,7 +14,8 @@ struct SidebarAppKitRowCellTests {
         customDescription: String? = nil,
         isPinned: Bool = false,
         metadataEntries: [SidebarStatusEntry] = [],
-        metadataBlocks: [SidebarMetadataBlock] = []
+        metadataBlocks: [SidebarMetadataBlock] = [],
+        attentionPhase: SidebarAgentAttentionPhase? = nil
     ) -> SidebarWorkspaceSnapshotBuilder.Snapshot {
         SidebarWorkspaceSnapshotBuilder.Snapshot(
             presentationKey: SidebarWorkspaceSnapshotFactory.presentationKey(
@@ -36,6 +37,7 @@ struct SidebarAppKitRowCellTests {
             latestLog: nil,
             progress: nil,
             activeCodingAgentCount: 0,
+            attentionPhase: attentionPhase,
             compactGitBranchSummaryText: nil,
             compactDirectoryCandidates: [],
             compactBranchDirectoryCandidates: [],
@@ -65,7 +67,8 @@ struct SidebarAppKitRowCellTests {
         metadataEntries: [SidebarStatusEntry] = [],
         metadataBlocks: [SidebarMetadataBlock] = [],
         shortcutHintText: String? = nil,
-        isMarkdownExpanded: Bool = false
+        isMarkdownExpanded: Bool = false,
+        attentionPhase: SidebarAgentAttentionPhase? = nil
     ) -> SidebarWorkspaceRowModel {
         let resolvedSettings = settings
             ?? SidebarTabItemSettingsSnapshot(defaults: UserDefaults(suiteName: UUID().uuidString)!)
@@ -76,7 +79,8 @@ struct SidebarAppKitRowCellTests {
                 customDescription: customDescription,
                 isPinned: isPinned,
                 metadataEntries: metadataEntries,
-                metadataBlocks: metadataBlocks
+                metadataBlocks: metadataBlocks,
+                attentionPhase: attentionPhase
             ),
             settings: resolvedSettings,
             isActive: isActive,
@@ -244,6 +248,57 @@ struct SidebarAppKitRowCellTests {
 
     fileprivate static func descendants(of view: NSView) -> [NSView] {
         view.subviews + view.subviews.flatMap { descendants(of: $0) }
+    }
+
+    // MARK: - Agent attention indicator (native cell)
+
+    /// The act-now phases render the colored attention dot in the native
+    /// cell. This is exactly the render gap that shipped when the indicator
+    /// existed only in the SwiftUI row: the AppKit backend showed nothing.
+    @Test
+    func attentionDotRendersForActNowPhases() {
+        let model = Self.makeModel(attentionPhase: .pendingApproval)
+        let cell = Self.configuredCell(model: model)
+        _ = cell.layoutContent(model: model, width: 320, apply: true)
+        let dot = Self.descendants(of: cell)
+            .compactMap { $0 as? SidebarRowAttentionDotView }
+            .first
+        #expect(dot != nil)
+        #expect(dot?.isHidden == false)
+        #expect((dot?.frame.width ?? 0) > 0)
+    }
+
+    /// Working shows the activity spinner even when the legacy agent spinner
+    /// inputs (experiment flag context + active agent count) are off.
+    @Test
+    func workingPhaseShowsSpinnerWithoutLegacySpinnerInputs() {
+        let model = Self.makeModel(attentionPhase: .working)
+        let cell = Self.configuredCell(model: model)
+        _ = cell.layoutContent(model: model, width: 320, apply: true)
+        let spinner = Self.descendants(of: cell)
+            .compactMap { $0 as? GPUSpinnerNSView }
+            .first { !$0.isHidden }
+        #expect(spinner != nil)
+        let dot = Self.descendants(of: cell)
+            .compactMap { $0 as? SidebarRowAttentionDotView }
+            .first
+        #expect(dot == nil || dot?.isHidden == true)
+    }
+
+    /// Resting rows show neither the dot nor a spinner.
+    @Test
+    func restingPhaseShowsNoAttentionIndicator() {
+        let model = Self.makeModel(attentionPhase: nil)
+        let cell = Self.configuredCell(model: model)
+        _ = cell.layoutContent(model: model, width: 320, apply: true)
+        let visibleDot = Self.descendants(of: cell)
+            .compactMap { $0 as? SidebarRowAttentionDotView }
+            .first { !$0.isHidden }
+        let visibleSpinner = Self.descendants(of: cell)
+            .compactMap { $0 as? GPUSpinnerNSView }
+            .first { !$0.isHidden }
+        #expect(visibleDot == nil)
+        #expect(visibleSpinner == nil)
     }
 
     private static func textView(in cell: SidebarWorkspaceRowTableCellView, linkedTo url: URL) -> SidebarRowTextView? {

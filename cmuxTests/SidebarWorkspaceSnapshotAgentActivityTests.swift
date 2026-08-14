@@ -28,11 +28,13 @@ extension SidebarWorkspaceSnapshotRefreshPolicyTests {
     @Test func contextMenuAgentActivityChangeUpdatesDisplayedSpinnerImmediately() {
         let current = Self.snapshot(
             latestConversationMessage: "old message",
-            activeCodingAgentCount: 0
+            activeCodingAgentCount: 0,
+            attentionPhase: nil
         )
         let next = Self.snapshot(
             latestConversationMessage: "new message",
-            activeCodingAgentCount: 1
+            activeCodingAgentCount: 1,
+            attentionPhase: nil
         )
 
         let decision = SidebarWorkspaceSnapshotRefreshPolicy().decision(

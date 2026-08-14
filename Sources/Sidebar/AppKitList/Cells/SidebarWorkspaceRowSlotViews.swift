@@ -164,6 +164,45 @@ final class SidebarRowPullRequestIconView: NSView {
     }
 }
 
+/// The wordless colored agent-attention dot in a session row's status slot
+/// (amber approval / indigo input / green unseen-done). Working renders as
+/// the tinted activity spinner instead, so this view never spins.
+@MainActor
+final class SidebarRowAttentionDotView: NSView {
+    private var dotColor: NSColor = .clear
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func configure(color: NSColor, tooltip: String) {
+        dotColor = color
+        toolTip = tooltip
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel(tooltip)
+        needsLayout = true
+        applyLayerStyle()
+    }
+
+    override func layout() {
+        super.layout()
+        applyLayerStyle()
+    }
+
+    private func applyLayerStyle() {
+        // The dot fills ~2/3 of the slot: same visual weight as the SwiftUI
+        // indicator, centered by the frame the slot layout assigns.
+        layer?.backgroundColor = dotColor.cgColor
+        layer?.cornerRadius = bounds.height / 2
+    }
+}
+
 /// Capsule progress bar (track + leading-anchored fill + optional label).
 @MainActor
 final class SidebarRowProgressView: NSView {

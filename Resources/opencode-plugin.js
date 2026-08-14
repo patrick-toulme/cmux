@@ -60,6 +60,8 @@ export const CMUXFeed = async (ctx) => {
         lastUserMessage: null,
         assistantPreamble: null,
         cwd: null,
+        isBusy: false,
+        turnOpen: false,
       });
     }
     return sessions.get(key);
@@ -393,10 +395,18 @@ export const CMUXFeed = async (ctx) => {
       });
       conn.on("close", () => {
         client = null;
+        // A dropped socket usually means the cmux app restarted. Mirror
+        // workspace/surface ids are minted per attach, so the cached pane
+        // resolution is stale the moment the connection dies: forget it and
+        // re-resolve lazily against the new app instance.
+        remoteTarget = null;
+        remoteResolvePromise = null;
         failPending();
       });
       conn.on("error", () => {
         client = null;
+        remoteTarget = null;
+        remoteResolvePromise = null;
         failPending();
       });
       return conn;
@@ -493,11 +503,72 @@ export const CMUXFeed = async (ctx) => {
 
   // Remote agents self-report lifecycle: there is no local PID for cmux's
   // process watcher, so running/idle comes from opencode's own event bus.
+  // A missing target (first event, or invalidated by a socket drop after an
+  // app restart) re-resolves asynchronously so the state still lands.
   const sendRemoteLifecycle = (state) => {
-    if (!IS_REMOTE || !remoteTarget) return;
+    if (!IS_REMOTE) return;
+    if (!remoteTarget) {
+      void resolveRemoteTarget().then((target) => {
+        if (!target) return;
+        writeLine(
+          `set_agent_lifecycle opencode ${state} --tab=${target.workspaceId} --panel=${target.surfaceId}`
+        );
+      });
+      return;
+    }
     writeLine(
       `set_agent_lifecycle opencode ${state} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
     );
+  };
+
+  // The wire payload is |-separated; fields must never smuggle a separator.
+  const sanitizeNotifyField = (value, max) =>
+    (normalizeText(value, max) || "").replace(/\|/g, "/");
+
+  // Remote turn-complete notification, mirroring the local hooks' categorized
+  // `notify_target_async` line so the SAME user notification settings gate it
+  // (turn complete: always / when idle / never). Local sessions never send
+  // this: the locally installed hooks own local notifications, and sending
+  // here too would double-notify.
+  const sendRemoteTurnCompleteNotification = (sid) => {
+    if (!IS_REMOTE) return;
+    const state = sessionState(sid);
+    const subtitle = sanitizeNotifyField(state.lastUserMessage, 120);
+    const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
+    const send = (target) => {
+      writeLine(
+        `notify_target_async ${target.workspaceId} ${target.surfaceId} ` +
+          `OpenCode|${subtitle}|${body}|c=turn-complete;p=0`
+      );
+    };
+    if (!remoteTarget) {
+      void resolveRemoteTarget().then((target) => {
+        if (target) send(target);
+      });
+      return;
+    }
+    send(remoteTarget);
+  };
+
+  // Turn-boundary tracker shared by "session.status" (current builds) and the
+  // deprecated "session.idle" (older builds, co-published on current ones).
+  // A turn OPENS only on a user prompt and completes on the next idle, so
+  // the co-published pair cannot double-fire — and background busy cycles
+  // (auto-compaction, cache keepalive) update the running/idle spinner
+  // without minting spurious "finished a turn" notifications.
+  const noteSessionBusyState = (sid, busy, opensTurn = false) => {
+    const state = sessionState(sid);
+    if (busy) {
+      state.isBusy = true;
+      if (opensTurn) state.turnOpen = true;
+      sendRemoteLifecycle("running");
+      return;
+    }
+    const hadOpenTurn = state.turnOpen === true;
+    state.isBusy = false;
+    state.turnOpen = false;
+    sendRemoteLifecycle("idle");
+    if (hadOpenTurn) sendRemoteTurnCompleteNotification(sid);
   };
 
   const base = (sessionId, extra) => {
@@ -601,7 +672,15 @@ export const CMUXFeed = async (ctx) => {
       const tracked = trackMessage(event);
       if (tracked) {
         if (tracked.hook_event_name === "UserPromptSubmit") {
-          sendRemoteLifecycle("running");
+          const sid =
+            typeof tracked.session_id === "string" && tracked.session_id.startsWith("opencode-")
+              ? tracked.session_id.slice("opencode-".length)
+              : null;
+          if (sid) {
+            noteSessionBusyState(sid, true, true);
+          } else {
+            sendRemoteLifecycle("running");
+          }
         }
         pushTelemetry(tracked);
         return;
@@ -621,7 +700,7 @@ export const CMUXFeed = async (ctx) => {
         case "session.idle": {
           const sid = event.properties?.sessionID;
           if (!sid) break;
-          sendRemoteLifecycle("idle");
+          noteSessionBusyState(sid, false);
           pushTelemetry(base(sid, {
             hook_event_name: "Stop",
           }));
@@ -630,15 +709,17 @@ export const CMUXFeed = async (ctx) => {
         case "session.status": {
           // The authoritative busy/idle stream on current opencode builds
           // ("session.idle" is deprecated there and can be cut off by
-          // process exit in one-shot runs). Lifecycle only: the Stop feed
-          // event still rides "session.idle" so feed semantics are
-          // unchanged where both fire.
+          // process exit in one-shot runs). Lifecycle + turn boundary only:
+          // the Stop feed event still rides "session.idle" so feed
+          // semantics are unchanged where both fire.
+          const sid = event.properties?.sessionID;
+          if (!sid) break;
           const status = event.properties?.status;
           const statusType = typeof status === "string" ? status : status?.type;
           if (statusType === "idle") {
-            sendRemoteLifecycle("idle");
+            noteSessionBusyState(sid, false);
           } else if (statusType === "busy" || statusType === "retry") {
-            sendRemoteLifecycle("running");
+            noteSessionBusyState(sid, true);
           }
           break;
         }

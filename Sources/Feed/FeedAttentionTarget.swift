@@ -1,4 +1,15 @@
+import CMUXAgentLaunch
 import Foundation
+
+/// One pending blocking feed decision attributed to a workspace, for
+/// per-row attention projections (sidebar pills, inbox rows).
+struct FeedPendingBlockingDecision: Equatable, Sendable {
+    /// `.permissionRequest`, `.exitPlan`, or `.question`.
+    let kind: WorkstreamKind
+    let requestId: String
+    /// The owning panel when the overlay is panel-scoped.
+    let panelId: UUID?
+}
 
 /// Identifies the stable owner of one Feed decision-attention overlay.
 enum FeedAttentionTarget: Hashable, Sendable {

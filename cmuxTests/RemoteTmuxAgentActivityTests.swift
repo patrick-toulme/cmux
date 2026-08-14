@@ -303,6 +303,167 @@ struct RemoteTmuxAgentActivityMirrorTests {
     }
 }
 
+/// Strict-priority resolution for the t3code-style attention phase.
+@Suite struct SidebarAgentAttentionResolverTests {
+    private let panel = UUID()
+
+    @Test func priorityOrderIsApprovalInputWorkingDone() {
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [.question, .permissionRequest],
+            statesByPanelId: [panel: ["opencode": .running]],
+            hasUnreadTurnComplete: true
+        ) == .pendingApproval)
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [.question],
+            statesByPanelId: [panel: ["opencode": .running]],
+            hasUnreadTurnComplete: true
+        ) == .awaitingInput)
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [],
+            statesByPanelId: [panel: ["opencode": .running]],
+            hasUnreadTurnComplete: true
+        ) == .working)
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [],
+            statesByPanelId: [panel: ["opencode": .idle]],
+            hasUnreadTurnComplete: true
+        ) == .unreadCompleted)
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [],
+            statesByPanelId: [:],
+            hasUnreadTurnComplete: false
+        ) == nil)
+    }
+
+    @Test func exitPlanCountsAsApprovalAndNeedsInputAsInput() {
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [.exitPlan],
+            statesByPanelId: [:],
+            hasUnreadTurnComplete: false
+        ) == .pendingApproval)
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [],
+            statesByPanelId: [panel: ["cmux.feed.attention:opencode": .needsInput]],
+            hasUnreadTurnComplete: false
+        ) == .awaitingInput)
+    }
+
+    /// `workspace_loading` manual keys drive the loading spinner, not agent
+    /// attention: a manual loader must never read as Working.
+    @Test func manualLoaderKeysAreIgnored() {
+        #expect(SidebarAgentAttentionResolver.phase(
+            pendingDecisionKinds: [],
+            statesByPanelId: [panel: ["manual": .running, "manual:build": .running]],
+            hasUnreadTurnComplete: false
+        ) == nil)
+    }
+
+    /// Only decisions, questions, and unseen completions earn inbox rows;
+    /// motion stays on the session row's indicator. Ranks preserve that
+    /// same order for inbox sorting.
+    @Test func actionabilityAndRankMatchInboxSemantics() {
+        #expect(SidebarAgentAttentionPhase.pendingApproval.isActionable)
+        #expect(SidebarAgentAttentionPhase.awaitingInput.isActionable)
+        #expect(SidebarAgentAttentionPhase.unreadCompleted.isActionable)
+        #expect(!SidebarAgentAttentionPhase.working.isActionable)
+        #expect(SidebarAgentAttentionPhase.pendingApproval.inboxRank
+            < SidebarAgentAttentionPhase.awaitingInput.inboxRank)
+        #expect(SidebarAgentAttentionPhase.awaitingInput.inboxRank
+            < SidebarAgentAttentionPhase.unreadCompleted.inboxRank)
+    }
+}
+
+/// The agent inbox section in the sidebar (t3code-style: rows exist only
+/// while actionable, pinned above the machine sections).
+@Suite struct RemoteTmuxWindowRenderItemTests {
+    @MainActor
+    @Test func inboxLeadsTheSidebarAndSessionsStayChildless() {
+        let workspaceA = UUID()
+        let workspaceB = UUID()
+        let windowOne = UUID()
+        let windowTwo = UUID()
+        let tabs = [makeStubWorkspace(id: workspaceA), makeStubWorkspace(id: workspaceB)]
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: [workspaceA: "host-a", workspaceB: "host-a"],
+            collapsedRemoteHostKeys: [],
+            agentInboxItems: [
+                SidebarAgentInboxItemRef(workspaceId: workspaceB, windowPanelId: windowTwo),
+                SidebarAgentInboxItemRef(workspaceId: workspaceA, windowPanelId: windowOne),
+            ]
+        )
+        guard items.count == 6,
+              case .agentInboxHeader(let headerWorkspaceId) = items[0],
+              case .remoteTmuxWindow(let owner1, let panel1) = items[1],
+              case .remoteTmuxWindow(let owner2, let panel2) = items[2],
+              case .remoteHostSection = items[3],
+              case .workspace(let firstSession) = items[4],
+              case .workspace(let secondSession) = items[5] else {
+            Issue.record("unexpected items: \(items)")
+            return
+        }
+        // Caller order is preserved verbatim (it pre-sorts by phase rank).
+        #expect(headerWorkspaceId == workspaceB)
+        #expect(owner1 == workspaceB && panel1 == windowTwo)
+        #expect(owner2 == workspaceA && panel2 == windowOne)
+        #expect(firstSession == workspaceA)
+        #expect(secondSession == workspaceB)
+    }
+
+    @MainActor
+    @Test func emptyInboxRendersNoHeaderAndNoWindowRows() {
+        let workspaceA = UUID()
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: [makeStubWorkspace(id: workspaceA)],
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: [workspaceA: "host-a"],
+            collapsedRemoteHostKeys: [],
+            agentInboxItems: []
+        )
+        #expect(items.count == 2)
+        for item in items {
+            switch item {
+            case .agentInboxHeader, .remoteTmuxWindow:
+                Issue.record("quiet sidebar must not render inbox items, got \(items)")
+            case .groupHeader, .workspace, .remoteHostSection:
+                break
+            }
+        }
+    }
+
+    /// Machine collapse governs session rows only: a pending decision must
+    /// stay visible in the inbox even when its machine is collapsed.
+    @MainActor
+    @Test func collapsedMachineKeepsInboxRowsVisible() {
+        let workspaceA = UUID()
+        let windowOne = UUID()
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: [makeStubWorkspace(id: workspaceA)],
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: [workspaceA: "host-a"],
+            collapsedRemoteHostKeys: ["host-a"],
+            agentInboxItems: [
+                SidebarAgentInboxItemRef(workspaceId: workspaceA, windowPanelId: windowOne)
+            ]
+        )
+        guard items.count == 3,
+              case .agentInboxHeader = items[0],
+              case .remoteTmuxWindow(_, let panel) = items[1],
+              case .remoteHostSection = items[2] else {
+            Issue.record("unexpected items: \(items)")
+            return
+        }
+        #expect(panel == windowOne)
+    }
+
+    @MainActor
+    private func makeStubWorkspace(id: UUID) -> Workspace {
+        let workspace = Workspace(id: id)
+        return workspace
+    }
+}
+
 /// The remote path the agent bridge forwards the local control socket to.
 @Suite struct RemoteTmuxAgentSocketPathTests {
     @Test func remoteAgentSocketPathIsStableAndCollisionResistant() {

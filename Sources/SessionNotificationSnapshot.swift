@@ -12,6 +12,10 @@ struct SessionNotificationSnapshot: Codable, Sendable {
     var correlationKey: String?
     var scrollPosition: TerminalNotificationScrollPosition?
     var clickAction: TerminalNotificationClickAction?
+    /// Raw `AgentNotifyCategory` (turn-complete / needs-permission /
+    /// idle-reminder). Persisted so unread-completed projections survive
+    /// relaunch; optional for snapshots written before the field existed.
+    var agentCategory: String?
 
     init(
         id: UUID,
@@ -24,7 +28,8 @@ struct SessionNotificationSnapshot: Codable, Sendable {
         retargetsToLiveSurfaceOwner: Bool? = nil,
         correlationKey: String? = nil,
         scrollPosition: TerminalNotificationScrollPosition? = nil,
-        clickAction: TerminalNotificationClickAction? = nil
+        clickAction: TerminalNotificationClickAction? = nil,
+        agentCategory: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,6 +42,7 @@ struct SessionNotificationSnapshot: Codable, Sendable {
         self.correlationKey = correlationKey
         self.scrollPosition = scrollPosition
         self.clickAction = clickAction
+        self.agentCategory = agentCategory
     }
 
     init(notification: TerminalNotification) {
@@ -54,7 +60,8 @@ struct SessionNotificationSnapshot: Codable, Sendable {
             retargetsToLiveSurfaceOwner: notification.retargetsToLiveSurfaceOwner,
             correlationKey: notification.correlationKey,
             scrollPosition: persistedScrollPosition,
-            clickAction: notification.clickAction
+            clickAction: notification.clickAction,
+            agentCategory: notification.agentCategory?.rawValue
         )
     }
 
@@ -76,7 +83,8 @@ struct SessionNotificationSnapshot: Codable, Sendable {
             isRead: isRead,
             paneFlash: paneFlash ?? true,
             scrollPosition: restoredScrollPosition,
-            clickAction: clickAction
+            clickAction: clickAction,
+            agentCategory: agentCategory.flatMap { AgentNotifyCategory(rawValue: $0) }
         )
     }
 }

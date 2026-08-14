@@ -12611,7 +12611,8 @@ class TerminalController {
                 title: title,
                 subtitle: subtitle,
                 body: body,
-                replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue)
+                replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue),
+                agentCategory: meta?.category
             )
             return "OK"
         }
@@ -12648,7 +12649,8 @@ class TerminalController {
                 title: title,
                 subtitle: subtitle,
                 body: body,
-                replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue)
+                replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue),
+                agentCategory: meta?.category
             )
             return "OK"
         }
@@ -12695,7 +12697,8 @@ class TerminalController {
                     title: title,
                     subtitle: subtitle,
                     body: body,
-                    replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue)
+                    replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue),
+                    agentCategory: meta?.category
                 )
                 return "OK"
             }
@@ -12719,7 +12722,8 @@ class TerminalController {
                 title: title,
                 subtitle: subtitle,
                 body: body,
-                replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue)
+                replyShape: TerminalNotificationReplyShape.forAgentCategory(wire: meta?.category.rawValue),
+                agentCategory: meta?.category
             )
             return "OK"
         }

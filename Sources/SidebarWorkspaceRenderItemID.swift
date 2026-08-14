@@ -22,6 +22,15 @@ struct SidebarWorkspaceRenderItemID: Hashable {
         Self(kind: 3, uuid: uuid)
     }
 
+    static func remoteTmuxWindow(_ uuid: UUID) -> Self {
+        Self(kind: 4, uuid: uuid)
+    }
+
+    /// The agent inbox has at most one header row, so its identity is fixed.
+    static func agentInboxHeader() -> Self {
+        Self(kind: 5, uuid: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5)))
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.uuid == rhs.uuid
     }

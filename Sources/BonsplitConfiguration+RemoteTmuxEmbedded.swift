@@ -12,7 +12,11 @@ extension BonsplitConfiguration {
         configuration.autoCloseEmptyPanes = false
         configuration.contentViewLifecycle = .keepAllAlive
         configuration.newTabPosition = .end
-        configuration.tabBarVisibility = .always
+        // A mirrored tmux pane is always exactly one tab, so `.multipleTabs`
+        // never shows the nested per-pane tab bar: the workspace keeps the
+        // single legacy tab row (the tmux window strip) instead of stacking
+        // a second, redundant bar above every pane.
+        configuration.tabBarVisibility = .multipleTabs
         configuration.dividerPositionRange = 0...1
 
         configuration.appearance.minimumPaneWidth = 1

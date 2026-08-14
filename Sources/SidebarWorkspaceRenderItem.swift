@@ -1,6 +1,15 @@
 import CmuxWorkspaces
 import Foundation
 
+/// One entry of the agent inbox: a mirrored tmux window whose agent needs
+/// the user right now (approval, question, or unseen completion). The
+/// caller resolves phases and ordering; the render pipeline only needs the
+/// stable identities.
+struct SidebarAgentInboxItemRef: Hashable, Sendable {
+    let workspaceId: UUID
+    let windowPanelId: UUID
+}
+
 /// Stable value identity for one drawable item in the workspace sidebar.
 ///
 /// Keep live `Workspace` / `WorkspaceGroup` references out of this value. A
@@ -20,6 +29,15 @@ enum SidebarWorkspaceRenderItem {
     /// where a row must nominate a representative workspace (pointer frames,
     /// scroll anchoring).
     case remoteHostSection(hostKey: String, firstWorkspaceId: UUID)
+    /// The "Needs attention" section header above the agent inbox rows
+    /// (t3code-style: the inbox only exists while something is actionable).
+    /// `firstWorkspaceId` nominates the first inbox item's workspace where a
+    /// row must name a representative workspace.
+    case agentInboxHeader(firstWorkspaceId: UUID)
+    /// One agent inbox row: a mirrored tmux window (the user's unit of agent
+    /// work — one agent per window) that currently needs attention. The id
+    /// is the window's stable container panel.
+    case remoteTmuxWindow(workspaceId: UUID, windowPanelId: UUID)
 
     var id: SidebarWorkspaceRenderItemID {
         switch self {
@@ -29,6 +47,10 @@ enum SidebarWorkspaceRenderItem {
             return .workspace(workspaceId)
         case .remoteHostSection(let hostKey, _):
             return .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: hostKey))
+        case .agentInboxHeader:
+            return .agentInboxHeader()
+        case .remoteTmuxWindow(_, let windowPanelId):
+            return .remoteTmuxWindow(windowPanelId)
         }
     }
 
@@ -40,6 +62,10 @@ enum SidebarWorkspaceRenderItem {
             return workspaceId
         case .remoteHostSection(_, let firstWorkspaceId):
             return firstWorkspaceId
+        case .agentInboxHeader(let firstWorkspaceId):
+            return firstWorkspaceId
+        case .remoteTmuxWindow(let workspaceId, _):
+            return workspaceId
         }
     }
 
@@ -54,11 +80,24 @@ enum SidebarWorkspaceRenderItem {
         tabs: [Workspace],
         groupsById: [UUID: WorkspaceGroup],
         remoteHostKeyByWorkspaceId: [UUID: String] = [:],
-        collapsedRemoteHostKeys: Set<String> = []
+        collapsedRemoteHostKeys: Set<String> = [],
+        agentInboxItems: [SidebarAgentInboxItemRef] = []
     ) -> [SidebarWorkspaceRenderItem] {
         guard !tabs.isEmpty else { return [] }
         var items: [SidebarWorkspaceRenderItem] = []
-        items.reserveCapacity(tabs.count + groupsById.count)
+        items.reserveCapacity(tabs.count + groupsById.count + agentInboxItems.count + 1)
+        // The agent inbox leads the sidebar (t3code-style) and exists only
+        // while something is actionable. Its rows are pinned above every
+        // machine section, so host collapse never hides a pending decision.
+        if let firstInboxItem = agentInboxItems.first {
+            items.append(.agentInboxHeader(firstWorkspaceId: firstInboxItem.workspaceId))
+            for inboxItem in agentInboxItems {
+                items.append(.remoteTmuxWindow(
+                    workspaceId: inboxItem.workspaceId,
+                    windowPanelId: inboxItem.windowPanelId
+                ))
+            }
+        }
         var lastEmittedGroupId: UUID? = nil
         var emittedHeaders: Set<UUID> = []
         var collapsedByGroupId: [UUID: Bool] = [:]
