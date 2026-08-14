@@ -91,6 +91,16 @@ final class RemoteTmuxControlConnection {
     var initialBatchAwaiting: Set<Int>?
     /// Verified initial windows staged until the atomic batch is complete.
     var initialBatchStaged: [Int: RemoteTmuxWindow] = [:]
+    /// Recovery rounds spent per window whose rects fetch was DROPPED (see
+    /// ``scheduleDroppedLayoutRecovery(windowId:)``): a fleet-wide parallel
+    /// attach resizes dozens of sessions at once, and that storm can garble
+    /// or error a window's fetch past its in-flight retry budget. A drop
+    /// must never blank the window forever.
+    var droppedLayoutRecoveryAttempts: [Int: Int] = [:]
+    /// Coalesces scheduled drop-recovery refetches (one timer at a time).
+    var droppedLayoutRecoveryScheduled = false
+    /// Shrinks the recovery backoff in tests.
+    var droppedLayoutRecoveryDelayOverrideForTesting: TimeInterval?
     /// Last-known foreground classification per pane, kept current by the same
     /// one-shot query + live subscription that drive reflow classification
     /// (`#{alternate_on}` + `#{pane_current_command}`, see
@@ -423,6 +433,8 @@ final class RemoteTmuxControlConnection {
         pendingLayouts.removeAll()
         initialBatchAwaiting = nil
         initialBatchStaged.removeAll()
+        droppedLayoutRecoveryAttempts.removeAll()
+        droppedLayoutRecoveryScheduled = false
         // Normally already flushed by beginReconnecting; kept here so a future
         // caller of spawnProcess can't strand command decisions.
         failPendingCommandTransactions()

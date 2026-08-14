@@ -494,3 +494,86 @@ final class RemoteTmuxSessionMirrorLayoutHarness {
 private extension Collection {
     var only: Element? { count == 1 ? first : nil }
 }
+
+/// A dropped pane-rects fetch (garbled twice, e.g. during a fleet-wide
+/// parallel attach that resizes dozens of sessions at once) must heal via
+/// the delayed restage — the regression left an ATTACHED session rendering
+/// its newborn local shell with zero mirror panes, forever.
+@Suite struct RemoteTmuxDroppedLayoutRecoveryTests {
+    @Test @MainActor func droppedRectsFetchRecoversViaDelayedRestage() async throws {
+        let connection = RemoteTmuxControlConnection(
+            host: RemoteTmuxHost(destination: "user@host"),
+            sessionName: "work"
+        )
+        let pipe = Pipe()
+        let writer = RemoteTmuxControlPipeWriter(
+            handle: pipe.fileHandleForWriting,
+            label: "remote-tmux-drop-recovery-test",
+            maxPendingBytes: 1 << 16,
+            onFailure: {}
+        )
+        connection.installStdinWriterForTesting(writer)
+        defer {
+            writer.close()
+            try? pipe.fileHandleForReading.close()
+        }
+        connection.droppedLayoutRecoveryDelayOverrideForTesting = 0.02
+
+        func isPaneRects(_ kind: RemoteTmuxControlCommandKind?) -> Bool {
+            if case .paneRects = kind { return true }
+            return false
+        }
+        func isListWindows(_ kind: RemoteTmuxControlCommandKind?) -> Bool {
+            if case .listWindows = kind { return true }
+            return false
+        }
+        func answerHead(lines: [String]) {
+            connection.handleMessageForTesting(
+                .commandResult(commandNumber: 0, lines: lines, isError: false)
+            )
+        }
+        let windowLine = "@1 f92f,80x24,0,0,11 f92f,80x24,0,0,11 [] editor"
+
+        connection.handleMessageForTesting(.enter)
+        answerHead(lines: [])  // attach block
+        // Initial list-windows: one window, whose rects fetch then garbles
+        // TWICE (initial + in-flight retry) -> dropped, batch flushes empty.
+        while let head = connection.pendingCommandKindsForTesting.first, !isListWindows(head) {
+            answerHead(lines: [])
+        }
+        answerHead(lines: [windowLine])
+        for _ in 0..<2 {
+            while let head = connection.pendingCommandKindsForTesting.first, !isPaneRects(head) {
+                answerHead(lines: [])
+            }
+            #expect(isPaneRects(connection.pendingCommandKindsForTesting.first))
+            answerHead(lines: [])  // garbled: covers no required pane
+        }
+        #expect(connection.windowsByID.isEmpty)
+
+        // The delayed recovery must re-drive list-windows on its own.
+        var sawRecoveryListWindows = false
+        for _ in 0..<200 {
+            try await Task.sleep(for: .milliseconds(10))
+            while let head = connection.pendingCommandKindsForTesting.first, !isListWindows(head) {
+                if isPaneRects(head) { break }
+                answerHead(lines: [])
+            }
+            if isListWindows(connection.pendingCommandKindsForTesting.first) {
+                sawRecoveryListWindows = true
+                break
+            }
+        }
+        #expect(sawRecoveryListWindows, "recovery never re-requested windows")
+        answerHead(lines: [windowLine])
+        while let head = connection.pendingCommandKindsForTesting.first, !isPaneRects(head) {
+            answerHead(lines: [])
+        }
+        #expect(isPaneRects(connection.pendingCommandKindsForTesting.first))
+        answerHead(lines: ["%11 0 0 80 24 1 off :zsh"])
+
+        // The window publishes with verified rects: the blank-forever hole is closed.
+        #expect(connection.windowsByID[1] != nil)
+        #expect(connection.windowsByID[1]?.paneIDsInOrder == [11])
+    }
+}

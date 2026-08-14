@@ -235,6 +235,7 @@ extension RemoteTmuxControlConnection {
                 // the resolution edge even when nothing published — notify
                 // so its reconcile runs and judges against the kept tree.
                 observers.notifyTopologyChanged()
+                scheduleDroppedLayoutRecovery(windowId: windowId)
             }
             return
         }
@@ -273,6 +274,8 @@ extension RemoteTmuxControlConnection {
             pendingLayouts[windowId] = nil
         }
         record("pane-rects @\(windowId)")
+        // A verified publish settles any drop-recovery debt for this window.
+        droppedLayoutRecoveryAttempts[windowId] = nil
         if initialBatchAwaiting != nil {
             // First population: hold verified windows in staging and publish
             // them all at once when the last reply lands, so observers never
@@ -356,6 +359,39 @@ extension RemoteTmuxControlConnection {
             // Same resolution edge as the garbled-reply drop above: a mirror
             // deferring a divider-hold verdict must see the fetch resolve.
             observers.notifyTopologyChanged()
+            scheduleDroppedLayoutRecovery(windowId: windowId)
+        }
+    }
+
+    /// A dropped rects fetch must never blank a window FOREVER. The drop is
+    /// correct in the moment (the quarantine may not publish raw geometry,
+    /// and an in-flight fetch cannot dangle), but the causes are transient:
+    /// a fleet-wide parallel attach resizes dozens of sessions at once, and
+    /// that churn can garble or error one window's fetch past its retry
+    /// budget — the failure that left an attached session rendering its
+    /// newborn local shell with zero mirror panes. Re-drive the whole
+    /// list-windows restage after a growing delay (by then the storm has
+    /// settled), bounded per window per connection epoch; a window that
+    /// recovers on its own (any verified publish) clears its debt.
+    func scheduleDroppedLayoutRecovery(windowId: Int) {
+        let attempt = (droppedLayoutRecoveryAttempts[windowId] ?? 0) + 1
+        droppedLayoutRecoveryAttempts[windowId] = attempt
+        guard attempt <= 4 else {
+            record("pane-rects-abandoned @\(windowId)")
+            return
+        }
+        guard !droppedLayoutRecoveryScheduled else { return }
+        droppedLayoutRecoveryScheduled = true
+        let delay = droppedLayoutRecoveryDelayOverrideForTesting ?? (0.5 * Double(attempt))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.droppedLayoutRecoveryScheduled = false
+            guard !self.exited, self.enterReceived else { return }
+            self.record("pane-rects-recovery")
+            #if DEBUG
+            cmuxDebugLog("remote.rects.recovery attempts=\(self.droppedLayoutRecoveryAttempts)")
+            #endif
+            self.requestWindows()
         }
     }
 
