@@ -31,6 +31,10 @@ struct SidebarWorkspaceRenderItemID: Hashable {
         Self(kind: 5, uuid: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5)))
     }
 
+    static func localMacSection(_ uuid: UUID) -> Self {
+        Self(kind: 6, uuid: uuid)
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.uuid == rhs.uuid
     }
@@ -50,8 +54,25 @@ struct SidebarWorkspaceRenderItemID: Hashable {
 /// 16 bytes of a SHA-256 over the key give a collision-safe, deterministic
 /// UUID without storing any registry.
 enum SidebarRemoteHostSectionIdentity {
+    /// The reserved section key for the "Local Mac" section (local, non-mirror
+    /// workspaces interleaved among machine sections). Endpoint host keys are
+    /// hex connection hashes, so this literal can never collide with one. It
+    /// shares the host collapse store, so the section's collapse persists
+    /// exactly like a machine's.
+    static let localMacSectionKey = "cmux-local-mac"
+
     static func uuid(forHostKey hostKey: String) -> UUID {
-        let digest = SHA256.hash(data: Data(hostKey.utf8))
+        uuid(forHostKey: hostKey, runIndex: 0)
+    }
+
+    /// Sidebar reorders (drag, sort-by-recent, attention moves) can split one
+    /// section's workspaces into several contiguous RUNS; each run renders
+    /// its own header so no run ever visually falls under another section's
+    /// header. Run 0 keeps the historical plain-key identity (collapse state
+    /// and scroll anchors persist across launches); later runs salt the key.
+    static func uuid(forHostKey hostKey: String, runIndex: Int) -> UUID {
+        let key = runIndex == 0 ? hostKey : "\(hostKey)#run\(runIndex)"
+        let digest = SHA256.hash(data: Data(key.utf8))
         var bytes = [UInt8](repeating: 0, count: 16)
         for (index, byte) in digest.enumerated() where index < 16 {
             bytes[index] = byte

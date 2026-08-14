@@ -13,6 +13,7 @@ extension VerticalTabsSidebar {
     /// Builds the immutable presentation snapshot for one machine's header.
     func remoteHostSectionSnapshot(
         hostKey: String,
+        runIndex: Int = 0,
         isPointerHovering: Bool,
         renderContext: WorkspaceListRenderContext,
         unreadCountForWorkspace: (UUID) -> Int
@@ -25,7 +26,7 @@ extension VerticalTabsSidebar {
             ? members.reduce(0) { $0 + unreadCountForWorkspace($1) }
             : 0
         let sectionId = SidebarWorkspaceRenderItemID.remoteHostSection(
-            SidebarRemoteHostSectionIdentity.uuid(forHostKey: hostKey)
+            SidebarRemoteHostSectionIdentity.uuid(forHostKey: hostKey, runIndex: runIndex)
         )
         return SidebarRemoteHostSectionRowSnapshot(
             hostKey: hostKey,
@@ -46,6 +47,7 @@ extension VerticalTabsSidebar {
     /// user-invoked action closures.
     func sidebarRemoteHostSectionHeader(
         hostKey: String,
+        runIndex: Int = 0,
         isPointerHovering: Bool,
         contextMenuActions: SidebarWorkspaceTableContextMenuActions?,
         renderContext: WorkspaceListRenderContext,
@@ -53,6 +55,7 @@ extension VerticalTabsSidebar {
     ) -> SidebarRemoteHostSectionHeaderView {
         let snapshot = remoteHostSectionSnapshot(
             hostKey: hostKey,
+            runIndex: runIndex,
             isPointerHovering: isPointerHovering,
             renderContext: renderContext,
             unreadCountForWorkspace: unreadCountForWorkspace
@@ -89,6 +92,7 @@ extension VerticalTabsSidebar {
     func sidebarRemoteHostSectionTableConfiguration(
         hostKey: String,
         firstWorkspaceId: UUID,
+        runIndex: Int = 0,
         renderContext: WorkspaceListRenderContext
     ) -> SidebarWorkspaceTableRowConfiguration {
         // The AppKit controller applies live unread snapshots per cell; this
@@ -100,13 +104,16 @@ extension VerticalTabsSidebar {
         }
         let equivalenceHeader = sidebarRemoteHostSectionHeader(
             hostKey: hostKey,
+            runIndex: runIndex,
             isPointerHovering: false,
             contextMenuActions: nil,
             renderContext: renderContext,
             unreadCountForWorkspace: unreadCountForWorkspace
         )
         return SidebarWorkspaceTableRowConfiguration(
-            id: .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: hostKey)),
+            id: .remoteHostSection(
+                SidebarRemoteHostSectionIdentity.uuid(forHostKey: hostKey, runIndex: runIndex)
+            ),
             workspaceId: firstWorkspaceId,
             groupId: nil,
             isGroupHeader: true,
@@ -116,10 +123,73 @@ extension VerticalTabsSidebar {
         ) { isPointerHovering, contextMenuActions in
             AnyView(self.sidebarRemoteHostSectionHeader(
                 hostKey: hostKey,
+                runIndex: runIndex,
                 isPointerHovering: isPointerHovering,
                 contextMenuActions: contextMenuActions,
                 renderContext: renderContext,
                 unreadCountForWorkspace: unreadCountForWorkspace
+            ))
+        }
+    }
+
+    // MARK: - Local Mac section
+
+    /// Builds the "Local Mac" header snapshot: local workspaces interleaved
+    /// among machine sections carry their own header, so a local terminal
+    /// never reads as one of a machine's sessions.
+    func localMacSectionSnapshot(
+        runIndex: Int,
+        renderContext: WorkspaceListRenderContext
+    ) -> SidebarLocalMacSectionRowSnapshot {
+        let localKey = SidebarRemoteHostSectionIdentity.localMacSectionKey
+        let localWorkspaceIds = renderContext.workspaceById.keys.filter {
+            renderContext.remoteHostKeyByWorkspaceId[$0] == nil
+        }
+        return SidebarLocalMacSectionRowSnapshot(
+            isCollapsed: renderContext.collapsedRemoteHostKeys.contains(localKey),
+            memberCount: localWorkspaceIds.count,
+            fontScale: renderContext.tabItemSettings.sidebarFontScale
+        )
+    }
+
+    /// Assembles one Local Mac header view; shared by both sidebar backends.
+    func sidebarLocalMacSectionHeader(
+        runIndex: Int,
+        renderContext: WorkspaceListRenderContext
+    ) -> SidebarLocalMacSectionHeaderView {
+        SidebarLocalMacSectionHeaderView(
+            snapshot: localMacSectionSnapshot(runIndex: runIndex, renderContext: renderContext),
+            onToggleCollapsed: { [weak tabManager] in
+                tabManager?.toggleRemoteTmuxHostCollapsed(
+                    hostKey: SidebarRemoteHostSectionIdentity.localMacSectionKey
+                )
+            }
+        )
+    }
+
+    /// AppKit table row configuration for one Local Mac header.
+    func sidebarLocalMacSectionTableConfiguration(
+        firstWorkspaceId: UUID,
+        runIndex: Int,
+        renderContext: WorkspaceListRenderContext
+    ) -> SidebarWorkspaceTableRowConfiguration {
+        let equivalenceHeader = sidebarLocalMacSectionHeader(
+            runIndex: runIndex, renderContext: renderContext
+        )
+        return SidebarWorkspaceTableRowConfiguration(
+            id: .localMacSection(SidebarRemoteHostSectionIdentity.uuid(
+                forHostKey: SidebarRemoteHostSectionIdentity.localMacSectionKey,
+                runIndex: runIndex
+            )),
+            workspaceId: firstWorkspaceId,
+            groupId: nil,
+            isGroupHeader: true,
+            isPinned: false,
+            environment: renderContext.environment,
+            equivalenceValue: equivalenceHeader
+        ) { _, _ in
+            AnyView(self.sidebarLocalMacSectionHeader(
+                runIndex: runIndex, renderContext: renderContext
             ))
         }
     }

@@ -426,7 +426,7 @@ struct RemoteTmuxAgentActivityMirrorTests {
             switch item {
             case .agentInboxHeader, .remoteTmuxWindow:
                 Issue.record("quiet sidebar must not render inbox items, got \(items)")
-            case .groupHeader, .workspace, .remoteHostSection:
+            case .groupHeader, .workspace, .remoteHostSection, .localMacSection:
                 break
             }
         }

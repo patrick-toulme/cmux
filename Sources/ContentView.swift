@@ -11401,7 +11401,8 @@ struct VerticalTabsSidebar: View, Equatable {
         // machinery consumes.
         let visibleWorkspaceRowIds = workspaceRenderItems.compactMap { item -> UUID? in
             switch item {
-            case .remoteHostSection, .agentInboxHeader, .remoteTmuxWindow: return nil
+            case .remoteHostSection, .localMacSection, .agentInboxHeader, .remoteTmuxWindow:
+                return nil
             case .groupHeader, .workspace: return item.rowWorkspaceId
             }
         }
@@ -12040,10 +12041,17 @@ struct VerticalTabsSidebar: View, Equatable {
                     memberWorkspaceIds: renderContext.memberWorkspaceIdsByGroupId[groupId] ?? [],
                     renderContext: renderContext
                 )
-            case .remoteHostSection(let hostKey, let firstWorkspaceId):
+            case .remoteHostSection(let hostKey, let firstWorkspaceId, let runIndex):
                 return sidebarRemoteHostSectionTableConfiguration(
                     hostKey: hostKey,
                     firstWorkspaceId: firstWorkspaceId,
+                    runIndex: runIndex,
+                    renderContext: renderContext
+                )
+            case .localMacSection(let firstWorkspaceId, let runIndex):
+                return sidebarLocalMacSectionTableConfiguration(
+                    firstWorkspaceId: firstWorkspaceId,
+                    runIndex: runIndex,
                     renderContext: renderContext
                 )
             case .agentInboxHeader(let firstWorkspaceId):
@@ -13730,15 +13738,21 @@ struct VerticalTabsSidebar: View, Equatable {
                     if let snapshot = listSnapshot.groupRowsById[groupId] {
                         sidebarWorkspaceGroupRow(snapshot: snapshot)
                     }
-                case .remoteHostSection(let hostKey, _):
+                case .remoteHostSection(let hostKey, _, let runIndex):
                     sidebarRemoteHostSectionHeader(
                         hostKey: hostKey,
+                        runIndex: runIndex,
                         isPointerHovering: false,
                         contextMenuActions: nil,
                         renderContext: renderContext,
                         unreadCountForWorkspace: {
                             unreadSummariesByWorkspaceId[$0]?.unreadCount ?? 0
                         }
+                    )
+                case .localMacSection(_, let runIndex):
+                    sidebarLocalMacSectionHeader(
+                        runIndex: runIndex,
+                        renderContext: renderContext
                     )
                 case .agentInboxHeader:
                     sidebarAgentInboxHeader(renderContext: renderContext)

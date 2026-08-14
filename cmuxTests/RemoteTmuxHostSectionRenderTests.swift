@@ -34,6 +34,7 @@ struct RemoteTmuxHostSectionRenderTests {
 
         let itemIds = items.map { $0.id }
         #expect(itemIds == [
+            Self.localMacHeaderId(),
             .workspace(local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
             .workspace(xxlSession1.id),
@@ -43,8 +44,8 @@ struct RemoteTmuxHostSectionRenderTests {
         ])
         // The header nominates the machine's first mirror as its representative
         // row (scroll anchoring), and numbered navigation skips headers.
-        guard case .remoteHostSection(let hostKey, let firstWorkspaceId) = items[1] else {
-            Issue.record("expected a host section at index 1")
+        guard case .remoteHostSection(let hostKey, let firstWorkspaceId, _) = items[2] else {
+            Issue.record("expected a host section at index 2")
             return
         }
         #expect(hostKey == "hash-xxl")
@@ -71,6 +72,7 @@ struct RemoteTmuxHostSectionRenderTests {
 
         let itemIds = items.map { $0.id }
         #expect(itemIds == [
+            Self.localMacHeaderId(),
             .workspace(local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")),
@@ -82,10 +84,13 @@ struct RemoteTmuxHostSectionRenderTests {
         ])
     }
 
-    @Test func splitRunsShareOneHeaderAndItsCollapseDecision() throws {
-        // Sidebar reorders can interleave machines; every later run of an
-        // already-sectioned machine reuses the SAME header (no duplicate) and
-        // honors the same collapse decision.
+    @Test func splitRunsEachRenderAHeaderSharingOneCollapseDecision() throws {
+        // Sidebar reorders (drag, sort-by-recent, attention moves) can split
+        // a machine's sessions into several runs. EVERY run renders its own
+        // header — the regression: only the first run kept the header, so a
+        // session moved to the top took "cloudtop" with it and the machine's
+        // remaining sessions floated under the previous section — and every
+        // run honors the ONE collapse decision.
         let harness = try SectionHarness()
         defer { harness.tearDown() }
         let xxlSession1 = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
@@ -98,10 +103,18 @@ struct RemoteTmuxHostSectionRenderTests {
             remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
             collapsedRemoteHostKeys: []
         )
-        let xxlHeaderId = SidebarWorkspaceRenderItemID.remoteHostSection(
+        let xxlRun0HeaderId = SidebarWorkspaceRenderItemID.remoteHostSection(
             SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")
         )
-        #expect(expanded.filter { $0.id == xxlHeaderId }.count == 1)
+        let xxlRun1HeaderId = SidebarWorkspaceRenderItemID.remoteHostSection(
+            SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl", runIndex: 1)
+        )
+        #expect(expanded.filter { $0.id == xxlRun0HeaderId }.count == 1)
+        #expect(expanded.filter { $0.id == xxlRun1HeaderId }.count == 1)
+        // The second run's header sits directly above its session, so the
+        // session can never read as one of the previous machine's.
+        let run1HeaderIndex = try #require(expanded.firstIndex { $0.id == xxlRun1HeaderId })
+        #expect(expanded[expanded.index(after: run1HeaderIndex)].id == .workspace(xxlSession2.id))
         #expect(SidebarWorkspaceRenderItem.numberedWorkspaceIds(from: expanded).contains(xxlSession2.id))
 
         let collapsed = SidebarWorkspaceRenderItem.renderItems(
@@ -114,7 +127,69 @@ struct RemoteTmuxHostSectionRenderTests {
         #expect(!visible.contains(xxlSession1.id))
         #expect(!visible.contains(xxlSession2.id))
         #expect(visible.contains(xxl2Session.id))
-        #expect(collapsed.filter { $0.id == xxlHeaderId }.count == 1)
+        #expect(collapsed.filter { $0.id == xxlRun0HeaderId }.count == 1)
+        #expect(collapsed.filter { $0.id == xxlRun1HeaderId }.count == 1)
+    }
+
+    @Test func localWorkspacesBetweenMachinesGetALocalMacSection() throws {
+        // A local workspace moved between machine runs must render under its
+        // own "Local Mac" header — never as one of a machine's sessions. A
+        // purely local sidebar (no machines) keeps its headerless list.
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let xxlSession = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        let strayLocal = harness.manager.addTab(select: false)
+        let xxl2Session = harness.addMirror(hostKey: "hash-xxl2", label: "xxl2")
+
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            collapsedRemoteHostKeys: []
+        )
+        // Mirror placement clusters machines together, so the stray local
+        // lands after them — in ITS OWN second "Local Mac" run, never under
+        // the last machine's header.
+        #expect(items.map { $0.id } == [
+            Self.localMacHeaderId(),
+            .workspace(harness.local.id),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
+            .workspace(xxlSession.id),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")),
+            .workspace(xxl2Session.id),
+            Self.localMacHeaderId(runIndex: 1),
+            .workspace(strayLocal.id),
+        ])
+
+        // Collapsing Local Mac hides every local run's workspaces.
+        let collapsed = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            collapsedRemoteHostKeys: [SidebarRemoteHostSectionIdentity.localMacSectionKey]
+        )
+        let visible = SidebarWorkspaceRenderItem.numberedWorkspaceIds(from: collapsed)
+        #expect(!visible.contains(harness.local.id))
+        #expect(!visible.contains(strayLocal.id))
+        #expect(visible.contains(xxlSession.id))
+        #expect(visible.contains(xxl2Session.id))
+    }
+
+    @Test func purelyLocalSidebarStaysHeaderless() throws {
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let second = harness.manager.addTab(select: false)
+
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: [:],
+            collapsedRemoteHostKeys: []
+        )
+        #expect(items.map { $0.id } == [
+            .workspace(harness.local.id),
+            .workspace(second.id),
+        ])
     }
 
     @Test func hostSectionWinsOverWorkspaceGroupMembership() throws {
@@ -175,6 +250,7 @@ struct RemoteTmuxHostSectionRenderTests {
         )
         let itemIds = items.map { $0.id }
         #expect(itemIds == [
+            Self.localMacHeaderId(),
             .workspace(harness.local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
             .workspace(a1.id),
@@ -182,6 +258,13 @@ struct RemoteTmuxHostSectionRenderTests {
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")),
             .workspace(b1.id),
         ])
+    }
+
+    static func localMacHeaderId(runIndex: Int = 0) -> SidebarWorkspaceRenderItemID {
+        .localMacSection(SidebarRemoteHostSectionIdentity.uuid(
+            forHostKey: SidebarRemoteHostSectionIdentity.localMacSectionKey,
+            runIndex: runIndex
+        ))
     }
 
     @Test func sectionIdentityIsStableAndDistinct() {
@@ -193,6 +276,13 @@ struct RemoteTmuxHostSectionRenderTests {
         let b = SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")
         #expect(a1 == a2)
         #expect(a1 != b)
+        // Run salting: run 0 keeps the historical plain-key identity (collapse
+        // state persists across launches); later runs are distinct but stable.
+        let run1a = SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl", runIndex: 1)
+        let run1b = SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl", runIndex: 1)
+        #expect(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl", runIndex: 0) == a1)
+        #expect(run1a == run1b)
+        #expect(run1a != a1)
     }
 
     @Test func selectingHiddenMirrorExpandsItsMachine() throws {

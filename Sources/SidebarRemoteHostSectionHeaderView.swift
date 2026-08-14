@@ -217,3 +217,88 @@ struct SidebarRemoteHostSectionHeaderView: View, Equatable {
         }
     }
 }
+
+/// Immutable presentation state for the "Local Mac" sidebar section header.
+struct SidebarLocalMacSectionRowSnapshot: Equatable {
+    let isCollapsed: Bool
+    let memberCount: Int
+    let fontScale: CGFloat
+}
+
+/// Collapsible section header for LOCAL workspaces interleaved among remote
+/// machine sections. Purely a container: local workspaces need no machine
+/// verbs, only the identity ("Local Mac"), the count, and the collapse
+/// toggle — so a local terminal never reads as one of a machine's sessions.
+struct SidebarLocalMacSectionHeaderView: View, Equatable {
+    // Closures are excluded: the parent recreates them on each evaluation.
+    nonisolated static func == (
+        lhs: SidebarLocalMacSectionHeaderView,
+        rhs: SidebarLocalMacSectionHeaderView
+    ) -> Bool {
+        lhs.snapshot == rhs.snapshot
+    }
+
+    let snapshot: SidebarLocalMacSectionRowSnapshot
+    let onToggleCollapsed: () -> Void
+
+    private var metrics: SidebarWorkspaceGroupHeaderMetrics {
+        SidebarWorkspaceGroupHeaderMetrics(fontScale: snapshot.fontScale)
+    }
+
+    private var expandCollapseA11yLabel: String {
+        snapshot.isCollapsed
+            ? String(localized: "localMacSection.expand.a11y", defaultValue: "Expand Local Mac")
+            : String(localized: "localMacSection.collapse.a11y", defaultValue: "Collapse Local Mac")
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            CmuxSystemSymbolImage(
+                systemName: snapshot.isCollapsed ? "chevron.right" : "chevron.down",
+                pointSize: metrics.chevronFontSize,
+                weight: .semibold,
+                appliesGlobalFontMagnification: true
+            )
+            .foregroundStyle(.secondary)
+            .frame(width: metrics.chevronFrame, height: metrics.chevronFrame)
+            .contentShape(Rectangle())
+            .onTapGesture { onToggleCollapsed() }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(Text(expandCollapseA11yLabel))
+
+            HStack(spacing: 6) {
+                CmuxSystemSymbolImage(
+                    systemName: "laptopcomputer",
+                    pointSize: metrics.iconFontSize,
+                    weight: .semibold,
+                    appliesGlobalFontMagnification: true
+                )
+                .foregroundStyle(.secondary)
+                .frame(width: metrics.iconFrame, height: metrics.iconFrame)
+                .accessibilityHidden(true)
+                Text(String(localized: "localMacSection.title", defaultValue: "Local Mac"))
+                    .cmuxFont(size: metrics.nameFontSize, weight: .semibold)
+                    .foregroundStyle(Color.primary.opacity(0.9))
+                    .lineLimit(1)
+                Text("\(snapshot.memberCount)")
+                    .cmuxFont(size: metrics.unreadFontSize, weight: .medium)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Text(String.localizedStringWithFormat(
+                        String(
+                            localized: "localMacSection.workspaceCount.a11y",
+                            defaultValue: "%lld local workspaces"
+                        ),
+                        snapshot.memberCount
+                    )))
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onToggleCollapsed() }
+        }
+        .padding(.vertical, 5)
+        .padding(.leading, 4)
+        .padding(.trailing, SidebarWorkspaceListMetrics.rowContentHorizontalPadding)
+        .padding(.horizontal, SidebarWorkspaceListMetrics.rowOuterHorizontalPadding)
+        .accessibilityElement(children: .combine)
+    }
+}

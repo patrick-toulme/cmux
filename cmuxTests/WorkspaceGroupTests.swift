@@ -205,7 +205,8 @@ struct WorkspaceGroupTests {
             switch item {
             case .groupHeader(let renderedGroupId, _) where renderedGroupId == groupId:
                 groupMemberIds = memberWorkspaceIdsByGroupId[renderedGroupId] ?? []
-            case .groupHeader, .remoteHostSection, .agentInboxHeader, .remoteTmuxWindow:
+            case .groupHeader, .remoteHostSection, .localMacSection, .agentInboxHeader,
+                 .remoteTmuxWindow:
                 break
             case .workspace(let workspaceId):
                 visibleWorkspaceIds.append(workspaceId)
