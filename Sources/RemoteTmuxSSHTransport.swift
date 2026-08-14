@@ -264,19 +264,48 @@ actor RemoteTmuxSSHTransport {
         )
     }
 
-    /// The environment for transport spawns: the app environment, with
+    /// The environment for transport spawns: the app environment with
     /// `SSH_AUTH_SOCK` overridden by the CLI-captured hint while that socket
-    /// still exists. Only the master opener's agent matters for relays, but
-    /// applying it uniformly keeps every spawn consistent (mux clients ignore
-    /// it). `nil` = inherit unchanged.
+    /// still exists (only the master opener's agent matters for relays, but
+    /// applying it uniformly keeps every spawn consistent), and PATH extended
+    /// for ssh-config helper tools. `nil` = inherit unchanged.
     private func spawnEnvironment() -> [String: String]? {
-        guard let hint = agentSocketHint, !hint.isEmpty,
-              FileManager.default.fileExists(atPath: hint) else {
-            return nil
-        }
         var environment = ProcessInfo.processInfo.environment
-        environment["SSH_AUTH_SOCK"] = hint
-        return environment
+        var changed = false
+        if let hint = agentSocketHint, !hint.isEmpty,
+           FileManager.default.fileExists(atPath: hint) {
+            environment["SSH_AUTH_SOCK"] = hint
+            changed = true
+        }
+        if let extended = Self.pathExtendedForSSHHelperTools(environment["PATH"]) {
+            environment["PATH"] = extended
+            changed = true
+        }
+        return changed ? environment : nil
+    }
+
+    /// Appends the standard helper-tool directories to a GUI process PATH so
+    /// the user's ssh config behaves like it does in their terminal.
+    ///
+    /// GUI apps inherit launchd's minimal `/usr/bin:/bin:/usr/sbin:/sbin`,
+    /// but ssh configs routinely shell out — `ProxyCommand` relay helpers
+    /// (corporate relay tools) and `Match exec` network probes — from
+    /// `/usr/local/bin` or `/opt/homebrew/bin`. When those silently fail or
+    /// no-match, ssh dials the host DIRECTLY and times out even though
+    /// `ssh <host>` works in a terminal. Appending (never prepending) keeps
+    /// system binaries authoritative; only directories that exist are added.
+    /// Returns `nil` when nothing needs appending.
+    nonisolated static func pathExtendedForSSHHelperTools(
+        _ path: String?,
+        directoryExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> String? {
+        let extras = ["/usr/local/bin", "/opt/homebrew/bin"]
+        let current = (path ?? "").split(separator: ":").map(String.init)
+        let missing = extras.filter { !current.contains($0) && directoryExists($0) }
+        guard !missing.isEmpty else { return nil }
+        let joined = missing.joined(separator: ":")
+        guard let path, !path.isEmpty else { return joined }
+        return path + ":" + joined
     }
 
     /// Resolves (and caches) the remote account's `$HOME` over the shared

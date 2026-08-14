@@ -440,6 +440,92 @@ import Testing
         #expect(remoteCommand.hasSuffix("; true'"))
     }
 
+    // MARK: - Attach-time network-failure routing (GUI env vs terminal env)
+
+    /// The corp regression: the GUI-spawned opener dialed the resolved
+    /// HostName DIRECTLY (the config's relay stanza depends on terminal-only
+    /// environment — `Match exec` probes, ProxyCommand helper PATHs) and
+    /// timed out, while `ssh <host>` worked fine in the terminal. Attach-time
+    /// classification must route that to the interactive terminal instead of
+    /// hard-failing the whole multi-machine attach.
+    @Test func directNetworkFailuresRouteToInteractiveAtAttachTime() {
+        let timeout = "ssh: connect to host devbox.internal.example.com port 22: Operation timed out"
+        #expect(RemoteTmuxSSHTransport.indicatesInteractiveNetworkRetryMayHelp(timeout))
+        #expect(RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(timeout))
+        // The STRICT predicate must keep rejecting it: the reconnect master
+        // gate uses it, and a mid-outage timeout must keep retrying silently,
+        // never park N sessions awaiting manual re-authentication.
+        #expect(!RemoteTmuxSSHTransport.indicatesInteractiveRetryWillHelp(timeout))
+
+        for stderr in [
+            "ssh: connect to host h port 22: Connection refused",
+            "ssh: connect to host h port 22: No route to host",
+            "ssh: Could not resolve hostname h: nodename nor servname provided, or not known",
+            "kex_exchange_identification: read: Connection reset by peer",
+        ] {
+            #expect(RemoteTmuxSSHTransport.indicatesInteractiveNetworkRetryMayHelp(stderr))
+            #expect(RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr))
+        }
+        // The mux-only sentinel is a LOCAL dead-master condition, never a
+        // reason to prompt.
+        #expect(!RemoteTmuxSSHTransport.indicatesInteractiveNetworkRetryMayHelp(
+            RemoteTmuxHost.masterUnavailableSentinel + ": Operation timed out"
+        ))
+        // Auth failures keep flowing through the strict predicate.
+        #expect(RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(
+            "user@host: Permission denied (publickey)."
+        ))
+    }
+
+    @Test func authRequiredAttachArgvRoutesDirectNetworkFailures() {
+        let host = RemoteTmuxHost(destination: "devbox")
+        let timeout = RemoteTmuxCommandResult(
+            exitCode: 255,
+            stdout: "",
+            stderr: "ssh: connect to host devbox.internal.example.com port 22: Operation timed out"
+        )
+        #expect(
+            RemoteTmuxController.authRequiredAttachArgv(host: host, result: timeout)
+                == host.interactiveAuthInvocation()
+        )
+        let success = RemoteTmuxCommandResult(exitCode: 0, stdout: "ok", stderr: "")
+        #expect(RemoteTmuxController.authRequiredAttachArgv(host: host, result: success) == nil)
+    }
+
+    /// GUI PATH extension for ssh-config helper tools (ProxyCommand relays,
+    /// `Match exec` probes living in /usr/local/bin or /opt/homebrew/bin).
+    @Test func pathExtendedForSSHHelperToolsAppendsOnlyMissingExistingDirs() {
+        let allExist: (String) -> Bool = { _ in true }
+        #expect(
+            RemoteTmuxSSHTransport.pathExtendedForSSHHelperTools(
+                "/usr/bin:/bin", directoryExists: allExist
+            ) == "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+        )
+        // Already present: nothing to do.
+        #expect(
+            RemoteTmuxSSHTransport.pathExtendedForSSHHelperTools(
+                "/usr/local/bin:/opt/homebrew/bin:/usr/bin", directoryExists: allExist
+            ) == nil
+        )
+        // Directories that do not exist on this machine are never appended.
+        #expect(
+            RemoteTmuxSSHTransport.pathExtendedForSSHHelperTools(
+                "/usr/bin", directoryExists: { $0 == "/usr/local/bin" }
+            ) == "/usr/bin:/usr/local/bin"
+        )
+        #expect(
+            RemoteTmuxSSHTransport.pathExtendedForSSHHelperTools(
+                "/usr/bin", directoryExists: { _ in false }
+            ) == nil
+        )
+        // Empty/missing PATH still gains the helper dirs.
+        #expect(
+            RemoteTmuxSSHTransport.pathExtendedForSSHHelperTools(
+                nil, directoryExists: allExist
+            ) == "/usr/local/bin:/opt/homebrew/bin"
+        )
+    }
+
     @Test func interactiveAuthInvocationGuardsDashPrefixedDestination() {
         // A dash-prefixed destination must sit AFTER `--`, never be parsed as an
         // ssh option (defense in depth; the dialog/socket also reject it upstream).

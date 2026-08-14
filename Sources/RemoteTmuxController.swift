@@ -418,8 +418,10 @@ final class RemoteTmuxController {
             }
             return nil
         } catch let error as RemoteTmuxError {
+            // Attach-time predicate (wider than the reconnect gate's): see
+            // ``RemoteTmuxSSHTransport/indicatesInteractiveAttachRetryWillHelp``.
             if case .commandFailed(_, let stderr) = error,
-               RemoteTmuxSSHTransport.indicatesInteractiveRetryWillHelp(stderr) {
+               RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
                 return host.interactiveAuthInvocation()
             }
             throw error

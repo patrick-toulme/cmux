@@ -35,8 +35,12 @@ extension RemoteTmuxController {
         do {
             sessions = try await transport(for: host).discoverMirrorSessions(createIfEmpty: true)
         } catch let error as RemoteTmuxError {
+            // Attach-time uses the WIDER predicate: direct network failures
+            // route to the terminal too, where env-dependent relay configs
+            // (Match exec probes, ProxyCommand helpers on terminal-only
+            // PATHs) apply correctly. The reconnect gate stays strict.
             if case .commandFailed(_, let stderr) = error,
-               RemoteTmuxSSHTransport.indicatesInteractiveRetryWillHelp(stderr) {
+               RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
                 return .authRequired(sshArgv: host.interactiveAuthInvocation())
             }
             throw error

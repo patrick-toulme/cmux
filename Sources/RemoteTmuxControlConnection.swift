@@ -437,6 +437,16 @@ final class RemoteTmuxControlConnection {
             sessionName: sessionName,
             createIfMissing: createIfMissing
         )
+        // GUI PATH lacks the helper-tool directories ssh configs shell out to
+        // (`Match exec` probes, ProxyCommand relays); extend it so the control
+        // client evaluates the user's config like their terminal would.
+        if let extendedPath = RemoteTmuxSSHTransport.pathExtendedForSSHHelperTools(
+            ProcessInfo.processInfo.environment["PATH"]
+        ) {
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = extendedPath
+            proc.environment = environment
+        }
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
         proc.standardInput = inPipe
         proc.standardOutput = outPipe

@@ -9461,6 +9461,10 @@ struct CMUXCLI {
         // one machine at a time.
         var joinedWindowId: String?
         var hostResults: [[String: Any]] = []
+        // One unreachable machine must not strand the rest of the fleet:
+        // record the failure, keep attaching the others, report at the end.
+        // The command exits non-zero only when EVERY machine failed.
+        var failedHosts: [(destination: String, message: String)] = []
         // The terminal's live agent socket, so app-side master reopens after
         // outages forward the SAME agent the user authenticates with here
         // (shell rcs can point terminals at gpg/1Password/hardware-token agents the
@@ -9491,13 +9495,24 @@ struct CMUXCLI {
             if !jsonOutput {
                 print("Connecting to \(destination)…")
             }
-            let result = try mirrorRemoteTmuxHost(
-                destination: destination,
-                method: method,
-                params: params,
-                client: client,
-                jsonOutput: jsonOutput
-            )
+            let result: [String: Any]
+            do {
+                result = try mirrorRemoteTmuxHost(
+                    destination: destination,
+                    method: method,
+                    params: params,
+                    client: client,
+                    jsonOutput: jsonOutput
+                )
+            } catch let error as CLIError {
+                failedHosts.append((destination, error.message))
+                if !jsonOutput {
+                    FileHandle.standardError.write(
+                        Data("FAILED host=\(destination): \(error.message)\n".utf8)
+                    )
+                }
+                continue
+            }
             hostResults.append(result)
             if joinedWindowId == nil {
                 joinedWindowId = result["window_id"] as? String
@@ -9510,14 +9525,35 @@ struct CMUXCLI {
         }
 
         if jsonOutput {
-            if hostResults.count == 1, let only = hostResults.first {
-                // Single destination keeps the historical payload shape.
+            if hostResults.count == 1, let only = hostResults.first, failedHosts.isEmpty {
+                // Single successful destination keeps the historical payload shape.
                 print(jsonString(only))
             } else {
-                var summary: [String: Any] = ["mirrored": true, "hosts": hostResults]
+                var summary: [String: Any] = [
+                    "mirrored": !hostResults.isEmpty,
+                    "hosts": hostResults,
+                ]
                 if let joinedWindowId { summary["window_id"] = joinedWindowId }
+                if !failedHosts.isEmpty {
+                    summary["failed_hosts"] = failedHosts.map {
+                        ["host": $0.destination, "error": $0.message]
+                    }
+                }
                 print(jsonString(summary))
             }
+        }
+        if hostResults.isEmpty, let firstFailure = failedHosts.first {
+            // Every machine failed: exit non-zero with the full list.
+            let hosts = failedHosts.map(\.destination).joined(separator: ", ")
+            throw CLIError(
+                message: failedHosts.count == 1
+                    ? firstFailure.message
+                    : "ssh-tmux: all machines failed (\(hosts)); first error: \(firstFailure.message)"
+            )
+        }
+        if !failedHosts.isEmpty, !jsonOutput {
+            let hosts = failedHosts.map(\.destination).joined(separator: ", ")
+            print("Attached \(hostResults.count) of \(destinations.count) machines; failed: \(hosts)")
         }
     }
 

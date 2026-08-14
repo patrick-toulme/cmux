@@ -106,14 +106,16 @@ extension RemoteTmuxController {
     }
 
     /// Returns the interactive SSH argv when an attach preflight failed because
-    /// BatchMode could not prompt; otherwise the caller can handle the command
-    /// result normally.
+    /// BatchMode could not prompt — or because the app-spawned connect hit a
+    /// direct network failure the user's terminal environment may fix (see
+    /// ``RemoteTmuxSSHTransport/indicatesInteractiveAttachRetryWillHelp``).
+    /// Otherwise the caller handles the command result normally.
     nonisolated static func authRequiredAttachArgv(
         host: RemoteTmuxHost,
         result: RemoteTmuxCommandResult
     ) -> [String]? {
         guard !result.succeeded,
-              RemoteTmuxSSHTransport.indicatesInteractiveRetryWillHelp(result.stderr) else {
+              RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(result.stderr) else {
             return nil
         }
         return host.interactiveAuthInvocation()
