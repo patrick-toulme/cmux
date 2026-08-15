@@ -418,26 +418,63 @@ extension RemoteTmuxControlConnection {
 
     /// Pastes `text` into `paneId` as a tmux paste (`paste-buffer -p`), which wraps
     /// the content in bracketed-paste markers IFF the real pane's app has
-    /// bracketed-paste mode enabled — tmux tracks that on the real pty, which the
-    /// mirror surface can't see. This makes a pasted/dropped image path arrive as a
-    /// genuine paste, so the remote app recognizes it (e.g. claude → `[Image #N]`)
-    /// instead of seeing the plain keystrokes that ``sendKeys(paneId:data:)`` would
-    /// deliver. Uses a dedicated, immediately-deleted (`-d`) per-pane buffer so
-    /// there's no buffer-name collision. `text` must be a single line (callers route
-    /// only single-line content — e.g. file/image paths — here).
+    /// bracketed-paste mode enabled: tmux tracks that on the real pty, which the
+    /// mirror surface can't see. This makes pasted content arrive as a genuine
+    /// paste instead of the plain keystrokes ``sendKeys(paneId:data:)`` would
+    /// deliver, so a dropped image path is recognized (e.g. claude → `[Image #N]`)
+    /// and, critically, a multi-line paste into an agent TUI lands as ONE input
+    /// instead of one submitted message per line (an unbracketed newline is
+    /// indistinguishable from pressing Return).
+    ///
+    /// Control mode terminates every command on a raw newline, so the newline
+    /// byte itself can never ride inside one. Multi-line text is therefore
+    /// carried across newline-free commands: line content in single-quoted
+    /// `set-buffer` appends (chunked so no control line grows unbounded) and
+    /// each line break as a double-quoted `"\n"` escape, which tmux expands at
+    /// parse time. `paste-buffer` without `-r` then replaces LF with CR at
+    /// delivery, exactly what a local terminal paste does. Uses a dedicated,
+    /// immediately-deleted (`-d`) per-pane buffer so there's no buffer-name
+    /// collision.
     func pastePane(paneId: Int, text: String) -> Bool {
         guard let commands = Self.pastePaneCommands(paneId: paneId, text: text) else { return false }
-        return send(commands.setBuffer) && send(commands.pasteBuffer)
+        for command in commands {
+            guard send(command) else { return false }
+        }
+        return true
     }
 
-    nonisolated static func pastePaneCommands(paneId: Int, text: String)
-        -> (setBuffer: String, pasteBuffer: String)?
-    {
+    /// Longest content slice per `set-buffer` append, so a large paste becomes
+    /// many small control lines instead of one enormous one.
+    private nonisolated static let pasteBufferChunkLength = 2048
+
+    nonisolated static func pastePaneCommands(paneId: Int, text: String) -> [String]? {
         guard !text.isEmpty else { return nil }
         let buffer = "cmux-paste-\(paneId)"
-        return (
-            setBuffer: "set-buffer -b \(buffer) -- \(RemoteTmuxHost.shellSingleQuoted(text))",
-            pasteBuffer: "paste-buffer -p -d -b \(buffer) -t %\(paneId)"
-        )
+        // Terminal pastes treat every line-ending flavor as one break; the
+        // buffer stores plain LF and tmux converts to CR at paste time.
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var commands: [String] = []
+        func append(_ payload: String) {
+            // First write replaces the buffer, healing any stale leftover from
+            // an interrupted paste; the rest append.
+            let mode = commands.isEmpty ? "-b" : "-a -b"
+            commands.append("set-buffer \(mode) \(buffer) -- \(payload)")
+        }
+        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+        for (index, line) in lines.enumerated() {
+            if index > 0 {
+                append("\"\\n\"")
+            }
+            var remainder = line
+            while !remainder.isEmpty {
+                let chunk = remainder.prefix(Self.pasteBufferChunkLength)
+                remainder = remainder.dropFirst(chunk.count)
+                append(RemoteTmuxHost.shellSingleQuoted(String(chunk)))
+            }
+        }
+        commands.append("paste-buffer -p -d -b \(buffer) -t %\(paneId)")
+        return commands
     }
 }

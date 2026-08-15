@@ -398,12 +398,68 @@ import Testing
 
     @Test func pastePaneCommandsProtectOptionLookingText() throws {
         let commands = try #require(RemoteTmuxControlConnection.pastePaneCommands(paneId: 7, text: "-n not-an-option"))
-        #expect(commands.setBuffer == "set-buffer -b cmux-paste-7 -- '-n not-an-option'")
-        #expect(commands.pasteBuffer == "paste-buffer -p -d -b cmux-paste-7 -t %7")
+        #expect(commands == [
+            "set-buffer -b cmux-paste-7 -- '-n not-an-option'",
+            "paste-buffer -p -d -b cmux-paste-7 -t %7",
+        ])
     }
 
     @Test func pastePaneCommandsRejectEmptyText() {
         #expect(RemoteTmuxControlConnection.pastePaneCommands(paneId: 7, text: "") == nil)
+    }
+
+    @Test func pastePaneCommandsCarryMultiLineTextWithoutRawNewlines() throws {
+        // A multi-line paste must reach the remote app as ONE bracketed paste;
+        // the raw-keystroke fallback submits one message per line (unbracketed
+        // newline == Return). Control mode ends commands on raw newlines, so
+        // line breaks ride as tmux double-quoted "\n" escapes between
+        // single-quoted content appends.
+        let commands = try #require(
+            RemoteTmuxControlConnection.pastePaneCommands(paneId: 7, text: "one\ntwo\n\nfour")
+        )
+        #expect(commands == [
+            "set-buffer -b cmux-paste-7 -- 'one'",
+            "set-buffer -a -b cmux-paste-7 -- \"\\n\"",
+            "set-buffer -a -b cmux-paste-7 -- 'two'",
+            "set-buffer -a -b cmux-paste-7 -- \"\\n\"",
+            "set-buffer -a -b cmux-paste-7 -- \"\\n\"",
+            "set-buffer -a -b cmux-paste-7 -- 'four'",
+            "paste-buffer -p -d -b cmux-paste-7 -t %7",
+        ])
+        #expect(commands.allSatisfy { !$0.contains("\n") && !$0.contains("\r") })
+    }
+
+    @Test func pastePaneCommandsNormalizeCarriageReturnLineEndings() throws {
+        // CRLF and lone CR both mean "line break" on paste; the buffer stores
+        // plain LF and tmux's paste-buffer converts LF to CR at delivery, the
+        // same conversion a local terminal paste performs.
+        let crlf = try #require(RemoteTmuxControlConnection.pastePaneCommands(paneId: 3, text: "a\r\nb"))
+        let cr = try #require(RemoteTmuxControlConnection.pastePaneCommands(paneId: 3, text: "a\rb"))
+        let lf = try #require(RemoteTmuxControlConnection.pastePaneCommands(paneId: 3, text: "a\nb"))
+        #expect(crlf == lf)
+        #expect(cr == lf)
+    }
+
+    @Test func pastePaneCommandsChunkLongLinesAndKeepFirstWriteReplacing() throws {
+        // Long lines split across bounded appends so no control line grows
+        // unbounded; only the very first write replaces the buffer (healing a
+        // stale leftover), every later write appends.
+        let text = String(repeating: "x", count: 5000)
+        let commands = try #require(RemoteTmuxControlConnection.pastePaneCommands(paneId: 9, text: text))
+        #expect(commands.count == 4)
+        #expect(commands[0] == "set-buffer -b cmux-paste-9 -- '\(String(repeating: "x", count: 2048))'")
+        #expect(commands[1] == "set-buffer -a -b cmux-paste-9 -- '\(String(repeating: "x", count: 2048))'")
+        #expect(commands[2] == "set-buffer -a -b cmux-paste-9 -- '\(String(repeating: "x", count: 904))'")
+        #expect(commands[3] == "paste-buffer -p -d -b cmux-paste-9 -t %9")
+    }
+
+    @Test func pastePaneCommandsTextEndingInNewlineAppendsTrailingBreak() throws {
+        let commands = try #require(RemoteTmuxControlConnection.pastePaneCommands(paneId: 2, text: "run\n"))
+        #expect(commands == [
+            "set-buffer -b cmux-paste-2 -- 'run'",
+            "set-buffer -a -b cmux-paste-2 -- \"\\n\"",
+            "paste-buffer -p -d -b cmux-paste-2 -t %2",
+        ])
     }
 
     // MARK: - Interactive auth invocation (what `cmux ssh-tmux` runs in the tty)
