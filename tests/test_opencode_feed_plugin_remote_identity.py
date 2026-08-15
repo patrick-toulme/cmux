@@ -60,6 +60,12 @@ const liveSocket = `${socketDir}/live.sock`;
 
 const received = [];
 const conns = new Set();
+// Park mode: feed.push frames get NO reply, like a real blocking decision
+// awaiting the user. Parked connections are tracked so scenarios can tear
+// down only the shared connection (the app's idle reaper does exactly
+// that) and observe whether the parked push survives.
+let parkFeedPush = false;
+const parkedConns = new Set();
 
 const handleConnection = (conn) => {
   console.error(`[srv] accepted connection at ${Date.now()}`);
@@ -72,7 +78,11 @@ const handleConnection = (conn) => {
     while ((idx = buf.indexOf("\\n")) >= 0) {
       const line = buf.slice(0, idx);
       buf = buf.slice(idx + 1);
-      if (!line) continue;
+      if (!line) {
+        // A bare newline is the plugin's idle-reaper keepalive.
+        received.push("ka");
+        continue;
+      }
       let msg = null;
       try { msg = JSON.parse(line); } catch (_) {}
       if (msg && msg.method === "remote.tmux.resolve_pane") {
@@ -82,6 +92,11 @@ const handleConnection = (conn) => {
           ok: true,
           result: { resolved: true, workspace_id: "W1", surface_id: "S1" },
         }) + "\\n");
+      } else if (msg && msg.method === "feed.push" && parkFeedPush) {
+        const rid = (msg.params && msg.params.event && msg.params.event._opencode_request_id) || "";
+        received.push(`push-parked:${rid}`);
+        parkedConns.add(conn);
+        conn.on("close", () => received.push(`parked-closed:${rid}`));
       } else if (msg && msg.method) {
         const requestId = msg.params && msg.params.request_id ? `:${msg.params.request_id}` : "";
         received.push(`v2:${msg.method}${requestId}`);
@@ -92,8 +107,14 @@ const handleConnection = (conn) => {
       }
     }
   });
-  conn.on("close", () => conns.delete(conn));
+  conn.on("close", () => { conns.delete(conn); parkedConns.delete(conn); });
   conn.on("error", () => {});
+};
+
+const destroySharedConns = () => {
+  for (const conn of conns) {
+    if (!parkedConns.has(conn)) conn.destroy();
+  }
 };
 
 const fs = require("node:fs");
@@ -215,6 +236,59 @@ if (askSettled !== "settled") {
   throw new Error("parked question.asked did not resolve after out-of-band reply");
 }
 
+// Scenario 3c: the app's idle reaper closes the quiet SHARED connection
+// while a blocking decision parks on its DEDICATED connection. Three
+// pinned behaviors: the event hook returns while the push parks (a parked
+// hook would queue the very replied event that concludes it), the parked
+// push survives shared-connection churn (its resolver must not be swept
+// with the shared conn's), and the out-of-band reply still concludes it.
+received.length = 0;
+parkFeedPush = true;
+const askSettling = Promise.race([
+  hooks.event({ event: { type: "question.asked", properties: {
+    id: "q-88", sessionID: "s1",
+    questions: [{ question: "Deploy?", options: [{ label: "Yes" }, { label: "No" }] }],
+  } } }).then(() => "settled"),
+  new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+]);
+await waitFor(() => received.some((l) => l === "push-parked:q-88"), 5000, "blocking push parked on dedicated conn");
+if ((await askSettling) !== "settled") {
+  throw new Error("question.asked hook parked the event bus while the push waits");
+}
+destroySharedConns();
+await new Promise((resolve) => setTimeout(resolve, 500));
+if (received.some((l) => l === "parked-closed:q-88")) {
+  throw new Error("shared-conn drop must not settle a parked blocking push");
+}
+await hooks.event({ event: { type: "question.replied", properties: { sessionID: "s1", requestID: "q-88" } } });
+await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-88"), 5000, "conclude sent after shared-conn churn");
+await waitFor(() => received.some((l) => l === "parked-closed:q-88"), 5000, "parked push settled by out-of-band reply");
+parkFeedPush = false;
+
+// Scenario 3d: keepalive newlines ride the shared connection so the app's
+// idle reaper never fires between real frames.
+received.length = 0;
+await hooks.event({ event: { type: "tick" } });
+await waitFor(() => received.filter((l) => l === "ka").length >= 2, 5000, "keepalive newlines on the shared conn");
+
+// Scenario 3e: a conclude fired while cmux is down must be redelivered
+// after the next successful resolve instead of silently vanishing (a lost
+// conclude leaves "needs input" stuck until wait-timeout expiry).
+received.length = 0;
+await stopServer();
+await hooks.event({ event: { type: "question.replied", properties: { sessionID: "s1", requestID: "q-99" } } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+await startServer();
+await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-99"), 8000, "conclude redelivered after recovery");
+// Both live factories (hooks: s1 busy, hooksStale: s3 busy) repaint running
+// after the restart; drain those before scenario 4 asserts on quiet, then
+// idle both sessions so no straggler resolve can repaint into scenario 4's
+// window (afterResolveRecovered only paints while some session is busy).
+await waitFor(() => received.filter((l) => l === runningLine).length >= 2, 8000, "recovery repaints drained");
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
+await hooksStale.event({ event: { type: "session.status", properties: { sessionID: "s3", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 200));
+
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
 received.length = 0;
@@ -267,6 +341,7 @@ def main() -> int:
         env["FAKE_TMUX_LOG"] = str(fake_tmux_log)
         # Fast recovery cadence so the timer-driven scenarios finish quickly.
         env["CMUX_FEED_RECONNECT_INTERVAL_MS"] = "250"
+        env["CMUX_FEED_KEEPALIVE_INTERVAL_MS"] = "200"
         env["CMUX_FEED_DEBUG"] = "1"
         env.pop("CMUX_SOCKET_PATH", None)
         env.pop("CMUX_REMOTE_HOST_KEY", None)

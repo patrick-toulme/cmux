@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v4
+// cmux-feed-plugin-marker v5
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -43,6 +43,16 @@ const REMOTE_RESOLVE_ATTEMPTS = 3;
 // instead. Env override exists for tests.
 const RECONNECT_RECOVERY_INTERVAL_MS =
   Number(process.env.CMUX_FEED_RECONNECT_INTERVAL_MS || "") || 8_000;
+
+// The app reaps control connections that stay silent for ~30s (its
+// receive-timeout guard against hung peers). The shared connection is
+// silent exactly when the agent is: mid tool call, awaiting the user. A
+// bare newline is protocol-neutral (the app skips empty lines) but
+// resets the reaper's idle clock, and it turns a half-open FIN into a
+// prompt write error, so recovery starts within one interval instead of
+// at the next real frame. Env override exists for tests.
+const KEEPALIVE_INTERVAL_MS =
+  Number(process.env.CMUX_FEED_KEEPALIVE_INTERVAL_MS || "") || 12_000;
 
 // A turn-complete notification written moments before a disconnect may
 // have landed in a dying socket (the app's FIN arrives milliseconds after
@@ -89,6 +99,14 @@ export const CMUXFeed = async (ctx) => {
   let remoteTarget = null;
   let remoteResolvePromise = null;
   const pending = new Map();
+  // Resolvers for blocking pushes parked on their own dedicated
+  // connections. Kept apart from `pending` so shared-connection teardown
+  // (failPending) cannot kill a push whose app-side waiter still parks.
+  const blockingPending = new Map();
+  // Concludes not yet confirmed delivered (dead socket, app restart
+  // mid-reply). Flushed after the next successful resolve; feed.conclude
+  // is idempotent app-side.
+  const pendingConcludes = new Map();
   const messageRoles = new Map();
   const sessions = new Map();
 
@@ -439,12 +457,23 @@ export const CMUXFeed = async (ctx) => {
   };
 
   const resolvePending = (requestId, value) => {
-    if (!requestId || !pending.has(requestId)) return;
-    const resolver = pending.get(requestId);
-    pending.delete(requestId);
+    if (!requestId) return;
+    const map = pending.has(requestId)
+      ? pending
+      : blockingPending.has(requestId)
+        ? blockingPending
+        : null;
+    if (!map) return;
+    const resolver = map.get(requestId);
+    map.delete(requestId);
     resolver(value);
   };
 
+  // Shared-connection teardown fails the RPCs that ride it. Blocking
+  // pushes are deliberately spared: they park on dedicated connections
+  // and must survive shared-connection churn (the app's idle reaper
+  // closes a quiet shared connection in ~30s while a 120s decision wait
+  // is still legitimately parked).
   const failPending = () => {
     for (const requestId of pending.keys()) {
       resolvePending(requestId, { status: "timed_out" });
@@ -466,13 +495,14 @@ export const CMUXFeed = async (ctx) => {
           try {
             const msg = JSON.parse(line);
             // The socket sends either V2 responses (id/ok/result/error)
-            // or push frames keyed by request_id. We only care about
-            // results whose result.decision matches a waiter.
+            // or push frames keyed by request_id. For responses the echoed
+            // frame id is authoritative; request_id keys only route
+            // app-initiated frames (whose ids are app-minted).
             const responseId =
               typeof msg?.id === "string" && msg.id.startsWith("opencode-")
                 ? msg.id.slice("opencode-".length)
                 : null;
-            const requestId = msg?.result?.request_id || msg?.request_id || responseId;
+            const requestId = responseId || msg?.result?.request_id || msg?.request_id;
             resolvePending(requestId, msg.result || msg);
           } catch (e) {
             // swallow - malformed line, keep the connection alive.
@@ -498,7 +528,12 @@ export const CMUXFeed = async (ctx) => {
         disconnectHandled = true;
         feedDebugLog("socket disconnected:", reason);
         remoteTarget = null;
-        remoteResolvePromise = null;
+        // remoteResolvePromise is deliberately NOT cleared here: it only
+        // ever holds an IN-FLIGHT cycle (the cycle clears it on both
+        // outcomes), and that cycle's remaining attempts already retry
+        // against fresh connections. Clearing mid-flight let every
+        // disconnect mint one more concurrent cycle, each repainting on
+        // success (duplicate lifecycle lines, duplicate resolve RPCs).
         identityPromise = null;
         failPending();
         noteDisconnected();
@@ -542,6 +577,17 @@ export const CMUXFeed = async (ctx) => {
       return false;
     }
   };
+
+  // Keeps the shared connection out of the app's idle reaper and probes
+  // half-open sockets. Runs for the plugin's whole life; write errors
+  // surface through the socket's own error event.
+  const keepaliveTimer = setInterval(() => {
+    if (!client) return;
+    try {
+      client.write("\n");
+    } catch (_) {}
+  }, KEEPALIVE_INTERVAL_MS);
+  if (typeof keepaliveTimer.unref === "function") keepaliveTimer.unref();
 
   // V2 request/reply for non-feed verbs, reusing the pending map: replies
   // correlate through the frame id (`opencode-<requestId>`).
@@ -590,9 +636,17 @@ export const CMUXFeed = async (ctx) => {
           const surfaceId = firstString(result?.surface_id);
           if (result?.resolved === true && workspaceId && surfaceId) {
             remoteTarget = { workspaceId, surfaceId };
+            // Single-flight: the cache only ever holds an in-flight
+            // cycle. remoteTarget carries the success from here; a
+            // disconnect nulls it and the next caller starts fresh.
+            remoteResolvePromise = null;
             afterResolveRecovered(remoteTarget);
             return remoteTarget;
           }
+          feedDebugLog(
+            "resolve attempt", attempt, "failed:",
+            JSON.stringify(result).slice(0, 200)
+          );
         }
         remoteResolvePromise = null; // allow a later event to retry
         return null;
@@ -668,6 +722,30 @@ export const CMUXFeed = async (ctx) => {
         sendRemoteTurnCompleteNotification(sid);
       }
     }
+    for (const [requestId, queuedAt] of [...pendingConcludes]) {
+      pendingConcludes.delete(requestId);
+      // Past the wait timeout the app-side waiter has expired on its
+      // own; nothing is left to conclude.
+      if (Date.now() - queuedAt > REPLY_TIMEOUT_MS) continue;
+      concludeBlockingRequest(requestId, queuedAt);
+    }
+  };
+
+  // Tells the app a parked blocking decision resolved in the agent's own
+  // UI. Confirmed request/reply: a conclude lost to a dead socket leaves
+  // "needs input" stuck until wait-timeout expiry, so unconfirmed sends
+  // stay queued and are redelivered after the next successful resolve
+  // (feed.conclude is idempotent app-side).
+  const concludeBlockingRequest = (requestId, queuedAt = Date.now()) => {
+    pendingConcludes.set(requestId, queuedAt);
+    void requestWithReply(
+      "feed.conclude",
+      { request_id: requestId },
+      `conclude-${requestId}-${Date.now()}`,
+      5_000
+    ).then((result) => {
+      if (result?.status !== "timed_out") pendingConcludes.delete(requestId);
+    });
   };
 
   const sendRemoteLifecycle = (state) => {
@@ -757,6 +835,10 @@ export const CMUXFeed = async (ctx) => {
       if (remoteTarget) {
         event.workspace_id = remoteTarget.workspaceId;
         event.surface_id = remoteTarget.surfaceId;
+      } else {
+        feedDebugLog(
+          "frame without workspace binding:", extra?.hook_event_name || "?"
+        );
       }
     } else {
       event._ppid = process.pid;
@@ -804,25 +886,83 @@ export const CMUXFeed = async (ctx) => {
     return null;
   };
 
-  const pushBlocking = (event, requestId) => {
+  // The app serves each socket connection strictly line-by-line, so a
+  // parked blocking push would head-of-line block every later frame on
+  // the shared connection (lifecycle, telemetry, pane resolves, missed
+  // turn-completes, and the out-of-band feed.conclude that ENDS the very
+  // block) for the full wait timeout. Observed live: "needs input" stuck
+  // after answering in the agent's own UI, resolves timing out behind a
+  // parked permission, finish notifications delayed two minutes. Blocking
+  // pushes therefore ride a DEDICATED connection each; the shared one
+  // stays fluid.
+  const pushBlocking = async (event, requestId) => {
+    // Bind late: a disconnect between frame build and write nulls
+    // remoteTarget, and an unbound blocking frame reaches the app as
+    // unattributable (attention skipped, "needs input" stuck on the
+    // wrong panel). The resolve promise is cached, so this is free on
+    // the hot path.
+    if (isRemote() && !event.workspace_id) {
+      const target = await resolveRemoteTarget();
+      if (target) {
+        event.workspace_id = target.workspaceId;
+        event.surface_id = target.surfaceId;
+      }
+    }
     const reply = new Promise((resolve) => {
-      pending.set(requestId, resolve);
+      blockingPending.set(requestId, resolve);
       setTimeout(() => {
-        if (pending.has(requestId)) {
-          pending.delete(requestId);
+        if (blockingPending.has(requestId)) {
+          blockingPending.delete(requestId);
           resolve({ status: "timed_out" });
         }
       }, REPLY_TIMEOUT_MS);
     });
-    const wrote = write({
-      id: `opencode-${requestId}`,
-      method: "feed.push",
-      params: { event, wait_timeout_seconds: REPLY_TIMEOUT_MS / 1000 },
-    });
-    if (!wrote) {
+    let conn = null;
+    try {
+      conn = net.createConnection(socketPath || DEFAULT_SOCKET);
+      conn.setEncoding("utf8");
+      let lineBuffer = "";
+      conn.on("data", (chunk) => {
+        lineBuffer += chunk;
+        let index;
+        while ((index = lineBuffer.indexOf("\n")) >= 0) {
+          const line = lineBuffer.slice(0, index);
+          lineBuffer = lineBuffer.slice(index + 1);
+          if (!line) continue;
+          try {
+            const msg = JSON.parse(line);
+            const responseId =
+              typeof msg?.id === "string" && msg.id.startsWith("opencode-")
+                ? msg.id.slice("opencode-".length)
+                : null;
+            resolvePending(
+              responseId || msg?.result?.request_id || msg?.request_id,
+              msg.result || msg
+            );
+          } catch (_) {
+            // Non-JSON replies (V1 "OK") are irrelevant here.
+          }
+        }
+      });
+      // This connection dying means the wait itself is dead (app
+      // restart or reap); a settled push already emptied its map entry,
+      // so the late 'close' from our own destroy() is a no-op.
+      const settleDead = () => resolvePending(requestId, { status: "timed_out" });
+      conn.on("error", settleDead);
+      conn.on("end", settleDead);
+      conn.on("close", settleDead);
+      conn.write(JSON.stringify({
+        id: `opencode-${requestId}`,
+        method: "feed.push",
+        params: { event, wait_timeout_seconds: REPLY_TIMEOUT_MS / 1000 },
+      }) + "\n");
+    } catch (_) {
       resolvePending(requestId, { status: "timed_out" });
     }
-    return reply;
+    return reply.then((value) => {
+      if (conn) conn.destroy();
+      return value;
+    });
   };
 
   const pushTelemetry = (event) => {
@@ -924,11 +1064,7 @@ export const CMUXFeed = async (ctx) => {
             event.properties?.requestId
           );
           if (!requestId) break;
-          write({
-            id: `opencode-conclude-${Date.now()}`,
-            method: "feed.conclude",
-            params: { request_id: requestId },
-          });
+          concludeBlockingRequest(requestId);
           resolvePending(requestId, { status: "concluded_externally" });
           break;
         }
@@ -955,8 +1091,14 @@ export const CMUXFeed = async (ctx) => {
               permissionMode: "opencode",
             },
           });
-          const result = await pushBlocking(frame, requestId);
-          if (result?.status === "resolved" && result.decision?.kind === "permission") {
+          // Detached on purpose: this event hook must return while the
+          // push parks. Serialized bus dispatch otherwise queues every
+          // later event behind the wait, including the permission.replied
+          // that concludes it, so an in-agent answer could not clear the
+          // "needs input" state until wait-timeout expiry.
+          void (async () => {
+            const result = await pushBlocking(frame, requestId);
+            if (result?.status !== "resolved" || result.decision?.kind !== "permission") return;
             const mode = result.decision.mode;
             try {
               await updateSessionPermission(sid, permissionSessionRulesForMode(permission, mode));
@@ -969,7 +1111,7 @@ export const CMUXFeed = async (ctx) => {
                 message: mode === "deny" ? "User denied permission via cmux Feed." : undefined,
               });
             } catch (e) { /* ignore - opencode already moved on */ }
-          }
+          })();
           break;
         }
         case "question.asked": {
@@ -1004,12 +1146,14 @@ export const CMUXFeed = async (ctx) => {
                 permissionMode: "plan",
               },
             });
-            const result = await pushBlocking(frame, requestId);
-            if (result?.status === "resolved" && result.decision?.kind === "exit_plan") {
+            // Detached like permission.asked: the hook must not park.
+            void (async () => {
+              const result = await pushBlocking(frame, requestId);
+              if (result?.status !== "resolved" || result.decision?.kind !== "exit_plan") return;
               try {
                 await handleExitPlanDecision(sid, requestId, result.decision);
               } catch (_) {}
-            }
+            })();
             break;
           }
 
@@ -1019,14 +1163,16 @@ export const CMUXFeed = async (ctx) => {
             tool_name: "question",
             tool_input: { questions },
           });
-          const result = await pushBlocking(frame, requestId);
-          if (result?.status === "resolved" && result.decision?.kind === "question") {
+          // Detached like permission.asked: the hook must not park.
+          void (async () => {
+            const result = await pushBlocking(frame, requestId);
+            if (result?.status !== "resolved" || result.decision?.kind !== "question") return;
             try {
               await replyQuestion(requestId, questionAnswers(result.decision.selections));
             } catch (_) {
               try { await rejectQuestion(requestId); } catch (_) {}
             }
-          }
+          })();
           break;
         }
         default:
