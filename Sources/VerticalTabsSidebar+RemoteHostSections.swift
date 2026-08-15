@@ -75,6 +75,9 @@ extension VerticalTabsSidebar {
                 AppDelegate.shared?.remoteTmuxController
                     .detachHost(connectionHash: hostKey)
             },
+            onReauthenticateAll: { [weak tabManager] in
+                tabManager?.reauthenticateRemoteHosts()
+            },
             onKillAllSessions: { [label = snapshot.label, memberCount = snapshot.memberCount] in
                 guard confirmKillRemoteHostSessions(label: label, sessionCount: memberCount) else {
                     return

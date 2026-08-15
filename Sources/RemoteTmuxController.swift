@@ -284,6 +284,25 @@ final class RemoteTmuxController {
         )
     }
 
+    /// SSH destinations for a set of endpoint host keys
+    /// (``RemoteTmuxHost/connectionHash``), in the order given, deduped.
+    /// Backs the sidebar's one-press reauthenticate row: the CLI attach
+    /// command wants the destinations the user originally typed.
+    func destinations(forHostKeys hostKeys: [String]) -> [String] {
+        var byConnectionHash: [String: String] = [:]
+        for mirror in sessionMirrors.values {
+            byConnectionHash[mirror.host.connectionHash] = mirror.host.destination
+        }
+        for connection in connectionsByHostSession.values {
+            byConnectionHash[connection.host.connectionHash] = connection.host.destination
+        }
+        var seen: Set<String> = []
+        return hostKeys.compactMap { hostKey in
+            guard seen.insert(hostKey).inserted else { return nil }
+            return byConnectionHash[hostKey]
+        }
+    }
+
     /// Clears a host's awaiting-reauth state and immediately retries every
     /// suspended reconnect loop (the master is confirmed serving, so the
     /// re-attaches ride it with no further prompts).

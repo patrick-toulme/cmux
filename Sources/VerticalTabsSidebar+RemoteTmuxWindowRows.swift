@@ -164,6 +164,37 @@ extension VerticalTabsSidebar {
         }
     }
 
+    /// The one-press reauthenticate row above the machine sections.
+    func sidebarReauthenticateRow(
+        renderContext: WorkspaceListRenderContext
+    ) -> SidebarReauthenticateRowView {
+        SidebarReauthenticateRowView(
+            fontScale: renderContext.tabItemSettings.sidebarFontScale,
+            onReauthenticate: { [weak tabManager] in
+                tabManager?.reauthenticateRemoteHosts()
+            }
+        )
+    }
+
+    /// AppKit table row configuration for the reauthenticate row.
+    func sidebarReauthenticateTableConfiguration(
+        firstWorkspaceId: UUID,
+        renderContext: WorkspaceListRenderContext
+    ) -> SidebarWorkspaceTableRowConfiguration {
+        let equivalenceRow = sidebarReauthenticateRow(renderContext: renderContext)
+        return SidebarWorkspaceTableRowConfiguration(
+            id: .reauthenticate(),
+            workspaceId: firstWorkspaceId,
+            groupId: nil,
+            isGroupHeader: true,
+            isPinned: false,
+            environment: renderContext.environment,
+            equivalenceValue: equivalenceRow
+        ) { _, _ in
+            AnyView(self.sidebarReauthenticateRow(renderContext: renderContext))
+        }
+    }
+
     /// The "Needs attention" header view above the inbox rows.
     func sidebarAgentInboxHeader(
         renderContext: WorkspaceListRenderContext

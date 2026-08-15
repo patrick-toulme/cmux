@@ -26,6 +26,15 @@ struct SidebarWorkspaceRowInput {
     let canCloseWorkspace: Bool
     let unreadCount: Int
     let latestNotificationText: String?
+
+    /// Remote tmux mirrors surface activity through the attention system
+    /// (status dot + inbox), so the legacy numeric unread badge would
+    /// double-signal every turn completion on their rows. Mirrors display
+    /// zero; the unread STATE is untouched — it still drives the
+    /// unseen-done attention phase and the inbox.
+    static func displayedUnreadCount(_ count: Int, isRemoteTmuxMirror: Bool) -> Int {
+        isRemoteTmuxMirror ? 0 : count
+    }
     let showsAgentActivity: Bool
     let rowSpacing: CGFloat
     let showsModifierShortcutHints: Bool

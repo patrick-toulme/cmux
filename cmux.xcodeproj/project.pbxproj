@@ -1995,6 +1995,7 @@ C0DE71B10000000000000001 /* AppDelegate+AgentChatNotifications.swift in Sources 
 		D75280020000000000000001 /* SidebarProfilingSignposts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D75280020000000000000002 /* SidebarProfilingSignposts.swift */; };
 		C0DE48000000000000000001 /* SidebarProviderMenuRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE48000000000000000002 /* SidebarProviderMenuRegressionTests.swift */; };
 		B9000130A1B2C3D4E5F60719 /* SidebarPullRequestInteractivityUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000131A1B2C3D4E5F60719 /* SidebarPullRequestInteractivityUITests.swift */; };
+		60CA4D96484B4BDFA89B278D /* SidebarReauthenticateRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24998CC726704E4D998E33B8 /* SidebarReauthenticateRowView.swift */; };
 		0F0AFB526ECF43C7BF5BA5E4 /* SidebarRemoteHostSectionHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 523541A27AEC4241ABEFB5D3 /* SidebarRemoteHostSectionHeaderView.swift */; };
 		35016BCEE4EC4E9264CB100E /* SidebarRemoteTmuxWindowRowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 979A115F9BFE2E84D160C743 /* SidebarRemoteTmuxWindowRowView.swift */; };
 		5B0C00010000000000000001 /* SidebarResizerOcclusionResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0C00010000000000000002 /* SidebarResizerOcclusionResolver.swift */; };
@@ -4777,6 +4778,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 		D75280020000000000000002 /* SidebarProfilingSignposts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProfilingSignposts.swift; sourceTree = "<group>"; };
 		C0DE48000000000000000002 /* SidebarProviderMenuRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProviderMenuRegressionTests.swift; sourceTree = "<group>"; };
 		B9000131A1B2C3D4E5F60719 /* SidebarPullRequestInteractivityUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarPullRequestInteractivityUITests.swift; sourceTree = "<group>"; };
+		24998CC726704E4D998E33B8 /* SidebarReauthenticateRowView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SidebarReauthenticateRowView.swift; sourceTree = "<group>"; };
 		523541A27AEC4241ABEFB5D3 /* SidebarRemoteHostSectionHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SidebarRemoteHostSectionHeaderView.swift"; sourceTree = "<group>"; };
 		979A115F9BFE2E84D160C743 /* SidebarRemoteTmuxWindowRowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SidebarRemoteTmuxWindowRowView.swift"; sourceTree = "<group>"; };
 		5B0C00010000000000000002 /* SidebarResizerOcclusionResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sidebar/SidebarResizerOcclusionResolver.swift; sourceTree = "<group>"; };
@@ -7426,6 +7428,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				9903F00338354007942A0959 /* VerticalTabsSidebar+RemoteHostSections.swift */,
 				DFA89EEC14673290F771B488 /* VerticalTabsSidebar+RemoteTmuxWindowRows.swift */,
 				523541A27AEC4241ABEFB5D3 /* SidebarRemoteHostSectionHeaderView.swift */,
+				24998CC726704E4D998E33B8 /* SidebarReauthenticateRowView.swift */,
 				979A115F9BFE2E84D160C743 /* SidebarRemoteTmuxWindowRowView.swift */,
 				0DCA0215617C4467948216ED /* RemoteTmuxMasterGateOutcome.swift */,
 				57407D0C7FDA4F4D90EB0F9B /* RemoteTmuxControlMasterRole.swift */,
@@ -10170,6 +10173,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				C0DEF0A30000000000000001 /* SidebarPortDisplayText.swift in Sources */,
 				C0DEA7710000000000000005 /* SidebarProBadge.swift in Sources */,
 				D75280020000000000000001 /* SidebarProfilingSignposts.swift in Sources */,
+				60CA4D96484B4BDFA89B278D /* SidebarReauthenticateRowView.swift in Sources */,
 				0F0AFB526ECF43C7BF5BA5E4 /* SidebarRemoteHostSectionHeaderView.swift in Sources */,
 				35016BCEE4EC4E9264CB100E /* SidebarRemoteTmuxWindowRowView.swift in Sources */,
 				5B0C00010000000000000001 /* SidebarResizerOcclusionResolver.swift in Sources */,

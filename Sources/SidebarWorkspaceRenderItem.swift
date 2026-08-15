@@ -47,6 +47,13 @@ enum SidebarWorkspaceRenderItem {
     /// work — one agent per window) that currently needs attention. The id
     /// is the window's stable container panel.
     case remoteTmuxWindow(workspaceId: UUID, windowPanelId: UUID)
+    /// The one-press "Reauthenticate" row: reruns the attach command for
+    /// every machine in this window (interactive auth happens in the
+    /// terminal it opens). Emitted only while machine sections exist, above
+    /// the first section, so the post-wake ritual is one click instead of a
+    /// remembered command line. `firstWorkspaceId` nominates the first
+    /// remote workspace as the row's representative.
+    case reauthenticate(firstWorkspaceId: UUID)
 
     var id: SidebarWorkspaceRenderItemID {
         switch self {
@@ -67,6 +74,8 @@ enum SidebarWorkspaceRenderItem {
             return .agentInboxHeader()
         case .remoteTmuxWindow(_, let windowPanelId):
             return .remoteTmuxWindow(windowPanelId)
+        case .reauthenticate:
+            return .reauthenticate()
         }
     }
 
@@ -84,6 +93,8 @@ enum SidebarWorkspaceRenderItem {
             return firstWorkspaceId
         case .remoteTmuxWindow(let workspaceId, _):
             return workspaceId
+        case .reauthenticate(let firstWorkspaceId):
+            return firstWorkspaceId
         }
     }
 
@@ -129,6 +140,11 @@ enum SidebarWorkspaceRenderItem {
         // treatment ("Local Mac") whenever machine sections exist at all.
         let localKey = SidebarRemoteHostSectionIdentity.localMacSectionKey
         let hasMachineSections = tabs.contains { remoteHostKeyByWorkspaceId[$0.id] != nil }
+        // One-press reauth for every machine in the window, pinned above the
+        // first section (after the inbox: pending decisions outrank chrome).
+        if let firstRemote = tabs.first(where: { remoteHostKeyByWorkspaceId[$0.id] != nil }) {
+            items.append(.reauthenticate(firstWorkspaceId: firstRemote.id))
+        }
         var currentSectionKey: String? = nil
         var nextRunIndexBySectionKey: [String: Int] = [:]
         var skipChildrenInSection = false

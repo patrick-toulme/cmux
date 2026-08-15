@@ -393,13 +393,14 @@ struct RemoteTmuxAgentActivityMirrorTests {
                 SidebarAgentInboxItemRef(workspaceId: workspaceA, windowPanelId: windowOne),
             ]
         )
-        guard items.count == 6,
+        guard items.count == 7,
               case .agentInboxHeader(let headerWorkspaceId) = items[0],
               case .remoteTmuxWindow(let owner1, let panel1) = items[1],
               case .remoteTmuxWindow(let owner2, let panel2) = items[2],
-              case .remoteHostSection = items[3],
-              case .workspace(let firstSession) = items[4],
-              case .workspace(let secondSession) = items[5] else {
+              case .reauthenticate = items[3],
+              case .remoteHostSection = items[4],
+              case .workspace(let firstSession) = items[5],
+              case .workspace(let secondSession) = items[6] else {
             Issue.record("unexpected items: \(items)")
             return
         }
@@ -421,12 +422,13 @@ struct RemoteTmuxAgentActivityMirrorTests {
             collapsedRemoteHostKeys: [],
             agentInboxItems: []
         )
-        #expect(items.count == 2)
+        #expect(items.count == 3)
         for item in items {
             switch item {
             case .agentInboxHeader, .remoteTmuxWindow:
                 Issue.record("quiet sidebar must not render inbox items, got \(items)")
-            case .groupHeader, .workspace, .remoteHostSection, .localMacSection:
+            case .groupHeader, .workspace, .remoteHostSection, .localMacSection,
+                 .reauthenticate:
                 break
             }
         }
@@ -447,14 +449,24 @@ struct RemoteTmuxAgentActivityMirrorTests {
                 SidebarAgentInboxItemRef(workspaceId: workspaceA, windowPanelId: windowOne)
             ]
         )
-        guard items.count == 3,
+        guard items.count == 4,
               case .agentInboxHeader = items[0],
               case .remoteTmuxWindow(_, let panel) = items[1],
-              case .remoteHostSection = items[2] else {
+              case .reauthenticate = items[2],
+              case .remoteHostSection = items[3] else {
             Issue.record("unexpected items: \(items)")
             return
         }
         #expect(panel == windowOne)
+    }
+
+    /// Remote mirrors surface activity through the attention system; the
+    /// legacy numeric unread badge stays local-only so a turn completion is
+    /// signaled once (dot + inbox), not twice.
+    @Test func remoteMirrorsHideTheLegacyNumericUnreadBadge() {
+        #expect(SidebarWorkspaceRowInput.displayedUnreadCount(3, isRemoteTmuxMirror: true) == 0)
+        #expect(SidebarWorkspaceRowInput.displayedUnreadCount(3, isRemoteTmuxMirror: false) == 3)
+        #expect(SidebarWorkspaceRowInput.displayedUnreadCount(0, isRemoteTmuxMirror: true) == 0)
     }
 
     @MainActor

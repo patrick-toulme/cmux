@@ -35,6 +35,11 @@ struct SidebarWorkspaceRenderItemID: Hashable {
         Self(kind: 6, uuid: uuid)
     }
 
+    /// At most one reauthenticate row per window, so its identity is fixed.
+    static func reauthenticate() -> Self {
+        Self(kind: 7, uuid: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7)))
+    }
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.kind == rhs.kind && lhs.uuid == rhs.uuid
     }

@@ -34,6 +34,7 @@ struct RemoteTmuxHostSectionRenderTests {
 
         let itemIds = items.map { $0.id }
         #expect(itemIds == [
+            .reauthenticate(),
             Self.localMacHeaderId(),
             .workspace(local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
@@ -44,8 +45,8 @@ struct RemoteTmuxHostSectionRenderTests {
         ])
         // The header nominates the machine's first mirror as its representative
         // row (scroll anchoring), and numbered navigation skips headers.
-        guard case .remoteHostSection(let hostKey, let firstWorkspaceId, _) = items[2] else {
-            Issue.record("expected a host section at index 2")
+        guard case .remoteHostSection(let hostKey, let firstWorkspaceId, _) = items[3] else {
+            Issue.record("expected a host section at index 3")
             return
         }
         #expect(hostKey == "hash-xxl")
@@ -72,6 +73,7 @@ struct RemoteTmuxHostSectionRenderTests {
 
         let itemIds = items.map { $0.id }
         #expect(itemIds == [
+            .reauthenticate(),
             Self.localMacHeaderId(),
             .workspace(local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
@@ -151,6 +153,7 @@ struct RemoteTmuxHostSectionRenderTests {
         // lands after them — in ITS OWN second "Local Mac" run, never under
         // the last machine's header.
         #expect(items.map { $0.id } == [
+            .reauthenticate(),
             Self.localMacHeaderId(),
             .workspace(harness.local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
@@ -186,10 +189,36 @@ struct RemoteTmuxHostSectionRenderTests {
             remoteHostKeyByWorkspaceId: [:],
             collapsedRemoteHostKeys: []
         )
+        // No machines: no reauthenticate row, no headers — the classic list.
         #expect(items.map { $0.id } == [
             .workspace(harness.local.id),
             .workspace(second.id),
         ])
+    }
+
+    /// The one-press reauthenticate row leads the machine area exactly once,
+    /// regardless of how many machines or runs exist, and the CLI command it
+    /// composes quotes every destination.
+    @Test func reauthenticateRowLeadsTheMachineAreaOnce() throws {
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        _ = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        _ = harness.addMirror(hostKey: "hash-xxl2", label: "xxl2")
+
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            collapsedRemoteHostKeys: []
+        )
+        #expect(items.filter { $0.id == .reauthenticate() }.count == 1)
+        #expect(items.first?.id == .reauthenticate())
+
+        #expect(TabManager.reauthenticateCommand(destinations: []) == nil)
+        #expect(
+            TabManager.reauthenticateCommand(destinations: ["cloudtop", "xxl5"])
+                == "cmux ssh-tmux 'cloudtop' 'xxl5'"
+        )
     }
 
     @Test func hostSectionWinsOverWorkspaceGroupMembership() throws {
@@ -250,6 +279,7 @@ struct RemoteTmuxHostSectionRenderTests {
         )
         let itemIds = items.map { $0.id }
         #expect(itemIds == [
+            .reauthenticate(),
             Self.localMacHeaderId(),
             .workspace(harness.local.id),
             .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),

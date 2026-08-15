@@ -45,6 +45,7 @@ struct SidebarRemoteHostSectionHeaderView: View, Equatable {
     let onToggleCollapsed: () -> Void
     let onNewSession: () -> Void
     let onDetachMachine: () -> Void
+    let onReauthenticateAll: () -> Void
     let onKillAllSessions: () -> Void
     let onContextMenuAppear: () -> Void
     let onContextMenuDisappear: () -> Void
@@ -199,6 +200,13 @@ struct SidebarRemoteHostSectionHeaderView: View, Equatable {
                 action: onToggleCollapsed
             )
             Divider()
+            Button(
+                String(
+                    localized: "remoteTmuxHostSection.contextMenu.reauthenticate",
+                    defaultValue: "Reauthenticate All Machines"
+                ),
+                action: onReauthenticateAll
+            )
             Button(
                 String(
                     localized: "remoteTmuxHostSection.contextMenu.detach",

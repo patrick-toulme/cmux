@@ -11401,7 +11401,8 @@ struct VerticalTabsSidebar: View, Equatable {
         // machinery consumes.
         let visibleWorkspaceRowIds = workspaceRenderItems.compactMap { item -> UUID? in
             switch item {
-            case .remoteHostSection, .localMacSection, .agentInboxHeader, .remoteTmuxWindow:
+            case .remoteHostSection, .localMacSection, .agentInboxHeader, .remoteTmuxWindow,
+                 .reauthenticate:
                 return nil
             case .groupHeader, .workspace: return item.rowWorkspaceId
             }
@@ -12065,6 +12066,11 @@ struct VerticalTabsSidebar: View, Equatable {
                     windowPanelId: windowPanelId,
                     renderContext: renderContext
                 )
+            case .reauthenticate(let firstWorkspaceId):
+                return sidebarReauthenticateTableConfiguration(
+                    firstWorkspaceId: firstWorkspaceId,
+                    renderContext: renderContext
+                )
             case .workspace(let workspaceId):
                 guard let workspace = renderContext.workspaceById[workspaceId],
                       let input = workspaceRowInputsById[workspaceId] else { return nil }
@@ -12406,10 +12412,14 @@ struct VerticalTabsSidebar: View, Equatable {
             environment: environment,
             unreadRebuild: {
                 [model, workspaceId = tab.id,
-                 showsNotificationMessage = input.settings.showsNotificationMessage] snapshot in
+                 showsNotificationMessage = input.settings.showsNotificationMessage,
+                 isRemoteTmuxMirror = tab.remoteTmuxHostKey != nil] snapshot in
                 let summary = snapshot.summary(forWorkspaceId: workspaceId)
                 var fresh = model
-                fresh.unreadCount = summary.unreadCount
+                fresh.unreadCount = SidebarWorkspaceRowInput.displayedUnreadCount(
+                    summary.unreadCount,
+                    isRemoteTmuxMirror: isRemoteTmuxMirror
+                )
                 fresh.latestNotificationText = showsNotificationMessage
                     ? summary.latestNotificationText
                     : nil
@@ -13762,6 +13772,8 @@ struct VerticalTabsSidebar: View, Equatable {
                         windowPanelId: windowPanelId,
                         renderContext: renderContext
                     )
+                case .reauthenticate:
+                    sidebarReauthenticateRow(renderContext: renderContext)
                 case .workspace(let workspaceId):
                     if let input = listSnapshot.workspaceRowsById[workspaceId] {
                         workspaceRow(
@@ -14534,7 +14546,10 @@ struct VerticalTabsSidebar: View, Equatable {
             },
             workspaceShortcutModifierSymbol: renderContext.workspaceNumberShortcut.numberedDigitHintPrefix,
             canCloseWorkspace: renderContext.canCloseWorkspace,
-            unreadCount: unreadSummary.unreadCount,
+            unreadCount: SidebarWorkspaceRowInput.displayedUnreadCount(
+                unreadSummary.unreadCount,
+                isRemoteTmuxMirror: tab.remoteTmuxHostKey != nil
+            ),
             latestNotificationText: liveLatestNotificationText,
             showsAgentActivity: renderContext.showsAgentActivity,
             rowSpacing: tabRowSpacing,

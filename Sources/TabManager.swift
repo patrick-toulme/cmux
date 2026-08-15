@@ -1720,6 +1720,37 @@ class TabManager: ObservableObject {
         workspaceReordering.moveTabsToTop(tabIds)
     }
 
+    /// The one-press reauthenticate flow: opens a local terminal workspace
+    /// running the CLI attach for every machine in this window, in sidebar
+    /// order. Interactive authentication (password, MFA, security key) needs
+    /// a real tty, which is exactly what the terminal provides — the same
+    /// command the user would type after a wake, minus the remembering.
+    func reauthenticateRemoteHosts() {
+        let hostKeys = tabs.compactMap(\.remoteTmuxHostKey)
+        guard !hostKeys.isEmpty,
+              let controller = AppDelegate.shared?.remoteTmuxController else { return }
+        let destinations = controller.destinations(forHostKeys: hostKeys)
+        guard let command = Self.reauthenticateCommand(destinations: destinations) else { return }
+        _ = addWorkspace(
+            title: String(
+                localized: "sidebar.reauthenticate.workspaceTitle",
+                defaultValue: "Reauthenticate"
+            ),
+            initialTerminalCommand: command,
+            inheritWorkingDirectory: false,
+            select: true
+        )
+    }
+
+    /// The CLI attach command for `destinations`, or nil when there is
+    /// nothing to attach. Destinations are single-quoted so a hostname can
+    /// never be parsed as shell syntax.
+    static func reauthenticateCommand(destinations: [String]) -> String? {
+        guard !destinations.isEmpty else { return nil }
+        let quoted = destinations.map { RemoteTmuxHost.shellSingleQuoted($0) }
+        return "cmux ssh-tmux " + quoted.joined(separator: " ")
+    }
+
     func moveTabToTopForNotification(_ tabId: UUID) {
         // Remote tmux mirrors live inside machine sections: a notification
         // bump to the absolute top would tear the session out of its section
