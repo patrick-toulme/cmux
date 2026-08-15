@@ -476,6 +476,27 @@ final class FeedCoordinator: @unchecked Sendable {
         }
     }
 
+    /// Concludes a parked blocking decision that resolved OUTSIDE cmux: the
+    /// user answered the agent's question or permission prompt in the
+    /// agent's own UI (e.g. typed into the remote tmux pane), so no decision
+    /// will ever arrive through the Feed. Wakes the waiter with no decision,
+    /// which routes the parked ingest through its timeout arm — banner
+    /// cancelled, needs-input attention concluded, item expired — right now
+    /// instead of at wait-timeout expiry. Idempotent: unknown or already
+    /// decided ids only cancel any lingering banner.
+    func concludeExternally(requestId: String) {
+        waiterLock.lock()
+        let waiter = waiters[requestId]
+        let hasUndecidedWaiter = waiter != nil && waiter?.decision == nil
+        if hasUndecidedWaiter {
+            waiter?.semaphore.signal()
+        }
+        waiterLock.unlock()
+        if !hasUndecidedWaiter {
+            cancelNotification(requestId: requestId)
+        }
+    }
+
     /// Called by the `feed.*.reply` handlers. Marks the corresponding
     /// item resolved on the main-actor store and wakes any waiter.
     func deliverReply(requestId: String, decision: WorkstreamDecision) {
@@ -725,6 +746,12 @@ extension FeedCoordinator {
         attentionState.fallbackOwner = owner
         attentionState.count += 1
         pendingAttentionStates[target] = attentionState
+        // Pending blocking decisions are an agent-attention input: ping the
+        // live sort-by-active-sessions engine (debounced, no-op when off).
+        NotificationCenter.default.post(
+            name: WorkspaceActivitySortCoordinator.attentionInputsDidChange,
+            object: nil
+        )
 
         // Needs-input lifecycle drives the sidebar badge + hibernation state.
         owner.setAgentLifecycle(key: statusKey, panelId: panelId, lifecycle: .needsInput)
@@ -762,12 +789,22 @@ extension FeedCoordinator {
             return
         }
         pendingAttentionStates.removeValue(forKey: target)
+        NotificationCenter.default.post(
+            name: WorkspaceActivitySortCoordinator.attentionInputsDidChange,
+            object: nil
+        )
         let owner = liveAttentionOwner(for: target, fallback: attentionState.fallbackOwner)
 
         // Lifecycle is per-panel, so clearing this Feed-owned slot is safe even
         // if another panel or the agent's own slot still needs input.
         if let panelId = target.panelId {
             owner.clearAgentLifecycle(key: target.statusKey, panelId: panelId)
+        } else {
+            // Workspace-scoped registration wrote the needs-input slot under
+            // the then-focused panel (setAgentLifecycle's fallback). Clear the
+            // Feed-owned key across every panel, or the slot strands and the
+            // sidebar shows "needs input" forever after the decision resolves.
+            owner.clearAgentLifecycle(key: target.statusKey, panelId: nil)
         }
 
         // Workspace status is shared across panels (keyed only by statusKey),

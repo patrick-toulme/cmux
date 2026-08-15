@@ -425,6 +425,10 @@ class TabManager: ObservableObject {
     // Reorder/pin flows over the workspaces model (CmuxWorkspaces); owns
     // the pure batch-reorder planner.
     let workspaceReordering: WorkspaceReorderCoordinator<Workspace>
+    // Live "sort by active sessions" engine; reorders through
+    // workspaceReordering when agent attention state changes. Set once in
+    // init after the reorder coordinator is attached.
+    private(set) var activitySortCoordinator: WorkspaceActivitySortCoordinator!
     // Workspace-group lifecycle flows over the workspaces model
     // (CmuxWorkspaces); creation/teardown/selection invert through
     // WorkspaceGroupHosting.
@@ -575,6 +579,9 @@ class TabManager: ObservableObject {
         workspaces.attach(host: self)
         workspaceReordering.attach(host: self)
         workspaceGrouping.attach(host: self)
+        // Live "sort by active sessions": subscribes to attention-input pings
+        // and reorders through workspaceReordering (no-op while off).
+        activitySortCoordinator = WorkspaceActivitySortCoordinator(tabManager: self)
         addWorkspace(
             title: initialWorkspaceTitle,
             titleSource: .auto,
@@ -1714,6 +1721,15 @@ class TabManager: ObservableObject {
     }
 
     func moveTabToTopForNotification(_ tabId: UUID) {
+        // Remote tmux mirrors live inside machine sections: a notification
+        // bump to the absolute top would tear the session out of its section
+        // and fight the agent inbox, which already surfaces actionable
+        // sessions. Their elevation surfaces are the inbox and
+        // sort-by-active-sessions; local workspaces keep the classic bump.
+        if let workspace = tabs.first(where: { $0.id == tabId }),
+           workspace.remoteTmuxHostKey != nil {
+            return
+        }
         workspaceReordering.moveTabToTopForNotification(tabId)
     }
 

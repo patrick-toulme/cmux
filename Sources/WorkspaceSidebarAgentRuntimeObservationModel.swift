@@ -78,5 +78,11 @@ final class WorkspaceSidebarAgentRuntimeObservationModel {
         for id in terminatedObserverIDs {
             changeObservers[id] = nil
         }
+        // Lifecycle maps are an agent-attention input: ping the live
+        // sort-by-active-sessions engine (debounced, no-op when off).
+        NotificationCenter.default.post(
+            name: WorkspaceActivitySortCoordinator.attentionInputsDidChange,
+            object: nil
+        )
     }
 }

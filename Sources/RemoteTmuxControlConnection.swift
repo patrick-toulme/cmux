@@ -1094,6 +1094,31 @@ final class RemoteTmuxControlConnection {
         case let .streamError(reason):
             record("stream-error \(reason)")
             beginReconnecting()
+        case let .paused(paneId):
+            // A pane paused for OUR control client. Two sources:
+            // - The ack of cmux's own seed-scoped pause (`refresh-client -A
+            //   "%N:pause"` around a capture): the seed's trailing continue
+            //   lifts it, so acting here would resume output MID-SEED and
+            //   reintroduce the interleaving the pause exists to prevent.
+            // - A spontaneous pause (server-side `pause-after` flow
+            //   control): nothing else will resume it and the mirror would
+            //   freeze at its last frame. Resume now, then repaint the
+            //   visible screen — tmux discards output aged past the pause
+            //   threshold, so only a fresh capture recovers those frames.
+            if pendingPaneSeeds[paneId]?.isEmpty == false {
+                #if DEBUG
+                cmuxDebugLog("remote.flow.pause %\(paneId) ack=seedScoped")
+                #endif
+                break
+            }
+            #if DEBUG
+            cmuxDebugLog("remote.flow.pause %\(paneId) spontaneous -> continue + repaint")
+            #endif
+            record("flow-control pause %\(paneId); resumed")
+            _ = send(Self.paneOutputContinueCommand(paneId: paneId))
+            repaintPaneVisibleScreen(paneId: paneId)
+        case .continued:
+            break
         case .ignoredNotification:
             break
         case let .unparsed(line):

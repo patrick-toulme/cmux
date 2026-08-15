@@ -90,8 +90,23 @@ struct RemoteTmuxControlStreamParser {
         // ghostty's stream parser reassembles split UTF-8 across process_output
         // calls, but routing each half through `String(decoding:as: UTF8.self)`
         // first would replace it with U+FFFD before ghostty ever sees it.
-        if !inBlock, let output = Self.parseOutput(rawLine: bytes) {
+        //
+        // Output and the flow-control notifications are recognized even INSIDE
+        // a `%begin` block: tmux writes them from the pane-output path, so they
+        // interleave into command replies. Observed live: a capture-pane seed
+        // whose pane crossed the flow-control threshold mid-reply carried
+        // "%pause %<its own id>" — the block collector swallowed it as content
+        // and the seed painted the literal line into the pane (the frozen
+        // "%pause %N" panes after wake). Their shapes are exact (sigil + id +
+        // structured payload), so real captured content cannot false-positive
+        // beyond leaked artifacts of these very notifications, which dropping
+        // heals. `%end`-lookalike content still stays content: block
+        // termination requires the matching command number below.
+        if let output = Self.parseOutput(rawLine: bytes) {
             return prefixMessages + [output]
+        }
+        if let flowControl = Self.parseFlowControl(rawLine: bytes) {
+            return prefixMessages + [flowControl]
         }
 
         let line = String(decoding: bytes, as: UTF8.self)
@@ -175,6 +190,69 @@ struct RemoteTmuxControlStreamParser {
               let paneId = Int(String(decoding: bytes[digitsStart..<i], as: UTF8.self))
         else { return nil }
         return .output(paneId: paneId, data: unescapeOutput(Array(bytes[(i + 1)...])))
+    }
+
+    private static let pausePrefix: [UInt8] = Array("%pause ".utf8)
+    private static let continuePrefix: [UInt8] = Array("%continue ".utf8)
+    private static let extendedOutputPrefix: [UInt8] = Array("%extended-output ".utf8)
+
+    /// Parses the flow-control notifications — `%pause %<pane>`,
+    /// `%continue %<pane>`, and `%extended-output %<pane> <age>[ …] : <data>`
+    /// — from raw line bytes. Exact shapes only (see the in-block rationale
+    /// at the call site). `%extended-output`'s payload is unescaped from raw
+    /// bytes exactly like `%output`, so multi-byte UTF-8 split across
+    /// notifications survives.
+    private static func parseFlowControl(rawLine bytes: [UInt8]) -> RemoteTmuxControlMessage? {
+        if let paneId = exactPaneNotification(bytes, prefix: pausePrefix) {
+            return .paused(paneId: paneId)
+        }
+        if let paneId = exactPaneNotification(bytes, prefix: continuePrefix) {
+            return .continued(paneId: paneId)
+        }
+        return parseExtendedOutput(rawLine: bytes)
+    }
+
+    /// Matches `<prefix>%<digits>` with nothing after the digits; returns the id.
+    private static func exactPaneNotification(_ bytes: [UInt8], prefix: [UInt8]) -> Int? {
+        guard bytes.starts(with: prefix) else { return nil }
+        var i = prefix.count
+        guard i < bytes.count, bytes[i] == UInt8(ascii: "%") else { return nil }
+        i += 1
+        let digitsStart = i
+        while i < bytes.count, bytes[i] >= UInt8(ascii: "0"), bytes[i] <= UInt8(ascii: "9") {
+            i += 1
+        }
+        guard i > digitsStart, i == bytes.count else { return nil }
+        return Int(String(decoding: bytes[digitsStart..<i], as: UTF8.self))
+    }
+
+    /// Parses `%extended-output %<pane> <age>[ <words>…] : <data>` from raw
+    /// bytes: the payload starts after the FIRST ` : ` separator (the
+    /// metadata fields never contain a colon) and is octal-unescaped like
+    /// `%output`. tmux switches to this form while a pane is under flow
+    /// control; treating it as ignorable dropped every paused pane's bytes.
+    private static func parseExtendedOutput(rawLine bytes: [UInt8]) -> RemoteTmuxControlMessage? {
+        guard bytes.starts(with: extendedOutputPrefix) else { return nil }
+        var i = extendedOutputPrefix.count
+        guard i < bytes.count, bytes[i] == UInt8(ascii: "%") else { return nil }
+        i += 1
+        let digitsStart = i
+        while i < bytes.count, bytes[i] >= UInt8(ascii: "0"), bytes[i] <= UInt8(ascii: "9") {
+            i += 1
+        }
+        guard i > digitsStart,
+              let paneId = Int(String(decoding: bytes[digitsStart..<i], as: UTF8.self))
+        else { return nil }
+        var j = i
+        while j + 3 <= bytes.count {
+            if bytes[j] == UInt8(ascii: " "),
+               bytes[j + 1] == UInt8(ascii: ":"),
+               bytes[j + 2] == UInt8(ascii: " ") {
+                return .output(paneId: paneId, data: unescapeOutput(Array(bytes[(j + 3)...])))
+            }
+            j += 1
+        }
+        return nil
     }
 
     private func parseNotification(_ line: String) -> RemoteTmuxControlMessage {

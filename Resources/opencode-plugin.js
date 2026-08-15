@@ -810,6 +810,28 @@ export const CMUXFeed = async (ctx) => {
           }));
           break;
         }
+        case "permission.replied":
+        case "question.replied":
+        case "question.rejected": {
+          // The decision resolved in the agent's own UI (or through cmux,
+          // in which case this is an idempotent no-op app-side). Conclude
+          // the parked blocking item NOW so the sidebar's needs-input state
+          // and any banner clear instead of lingering until the reply
+          // timeout, and resolve the local waiter with a non-"resolved"
+          // status so pushBlocking exits without re-replying to opencode.
+          const requestId = firstString(
+            event.properties?.requestID,
+            event.properties?.requestId
+          );
+          if (!requestId) break;
+          write({
+            id: `opencode-conclude-${Date.now()}`,
+            method: "feed.conclude",
+            params: { request_id: requestId },
+          });
+          resolvePending(requestId, { status: "concluded_externally" });
+          break;
+        }
         case "permission.asked": {
           const props = event.properties || {};
           const requestId = props.id;

@@ -1404,6 +1404,8 @@ class TerminalController {
                     requiresIngestionAcknowledgment: request.id != nil
                 )
             )
+        case "feed.conclude":
+            return v2Result(id: request.id, v2FeedConclude(params: request.params))
         case "feed.permission.reply":
             return v2Result(id: request.id, v2FeedPermissionReply(params: request.params))
         case "feed.question.reply":
@@ -2764,6 +2766,7 @@ class TerminalController {
             "feedback.open",
             "feedback.submit",
             "feed.push",
+            "feed.conclude",
             "feed.permission.reply",
             "feed.question.reply",
             "feed.exit_plan.reply",
@@ -6091,6 +6094,21 @@ class TerminalController {
         default:
             break
         }
+    }
+
+    /// `feed.conclude` — a blocking decision was resolved outside cmux (the
+    /// user answered in the agent's own UI), so conclude the parked item
+    /// immediately instead of letting it sit until wait-timeout expiry.
+    private nonisolated func v2FeedConclude(params: [String: Any]) -> V2CallResult {
+        guard let requestId = params["request_id"] as? String else {
+            return .err(
+                code: "invalid_params",
+                message: "feed.conclude requires request_id",
+                data: nil
+            )
+        }
+        FeedCoordinator.shared.concludeExternally(requestId: requestId)
+        return .ok(["concluded": true])
     }
 
     private nonisolated func v2FeedPermissionReply(params: [String: Any]) -> V2CallResult {

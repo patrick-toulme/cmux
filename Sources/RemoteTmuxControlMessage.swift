@@ -61,6 +61,16 @@ enum RemoteTmuxControlMessage: Sendable, Equatable {
     /// version-variable middle fields (session/window/pane/flags) are ignored.
     case subscriptionChanged(name: String, value: String)
 
+    /// `%pause %<pane>` — tmux paused this pane's output for THIS control
+    /// client (flow control, `pause-after`). cmux drains the stream
+    /// continuously, so the connection answers with an immediate
+    /// `refresh-client -A '%<pane>:continue'`; left paused, the mirror
+    /// freezes at its last frame.
+    case paused(paneId: Int)
+
+    /// `%continue %<pane>` — tmux resumed this pane's output.
+    case continued(paneId: Int)
+
     /// The coalesced output of one command block (`%begin`…`%end`/`%error`).
     case commandResult(commandNumber: Int, lines: [String], isError: Bool)
 

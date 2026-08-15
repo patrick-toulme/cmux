@@ -82,7 +82,8 @@ const server = net.createServer((conn) => {
           result: { resolved: true, workspace_id: "W1", surface_id: "S1" },
         }) + "\\n");
       } else if (msg && msg.method) {
-        received.push(`v2:${msg.method}`);
+        const requestId = msg.params && msg.params.request_id ? `:${msg.params.request_id}` : "";
+        received.push(`v2:${msg.method}${requestId}`);
         conn.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + "\\n");
       } else {
         received.push(line);
@@ -140,6 +141,26 @@ const hooksStale = await mod.CMUXFeed({ directory: "/tmp/x" });
 await hooksStale.event({ event: { type: "session.status", properties: { sessionID: "s3", status: { type: "busy" } } } });
 await waitFor(() => received.some((l) => l === "resolve:host-live:%7"), 5000, "live tmux identity wins over stale env");
 await waitFor(() => received.some((l) => l === runningLine), 5000, "lifecycle running with live identity");
+
+// Scenario 3b: a question answered in the agent's own UI (out-of-band)
+// concludes the parked blocking item immediately: the plugin sends
+// feed.conclude and the parked event promise resolves without replying
+// to opencode.
+received.length = 0;
+const pendingAsk = hooks.event({ event: { type: "question.asked", properties: {
+  id: "q-77", sessionID: "s1",
+  questions: [{ question: "Proceed?", options: [{ label: "Yes" }, { label: "No" }] }],
+} } });
+await waitFor(() => received.some((l) => l.startsWith("v2:feed.push")), 5000, "blocking push parked");
+await hooks.event({ event: { type: "question.replied", properties: { sessionID: "s1", requestID: "q-77" } } });
+await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-77"), 5000, "feed.conclude sent for out-of-band reply");
+const askSettled = await Promise.race([
+  pendingAsk.then(() => "settled"),
+  new Promise((resolve) => setTimeout(() => resolve("timeout"), 4000)),
+]);
+if (askSettled !== "settled") {
+  throw new Error("parked question.asked did not resolve after out-of-band reply");
+}
 
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.

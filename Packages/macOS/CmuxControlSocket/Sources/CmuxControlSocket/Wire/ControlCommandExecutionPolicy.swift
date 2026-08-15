@@ -84,6 +84,7 @@ public enum ControlCommandExecutionPolicy: Sendable, Equatable {
         "auth.sign_out",
         "feedback.submit",
         "feed.push",
+        "feed.conclude",
         "feed.permission.reply",
         "feed.question.reply",
         "feed.exit_plan.reply",

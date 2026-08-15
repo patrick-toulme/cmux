@@ -561,6 +561,12 @@ final class TerminalNotificationStore: ObservableObject {
         )
         refreshDockBadge()
         emitUnreadBadgeEventIfChanged()
+        // Unread turn-completes are an agent-attention input: ping the live
+        // sort-by-active-sessions engine (debounced, no-op when off).
+        NotificationCenter.default.post(
+            name: WorkspaceActivitySortCoordinator.attentionInputsDidChange,
+            object: nil
+        )
     }
 
     /// Publishes one per-window Dock surface mutation without rebuilding the
@@ -593,6 +599,10 @@ final class TerminalNotificationStore: ObservableObject {
             totalUnreadCount: unreadCount
         )
         refreshUnreadIndicatorTotals()
+        NotificationCenter.default.post(
+            name: WorkspaceActivitySortCoordinator.attentionInputsDidChange,
+            object: nil
+        )
     }
 
     /// Refreshes global indicator totals after an incremental owner transition.
