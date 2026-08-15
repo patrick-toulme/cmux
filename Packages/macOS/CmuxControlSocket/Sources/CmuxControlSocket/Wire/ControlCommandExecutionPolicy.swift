@@ -87,6 +87,7 @@ public enum ControlCommandExecutionPolicy: Sendable, Equatable {
         "feed.conclude",
         "debug.attention_state",
         "debug.set_app_focus_override",
+        "debug.paste_mirror",
         "feed.permission.reply",
         "feed.question.reply",
         "feed.exit_plan.reply",

@@ -1424,6 +1424,21 @@ class TerminalController {
                 message: "debug.set_app_focus_override is DEBUG-only"
             )
             #endif
+        case "debug.paste_mirror":
+            // DEBUG-only: drives the mirror paste path (pasteIntoMirror →
+            // tmux paste-buffer) without a GUI clipboard event, so the
+            // harness can regression-test paste delivery end to end.
+            #if DEBUG
+            return v2VmCall(id: request.id, timeoutSeconds: 10) { [params = request.params] in
+                await MainActor.run { Self.debugPasteMirror(params: params) }
+            }
+            #else
+            return v2Error(
+                id: request.id,
+                code: "method_not_found",
+                message: "debug.paste_mirror is DEBUG-only"
+            )
+            #endif
         case "feed.permission.reply":
             return v2Result(id: request.id, v2FeedPermissionReply(params: request.params))
         case "feed.question.reply":
@@ -2787,6 +2802,7 @@ class TerminalController {
             "feed.conclude",
             "debug.attention_state",
             "debug.set_app_focus_override",
+            "debug.paste_mirror",
             "feed.permission.reply",
             "feed.question.reply",
             "feed.exit_plan.reply",
@@ -6172,6 +6188,22 @@ class TerminalController {
         let focused = params["focused"] as? Bool
         AppFocusState.overrideIsFocused = focused
         return ["focus_override": focused.map(String.init) ?? "cleared"]
+    }
+
+    /// `debug.paste_mirror`: routes `text` through the exact path a GUI
+    /// paste takes for a mirror surface (`pasteIntoMirror`), reporting
+    /// whether the mirror claimed it. DEBUG builds only.
+    @MainActor
+    static func debugPasteMirror(params: [String: Any]) -> [String: Any] {
+        guard let surfaceIdRaw = params["surface_id"] as? String,
+              let surfaceId = UUID(uuidString: surfaceIdRaw),
+              let text = params["text"] as? String
+        else {
+            return ["error": "surface_id (UUID) and text are required"]
+        }
+        let handled = AppDelegate.shared?.remoteTmuxController
+            .pasteIntoMirror(surfaceId: surfaceId, text: text) ?? false
+        return ["handled": handled]
     }
 
     /// `feed.conclude` — a blocking decision was resolved outside cmux (the

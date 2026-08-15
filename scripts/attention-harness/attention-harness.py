@@ -25,6 +25,7 @@ override, so the user's main app and other tagged instances are untouched.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -441,6 +442,72 @@ class Harness:
         self.send_events(self.turn_end(sid))
         time.sleep(1)
 
+    def scenario_paste_multiline(self) -> None:
+        # A multi-line paste into a mirror pane must arrive as ONE tmux
+        # paste (bracketed iff the app opted in), never as raw keystrokes
+        # (one submitted message per line) and never as nothing at all (a
+        # claimed paste whose delivery failed). The sink pane enables
+        # bracketed paste and echoes raw bytes to a file.
+        sink_out = "/tmp/attn-harness-paste-sink.out"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(sink_out)
+        created = self.tmux(
+            "new-window", "-t", "harness", "-P",
+            "-F", "#{window_id} #{pane_id}",
+            f"stty raw -echo; printf '\\033[?2004h'; cat -u -v > {sink_out}",
+        )
+        parts = created.stdout.strip().split()
+        if len(parts) != 2:
+            record("paste sink pane exists", False,
+                   f"new-window output: {created.stdout!r}")
+            return
+        sink_window, sink_pane = parts
+        # A paste targets a pane the user is looking at: select the sink
+        # window so its mirror tab materializes a live surface.
+        self.tmux("select-window", "-t", sink_window, check=False)
+        record("paste sink pane exists", True)
+        mirror = self.mirror_workspace() or {}
+        host_key = mirror.get("host_key", "")
+        surface_id = ""
+        for _ in range(20):
+            resolved = self.rpc("remote.tmux.resolve_pane",
+                                {"host_key": host_key, "pane_id": sink_pane})
+            # The debug CLI prints the result payload unwrapped; a raw
+            # socket reply nests it under "result" (same fallback shape as
+            # mirror_workspace()).
+            result = resolved.get("result", resolved)
+            if result.get("resolved") and result.get("surface_id"):
+                surface_id = result["surface_id"]
+                break
+            time.sleep(0.5)
+        if not surface_id:
+            record("paste sink pane mirrored", False, "pane never resolved")
+            return
+        record("paste sink pane mirrored", True)
+        text = "line one\nline 'two' \"quoted\"\n\nline four; rm -f /tmp/not-run"
+        paste = self.rpc("debug.paste_mirror",
+                         {"surface_id": surface_id, "text": text})
+        handled = paste.get("result", paste).get("handled") is True
+        record("paste claimed by mirror", handled,
+               json.dumps(paste)[:200] if not handled else "")
+        # The sink runs `cat -v`, which visualizes control bytes: ESC as
+        # "^[" and the CRs tmux substitutes for newlines as "^M".
+        expected = "^[[200~" + text.replace("\n", "^M") + "^[[201~"
+        received = ""
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                with open(sink_out, "rb") as handle:
+                    received = handle.read().decode("utf-8", "replace")
+            except FileNotFoundError:
+                received = ""
+            if received == expected:
+                break
+            time.sleep(0.5)
+        record("paste arrives as one bracketed paste", received == expected,
+               f"got {received!r}"[:300])
+        self.tmux("kill-window", "-t", sink_pane, check=False)
+
     def scenario_complete_during_downtime(self) -> None:
         sid = self.new_session_id()
         self.send_events(self.user_prompt(sid, "finish while down", "msg_h5"))
@@ -471,6 +538,7 @@ class Harness:
                 "working": self.scenario_working_and_done,
                 "permission": self.scenario_permission,
                 "question": self.scenario_question,
+                "paste": self.scenario_paste_multiline,
                 "restart": self.scenario_restart_mid_turn,
                 "downtime": self.scenario_complete_during_downtime,
             }
@@ -500,7 +568,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--only", action="append", default=[],
-        help="run only the named scenario(s): working, permission, question, restart, downtime",
+        help="run only the named scenario(s): working, permission, question, paste, restart, downtime",
     )
     args = parser.parse_args()
     return Harness(
