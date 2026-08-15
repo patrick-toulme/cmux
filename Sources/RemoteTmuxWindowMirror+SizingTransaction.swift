@@ -4,6 +4,134 @@ import CmuxTerminal
 import Foundation
 
 extension RemoteTmuxWindowMirror {
+    // MARK: Multi-host single-writer sizing (see ``hostReports``)
+
+    /// A host view reports its visibility. Becoming visible bumps the
+    /// activation stamp, which is what elects the sizing owner: the most
+    /// recently activated visible host, tmux's own `window-size latest`.
+    func noteHostVisibility(token: UUID, visible: Bool) {
+        guard !isTornDown else { return }
+        var report = hostReports[token]
+            ?? MirrorHostReport(visible: false, pointSize: nil, scale: nil, activation: 0)
+        if visible, !report.visible {
+            hostActivationCounter += 1
+            report.activation = hostActivationCounter
+        }
+        report.visible = visible
+        hostReports[token] = report
+        recomputeHostDerivations()
+    }
+
+    /// The host's window became key: sizing follows the window the user is
+    /// actually using, so bump its activation (no-op for unknown tokens).
+    func noteHostActivated(token: UUID) {
+        guard !isTornDown, var report = hostReports[token] else { return }
+        hostActivationCounter += 1
+        report.activation = hostActivationCounter
+        hostReports[token] = report
+        recomputeHostDerivations()
+    }
+
+    /// A host view reports its container geometry. Only the sizing owner's
+    /// readings reach the claim; a non-owner reading is recorded for a later
+    /// ownership hand-off and otherwise dropped, so two live hosts can never
+    /// alternate the claim between their widths. The one exception is the
+    /// very first reading (see ``noteContainerSize(pointSize:scale:)``): the
+    /// initial claim must exist even if it comes from a not-yet-owning host.
+    func noteHostContainerSize(token: UUID, pointSize: CGSize, scale: CGFloat) {
+        guard !isTornDown else { return }
+        var report = hostReports[token]
+            ?? MirrorHostReport(visible: false, pointSize: nil, scale: nil, activation: 0)
+        report.pointSize = pointSize
+        report.scale = scale
+        hostReports[token] = report
+        if sizingOwnerToken == nil { recomputeHostDerivations() }
+        if token == sizingOwnerToken || containerSizePt == nil {
+            noteContainerSize(pointSize: pointSize, scale: scale)
+        }
+    }
+
+    /// A host view left for good (its window closed / the tree unmounted).
+    func removeHost(token: UUID) {
+        guard !isTornDown else { return }
+        let removed = hostReports.removeValue(forKey: token) != nil
+        let removedProbe = hostProbeViewsByToken.removeValue(forKey: token) != nil
+        guard removed || removedProbe else { return }
+        guard !hostReports.isEmpty else {
+            // The LAST host left: the mirror is unhosted, not back in
+            // direct-write mode with a stale-true flag.
+            sizingOwnerToken = nil
+            if isVisibleForSizing { isVisibleForSizing = false }
+            if bonsplitController.isInteractive { bonsplitController.isInteractive = false }
+            return
+        }
+        recomputeHostDerivations()
+    }
+
+    func registerHostProbe(_ view: NSView, token: UUID) {
+        guard !isTornDown else { return }
+        hostProbeViewsByToken[token] = WeakViewBox(view: view)
+    }
+
+    /// Clears `view`'s registration; a superseded (recreated) probe finds a
+    /// different view in its slot and must not clear it (the tab re-show
+    /// race — see ``MirrorHostProbeView/viewDidMoveToWindow()``).
+    func unregisterHostProbe(_ view: NSView, token: UUID) {
+        guard hostProbeViewsByToken[token]?.view === view else { return }
+        hostProbeViewsByToken[token] = nil
+    }
+
+    /// Re-derives the single-slot sizing state from the host reports.
+    /// With no registered hosts the mirror stays in direct-write mode:
+    /// headless callers set ``isVisibleForSizing`` and call
+    /// ``noteContainerSize(pointSize:scale:)`` themselves.
+    private func recomputeHostDerivations() {
+        guard !isTornDown, !hostReports.isEmpty else {
+            sizingOwnerToken = nil
+            return
+        }
+        let owner = electSizingOwner()
+        let ownerChanged = owner != sizingOwnerToken
+        sizingOwnerToken = owner
+        let anyVisible = hostReports.values.contains(where: \.visible)
+        if isVisibleForSizing != anyVisible {
+            isVisibleForSizing = anyVisible
+        }
+        // The AppKit split tree is shared across hosts (portal lease), so it
+        // is interactive whenever ANY host shows it: a hidden duplicate
+        // must not disable dividers under the visible one.
+        if bonsplitController.isInteractive != anyVisible {
+            bonsplitController.isInteractive = anyVisible
+        }
+        if ownerChanged, let owner, let report = hostReports[owner],
+           let size = report.pointSize, let scale = report.scale {
+            // Bank the new owner's last reading so the claim follows the
+            // hand-off even before its next geometry callback fires.
+            noteContainerSize(pointSize: size, scale: scale)
+            setNeedsSizingPassIgnoringInputs()
+        } else {
+            setNeedsSizingPass()
+        }
+    }
+
+    /// The visible host with the highest activation stamp whose probe (when
+    /// registered) still sits in a window. A closed window whose report
+    /// lingers (a missed disappear callback) must not hold ownership.
+    private func electSizingOwner() -> UUID? {
+        hostReports
+            .filter { entry in
+                guard entry.value.visible else { return false }
+                guard let box = hostProbeViewsByToken[entry.key], let view = box.view else {
+                    // No probe registered (yet): trust the report. Early
+                    // mount order can deliver geometry before the probe.
+                    return true
+                }
+                return view.window != nil
+            }
+            .max { $0.value.activation < $1.value.activation }?
+            .key
+    }
+
     /// Records the container's size (points) and backing scale — f's variable
     /// inputs, delivered by the view on mount and every geometry change.
     ///

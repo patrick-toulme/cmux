@@ -12,6 +12,11 @@ struct RemoteTmuxWindowMirrorSplitView: View {
     var unreadSurfaceIDs: Set<UUID> = []
     @Environment(\.displayScale) private var displayScale
     @State private var containerSize: CGSize = .zero
+    /// This view instance's identity in the mirror's host registry. One
+    /// mirror can be mounted by several live views at once (the same
+    /// workspace in two app windows keeps both trees alive); every report
+    /// carries the token so exactly one host owns sizing.
+    @State private var hostToken = UUID()
 
     var body: some View {
         // The base color is the region, and it answers every proposal with
@@ -36,7 +41,7 @@ struct RemoteTmuxWindowMirrorSplitView: View {
             .overlay(alignment: .topLeading) {
                 splitTree
             }
-            .background(MirrorHostProbe(mirror: mirror))
+            .background(MirrorHostProbe(mirror: mirror, token: hostToken))
             .onGeometryChange(for: CGSize.self) { proxy in
                 proxy.size
             } action: { newSize in
@@ -44,29 +49,31 @@ struct RemoteTmuxWindowMirrorSplitView: View {
                 pushClientSize(pointSize: newSize)
             }
             .onAppear {
-                mirror.isVisibleForSizing = isVisibleInUI
+                // Visibility, sizing ownership, and the split tree's
+                // AppKit-level interactivity all derive from the host
+                // registry (the workspace keeps every tab's content alive
+                // and hides deselected tabs at SwiftUI opacity 0, which
+                // never reaches the AppKit split tree; and a duplicate
+                // mount in another window must not stomp this one's state).
+                mirror.noteHostVisibility(token: hostToken, visible: isVisibleInUI)
                 if !isVisibleInUI {
                     mirror.cancelPendingControlPaneFocus()
                     mirror.cancelPendingCreatedPaneFocus()
                 }
-                // The workspace keeps every tab's content alive and hides
-                // deselected tabs at SwiftUI opacity 0, which never reaches
-                // the AppKit split tree this mirror renders: the hidden
-                // trees kept painting dividers over the visible panes,
-                // registering resize-cursor rects, and stacking alpha-0
-                // drop zones that rejected pane drops. isInteractive is
-                // bonsplit's AppKit-level switch (it sets isHidden on the
-                // split tree), so it follows the same visibility edge.
-                mirror.bonsplitController.isInteractive = isVisibleInUI
                 if isVisibleInUI { becameVisible() }
             }
+            .onDisappear {
+                // Fires when this tree is genuinely discarded (window
+                // closed, workspace removed), not on opacity-0 hides: a
+                // dead host must not keep owning the size claim.
+                mirror.removeHost(token: hostToken)
+            }
             .onChange(of: isVisibleInUI) { _, visible in
-                mirror.isVisibleForSizing = visible
+                mirror.noteHostVisibility(token: hostToken, visible: visible)
                 if !visible {
                     mirror.cancelPendingControlPaneFocus()
                     mirror.cancelPendingCreatedPaneFocus()
                 }
-                mirror.bonsplitController.isInteractive = visible
                 if visible { becameVisible() }
             }
             .onChange(of: mirror.layoutStructureVersion) { _, _ in
@@ -143,9 +150,11 @@ struct RemoteTmuxWindowMirrorSplitView: View {
     }
 
     private func pushClientSize(pointSize: CGSize) {
-        mirror.isVisibleForSizing = isVisibleInUI
+        mirror.noteHostVisibility(token: hostToken, visible: isVisibleInUI)
         guard pointSize.width > 0, pointSize.height > 0 else { return }
-        mirror.noteContainerSize(pointSize: pointSize, scale: displayScale)
+        mirror.noteHostContainerSize(
+            token: hostToken, pointSize: pointSize, scale: displayScale
+        )
     }
 
     /// A tab shown again may have had its views recreated while hidden, so
@@ -163,6 +172,10 @@ struct RemoteTmuxWindowMirrorSplitView: View {
 /// geometry diagnostics.
 final class MirrorHostProbeView: NSView {
     weak var mirror: RemoteTmuxWindowMirror?
+    /// The host token of the view instance that planted this probe; probe
+    /// registration and key-window activation report through it.
+    var hostToken: UUID?
+    private var keyWindowObserver: NSObjectProtocol?
 
     /// The probe backs the whole mirror region, including the sub-cell
     /// margin outside the split tree; it must never swallow a click there.
@@ -182,32 +195,56 @@ final class MirrorHostProbeView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil else {
+        if let observer = keyWindowObserver {
+            NotificationCenter.default.removeObserver(observer)
+            keyWindowObserver = nil
+        }
+        guard let window else {
             // A tab re-show can recreate the probe, and AppKit delivers the
             // DYING probe's move-to-nil-window after the replacement already
             // registered — claiming here would shadow the live probe's
             // window handle with a windowless view until the next SwiftUI
-            // update. Only the currently registered probe may clear the
-            // slot; a stale probe changes nothing.
-            if mirror?.hostProbeView === self { mirror?.hostProbeView = nil }
+            // update. Only the currently registered probe may clear its
+            // token's slot; a superseded probe changes nothing.
+            if let mirror, let hostToken {
+                mirror.unregisterHostProbe(self, token: hostToken)
+            }
             return
         }
-        mirror?.hostProbeView = self
+        guard let mirror, let hostToken else { return }
+        mirror.registerHostProbe(self, token: hostToken)
+        // Sizing follows the window the user is actually using (tmux's
+        // `window-size latest`): the host whose window becomes key takes
+        // ownership, so typing into a second window showing the same
+        // workspace resizes the remote to THAT window's slot.
+        keyWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let token = self.hostToken else { return }
+                self.mirror?.noteHostActivated(token: token)
+            }
+        }
     }
 }
 
 private struct MirrorHostProbe: NSViewRepresentable {
     let mirror: RemoteTmuxWindowMirror
+    let token: UUID
 
     func makeNSView(context: Context) -> MirrorHostProbeView {
         let view = MirrorHostProbeView()
         view.mirror = mirror
-        mirror.hostProbeView = view
+        view.hostToken = token
+        mirror.registerHostProbe(view, token: token)
         return view
     }
 
     func updateNSView(_ nsView: MirrorHostProbeView, context: Context) {
         nsView.mirror = mirror
-        mirror.hostProbeView = nsView
+        nsView.hostToken = token
+        mirror.registerHostProbe(nsView, token: token)
     }
 }

@@ -340,7 +340,11 @@ import Testing
         // (the tight-container fuzz measures the dropped cell):
         // (800 − 3 × (pad 4 + slack 1) − 2 × (divider 1 − cell 8)) / 8 → 99.
         #expect(pushed(connection)?.cols == 99)
-        #expect(pushed(connection)?.rows == 34) // 620pt − the native 30pt pane tab bar
+        // Mirror panes hold one tab each and the embedded configuration
+        // hides single-tab bars, so the claim charges the bar's EFFECTIVE
+        // height (0), not its nominal 30pt: 620pt / 17pt cells → 36 rows
+        // (the dead-band fix; see effectivePaneTabBarHeight).
+        #expect(pushed(connection)?.rows == 36)
         #expect(connection.lastWindowSizes[0] != nil)
         // A pass already queued on the main actor must not resurrect the
         // claim after the window mirror is removed.
@@ -348,6 +352,74 @@ import Testing
         mirror.teardown()
         mirror.performSizingPassNow()
         #expect(connection.lastWindowSizes[0] == nil)
+    }
+
+    // MARK: multi-host single-writer sizing
+
+    /// One mirror mounted by two live host views (the same workspace shown
+    /// in two app windows; the deselected tree stays alive at opacity 0)
+    /// used to alternate the claim between the two container widths: both
+    /// views wrote the single-slot visibility flag and container directly,
+    /// and tmux reflowed the remote window in an endless tug-of-war
+    /// (observed live at 139 ↔ 175 columns, with parity re-arm budgets
+    /// exhausted and stale row fragments left below the grid). Ownership is
+    /// now explicit: the most recently activated visible host claims; a
+    /// non-owner's readings never move the banked container.
+    @Test func duplicateHostsCannotAlternateTheClaim() {
+        let (mirror, connection) = makeMirror(layout: reflow123, geometry: calibratedGeometry)
+        let hostA = UUID()
+        let hostB = UUID()
+        let sizeA = CGSize(width: 800, height: 620)
+        let sizeB = CGSize(width: 620, height: 480)
+
+        // A mounts visible and reports its slot: it owns sizing.
+        mirror.noteHostVisibility(token: hostA, visible: true)
+        mirror.noteHostContainerSize(token: hostA, pointSize: sizeA, scale: 2)
+        mirror.performSizingPassNow()
+        let claimA = pushed(connection)
+        #expect(claimA != nil)
+
+        // B mounts visible in a second window: latest activation wins, so
+        // ownership hands off to B (tmux's own `window-size latest`).
+        mirror.noteHostVisibility(token: hostB, visible: true)
+        mirror.noteHostContainerSize(token: hostB, pointSize: sizeB, scale: 2)
+        mirror.performSizingPassNow()
+        let claimB = pushed(connection)
+        #expect(claimB != nil)
+        #expect(claimB?.cols != claimA?.cols)
+
+        // A's tree keeps living at opacity 0 and keeps reporting on every
+        // layout pass. THE regression: those reports must never move the
+        // claim again, no matter how often they arrive.
+        for _ in 0..<3 {
+            mirror.noteHostVisibility(token: hostA, visible: false)
+            mirror.noteHostContainerSize(token: hostA, pointSize: sizeA, scale: 2)
+            mirror.performSizingPassNow()
+            #expect(pushed(connection)?.cols == claimB?.cols)
+            #expect(mirror.containerSizePt == sizeB)
+        }
+
+        // Re-selecting A hands ownership back and banks its stored reading.
+        mirror.noteHostVisibility(token: hostA, visible: true)
+        mirror.performSizingPassNow()
+        #expect(pushed(connection)?.cols == claimA?.cols)
+
+        // A key-window switch alone (no visibility edge) also hands off.
+        mirror.noteHostActivated(token: hostB)
+        mirror.performSizingPassNow()
+        #expect(pushed(connection)?.cols == claimB?.cols)
+
+        // The owner leaving falls back to the surviving visible host.
+        mirror.removeHost(token: hostB)
+        mirror.performSizingPassNow()
+        #expect(pushed(connection)?.cols == claimA?.cols)
+
+        // The last host leaving unhosts the mirror outright.
+        mirror.removeHost(token: hostA)
+        #expect(mirror.isVisibleForSizing == false)
+        #expect(mirror.sizingOwnerToken == nil)
+        mirror.teardown()
+        withExtendedLifetime(connection) {}
     }
 
     @Test func pushIsAPureFunctionOfPixelsAndStructureNotTheAssignment() {

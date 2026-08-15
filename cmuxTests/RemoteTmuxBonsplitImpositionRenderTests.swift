@@ -1441,12 +1441,17 @@ import Testing
             layout: RemoteTmuxLayoutNode(width: 80, height: 24, x: 0, y: 0, content: .pane(1)),
             makePanel: { _ in nil }
         )
+        // Both probes belong to ONE host view instance (SwiftUI recreated
+        // the NSView on re-show), so they share a token and race for its slot.
+        let token = UUID()
         let old = MirrorHostProbeView()
         old.mirror = mirror
-        mirror.hostProbeView = old
+        old.hostToken = token
+        mirror.registerHostProbe(old, token: token)
         let replacement = MirrorHostProbeView()
         replacement.mirror = mirror
-        mirror.hostProbeView = replacement
+        replacement.hostToken = token
+        mirror.registerHostProbe(replacement, token: token)
 
         // The dying probe reports "left the window" after the replacement
         // already holds the slot: it must not steal it back.
@@ -1645,7 +1650,7 @@ import Testing
             makePanel: { _ in nil }
         )
         mirror.isVisibleForSizing = true
-        mirror.hostProbeView = probe
+        mirror.registerHostProbe(probe, token: UUID())
 
         let bound = try #require(mirror.visibleHostingContext()?.contentSize)
         // A good reading within the current bound banks.

@@ -80,7 +80,36 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
     /// Only the visible tab's mirror writes after its initial claim. Hidden
     /// tabs stay mounted and still receive geometry callbacks, so default-hidden
     /// prevents early surface callbacks from treating an unselected mirror as visible.
+    ///
+    /// Derived from ``hostReports`` whenever any host view is registered;
+    /// headless callers (tests) with no registered hosts may keep writing it
+    /// directly, which preserves the single-host contract they were built on.
     @ObservationIgnored var isVisibleForSizing = false
+
+    /// One mirror can be MOUNTED by several live host views at once: the
+    /// same workspace shown in two app windows keeps both SwiftUI trees
+    /// alive (the deselected one at opacity 0), and both used to write the
+    /// single-slot visibility flag and container size directly. The two
+    /// hosts stomped each other, the claim alternated between their widths,
+    /// and tmux reflowed the remote window in an endless tug-of-war
+    /// (observed live: 139 ↔ 175 column oscillation, parity re-arm budgets
+    /// exhausted, stale row fragments left below the grid). Every host now
+    /// reports through a token, and exactly ONE visible host owns sizing:
+    /// the most recently activated, matching tmux's own `window-size
+    /// latest` policy. Non-owner readings are dropped; non-owner views
+    /// render the owner-sized tree letterboxed, the same answer tmux gives
+    /// a second client of a different size.
+    struct MirrorHostReport {
+        var visible: Bool
+        var pointSize: CGSize?
+        var scale: CGFloat?
+        /// Monotone activation stamp: bumped when the host becomes visible
+        /// or its window becomes key. Highest visible stamp owns sizing.
+        var activation: UInt64
+    }
+    @ObservationIgnored var hostReports: [UUID: MirrorHostReport] = [:]
+    @ObservationIgnored var sizingOwnerToken: UUID?
+    @ObservationIgnored var hostActivationCounter: UInt64 = 0
     /// Terminal teardown is final. Run-loop-coalesced sizing callbacks may
     /// still hold this mirror until the next turn, so they must observe an
     /// explicit lifecycle edge before touching the shared connection again.
@@ -149,7 +178,24 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
     /// layer), so `hostProbeView?.window` is the hosting window even while
     /// portal-hosted panels churn, and its superview chain is the real
     /// ancestor stack that produced the SwiftUI proposal.
-    @ObservationIgnored weak var hostProbeView: NSView?
+    ///
+    /// One probe per HOST view (see ``hostReports``): the sizing owner's
+    /// probe is authoritative, so the window bound and portal-sync target
+    /// follow the window that owns sizing, not whichever host mounted last.
+    @ObservationIgnored var hostProbeViewsByToken: [UUID: WeakViewBox] = [:]
+    var hostProbeView: NSView? {
+        if let owner = sizingOwnerToken, let view = hostProbeViewsByToken[owner]?.view {
+            return view
+        }
+        // No owner (all hosts hidden) or its probe is gone: prefer any probe
+        // in a visible window, then any probe at all.
+        let live = hostProbeViewsByToken.values.compactMap(\.view)
+        return live.first { $0.window?.isVisible == true } ?? live.first
+    }
+
+    struct WeakViewBox {
+        weak var view: NSView?
+    }
     /// Set when the divider sync sends a resize-pane between a drag session's
     /// begin and end. Bonsplit delivers the final drag geometry notification
     /// just BEFORE drag-end (the delegate contract: settled geometry is
@@ -558,6 +604,9 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
         guard !isTornDown else { return }
         isTornDown = true
         isVisibleForSizing = false
+        hostReports.removeAll()
+        hostProbeViewsByToken.removeAll()
+        sizingOwnerToken = nil
         sizingPassScheduled = false
         lastCompletedSizingInputs = nil
         pendingSizingPassIntent = .inputChange
