@@ -1406,6 +1406,24 @@ class TerminalController {
             )
         case "feed.conclude":
             return v2Result(id: request.id, v2FeedConclude(params: request.params))
+        case "debug.attention_state":
+            return v2VmCall(id: request.id, timeoutSeconds: 10) {
+                await MainActor.run { Self.debugAttentionStatePayload() }
+            }
+        case "debug.set_app_focus_override":
+            // DEBUG-only: a mutating focus pin has no place in release
+            // builds, unlike its read-only sibling above.
+            #if DEBUG
+            return v2VmCall(id: request.id, timeoutSeconds: 10) { [params = request.params] in
+                await MainActor.run { Self.debugSetAppFocusOverride(params: params) }
+            }
+            #else
+            return v2Error(
+                id: request.id,
+                code: "method_not_found",
+                message: "debug.set_app_focus_override is DEBUG-only"
+            )
+            #endif
         case "feed.permission.reply":
             return v2Result(id: request.id, v2FeedPermissionReply(params: request.params))
         case "feed.question.reply":
@@ -2767,6 +2785,8 @@ class TerminalController {
             "feedback.submit",
             "feed.push",
             "feed.conclude",
+            "debug.attention_state",
+            "debug.set_app_focus_override",
             "feed.permission.reply",
             "feed.question.reply",
             "feed.exit_plan.reply",
@@ -6094,6 +6114,64 @@ class TerminalController {
         default:
             break
         }
+    }
+
+    /// `debug.attention_state` — the attention pipeline's observable truth,
+    /// per workspace: lifecycle entries, pending blocking decisions, unread
+    /// turn-completes, and the resolved phase. Powers the end-to-end
+    /// attention harness and remote diagnosis; DEBUG-quality but cheap and
+    /// read-only, so it ships in all builds.
+    @MainActor
+    static func debugAttentionStatePayload() -> [String: Any] {
+        guard let tabManager = AppDelegate.shared?.tabManager else {
+            return ["workspaces": []]
+        }
+        let workspaces = tabManager.tabs.map { workspace -> [String: Any] in
+            let decisionKinds = FeedCoordinator.shared
+                .pendingBlockingDecisions(forWorkspace: workspace.id)
+                .map { String(describing: $0.kind) }
+            let hasUnread = TerminalNotificationStore.shared
+                .hasUnreadTurnComplete(forTabId: workspace.id)
+            let phase = SidebarAgentAttentionResolver.phase(
+                pendingDecisionKinds: FeedCoordinator.shared
+                    .pendingBlockingDecisions(forWorkspace: workspace.id)
+                    .map(\.kind),
+                statesByPanelId: workspace.agentLifecycleStatesByPanelId,
+                hasUnreadTurnComplete: hasUnread
+            )
+            let lifecycle = workspace.agentLifecycleStatesByPanelId.map { panelId, entries in
+                [
+                    "panel_id": panelId.uuidString,
+                    "entries": entries.map { key, state in
+                        ["key": key, "state": String(describing: state)]
+                    },
+                ] as [String: Any]
+            }
+            return [
+                "workspace_id": workspace.id.uuidString,
+                "title": workspace.title,
+                "host_key": workspace.remoteTmuxHostKey ?? "",
+                "selected": tabManager.selectedTabId == workspace.id,
+                "phase": phase.map { String(describing: $0) } ?? "none",
+                "pending_decisions": decisionKinds,
+                "unread_turn_complete": hasUnread,
+                "lifecycle": lifecycle,
+            ]
+        }
+        return ["workspaces": workspaces]
+    }
+
+    /// `debug.set_app_focus_override`: pins `AppFocusState` for harness
+    /// runs. Visit-driven unread clearing deliberately requires an ACTIVE
+    /// app (selecting a workspace while cmux is backgrounded must not mark
+    /// it read), and a harness app must never steal real focus to satisfy
+    /// that gate. `focused` true/false pins the state; omitting it clears
+    /// the pin. DEBUG builds only.
+    @MainActor
+    static func debugSetAppFocusOverride(params: [String: Any]) -> [String: Any] {
+        let focused = params["focused"] as? Bool
+        AppFocusState.overrideIsFocused = focused
+        return ["focus_override": focused.map(String.init) ?? "cleared"]
     }
 
     /// `feed.conclude` — a blocking decision was resolved outside cmux (the
