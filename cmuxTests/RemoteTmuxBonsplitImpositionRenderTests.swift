@@ -1686,6 +1686,91 @@ import Testing
         )
         withExtendedLifetime(connection) {}
     }
+
+    /// The region fill behind the exact-fit tree — and the margin below it,
+    /// the chrome rows tmux keeps back from the window-size claim plus the
+    /// sub-cell remainder — must follow the shared pane composition policy:
+    /// clear under a translucent theme (the window backdrop paints the
+    /// terminal fill exactly once), the opaque theme color otherwise.
+    /// Painting `appearance.backgroundColor` unconditionally stacked a
+    /// second translucent copy over the backdrop and the margin rendered as
+    /// a visibly lighter band below the grid.
+    @Test func regionFillFollowsTheSharedCompositionPolicy() {
+        let translucent = PanelAppearance(
+            backgroundColor: NSColor.black.withAlphaComponent(0.95),
+            foregroundColor: .white,
+            dividerColor: .gray,
+            unfocusedOverlayNSColor: .black,
+            unfocusedOverlayOpacity: 0,
+            usesClearContentBackground: true
+        )
+        #expect(
+            RemoteTmuxWindowMirrorSplitView.regionFillColor(for: translucent) == .clear,
+            "a translucent theme's region fill must stay clear over the shared backdrop"
+        )
+
+        let opaque = PanelAppearance(
+            backgroundColor: .black,
+            foregroundColor: .white,
+            dividerColor: .gray,
+            unfocusedOverlayNSColor: .black,
+            unfocusedOverlayOpacity: 0,
+            usesClearContentBackground: false
+        )
+        #expect(
+            RemoteTmuxWindowMirrorSplitView.regionFillColor(for: opaque) == .black,
+            "an opaque theme keeps painting the theme color"
+        )
+    }
+
+    /// The exact-fit tree leaves the region margin this suite's fill-policy
+    /// test is about: a small grid inside a larger region renders with a
+    /// real bottom band.
+    @Test func exactFitTreeLeavesRegionMargin() throws {
+        // A tree far smaller than its region, so the margin is tall enough
+        // to matter: 30x8 cells at 8x17pt inside a 400x300 region.
+        let layout = node(.pane(1), w: 30, h: 8, x: 0, y: 0)
+        let connection = RemoteTmuxControlConnection(
+            host: RemoteTmuxHost(destination: "user@host"), sessionName: "work"
+        )
+        let mirror = RemoteTmuxWindowMirror(
+            windowId: 0,
+            panelId: UUID(),
+            connection: connection,
+            layout: layout,
+            geometrySource: {
+                RemoteTmuxMirrorGeometry(
+                    cellWidthPx: 16, cellHeightPx: 34,
+                    surfacePadWidthPx: 8, surfacePadHeightPx: 0,
+                    scale: 2
+                )
+            },
+            hostingContentSizeSource: { CGSize(width: 400, height: 300) },
+            makePanel: { _ in nil }
+        )
+        mirror.isVisibleForSizing = true
+        mirror.containerSizePt = CGSize(width: 400, height: 300)
+        mirror.containerScale = 2
+        // The workspace-derived embedded configuration, as the app applies
+        // it: translucent theme, window backdrop owns the fill, every chrome
+        // fill transparent. The default configuration would paint opaque
+        // pane fills and hide the regression.
+        var workspaceConfiguration = BonsplitConfiguration()
+        workspaceConfiguration.appearance.chromeColors = Workspace.bonsplitChromeColors(
+            backgroundColor: .black,
+            backgroundOpacity: 0.95,
+            sharesWindowBackdrop: true
+        )
+        mirror.applyWorkspaceBonsplitConfiguration(workspaceConfiguration)
+        mirror.reconcile(layout: layout)
+        mirror.performSizingPassNow()
+        let tree = try #require(mirror.renderFrameSize)
+        #expect(
+            tree.height < 260 && tree.width < 360,
+            "the exact-fit tree must sit inside the region with a real margin: \(tree)"
+        )
+        withExtendedLifetime(connection) {}
+    }
 }
 
 /// An NSWindow whose live-resize state a test can drive, so the mirror's

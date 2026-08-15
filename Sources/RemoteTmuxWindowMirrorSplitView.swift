@@ -28,7 +28,11 @@ struct RemoteTmuxWindowMirrorSplitView: View {
         // view marching wider than the display-pinned window a step per
         // layout pass), and the geometry callback below then read the
         // mirror's own imposed width back as its "container".
-        Color(nsColor: appearance.backgroundColor)
+        //
+        // The content shape keeps the (possibly clear) margin
+        // click-targetable for the container focus gesture.
+        Color(nsColor: Self.regionFillColor(for: appearance))
+            .contentShape(Rectangle())
             .overlay(alignment: .topLeading) {
                 splitTree
             }
@@ -101,11 +105,11 @@ struct RemoteTmuxWindowMirrorSplitView: View {
                     mirror.bonsplitController.focusPane(paneId)
                 }
             } else {
-                Color(nsColor: appearance.backgroundColor)
+                Color(nsColor: Self.regionFillColor(for: appearance))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } emptyPane: { _ in
-            Color(nsColor: appearance.backgroundColor)
+            Color(nsColor: Self.regionFillColor(for: appearance))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .internalOnlyTabDrag()
@@ -120,6 +124,22 @@ struct RemoteTmuxWindowMirrorSplitView: View {
             height: mirror.renderFrameSize?.height,
             alignment: .topLeading
         )
+    }
+
+    /// The fill behind the exact-fit split tree, its placeholders, and the
+    /// region margin outside the tree (up to the chrome rows tmux keeps back
+    /// from the window-size claim, plus the sub-cell remainder).
+    ///
+    /// This MUST follow the shared pane composition policy
+    /// (`contentBackgroundColor`), never `backgroundColor`: under a
+    /// translucent theme the window backdrop paints the terminal fill
+    /// exactly once and every pane surface keeps its content background
+    /// clear. Painting the translucent theme color here stacked a second
+    /// copy over the backdrop, and the margin below the grid rendered as a
+    /// visibly lighter band whenever tmux landed the window a row or two
+    /// short of the claim.
+    static func regionFillColor(for appearance: PanelAppearance) -> NSColor {
+        appearance.contentBackgroundColor
     }
 
     private func pushClientSize(pointSize: CGSize) {
