@@ -59,6 +59,7 @@ public struct AppSection: View {
     @State private var customSoundFile: DefaultsValueModel<String>
     @State private var telemetry: DefaultsValueModel<Bool>
     @State private var confirmQuit: DefaultsValueModel<ConfirmQuitMode>
+    @State private var sortByActive: DefaultsValueModel<WorkspaceActivitySortMode>
     @State private var warnCloseTab: DefaultsValueModel<Bool>
     @State private var warnCloseX: DefaultsValueModel<Bool>
     @State private var hideCloseButton: DefaultsValueModel<Bool>
@@ -99,6 +100,7 @@ public struct AppSection: View {
         _fileEditorWordWrap = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.fileEditor.wordWrap))
         _iMessage = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.app.iMessageMode))
         _reorder = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.app.reorderOnNotification))
+        _sortByActive = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.app.sortByActiveSessions))
         _dockBadge = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.notifications.dockBadge))
         _menuBarOnly = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.app.menuBarOnly))
         _showInMenuBar = State(initialValue: DefaultsValueModel(store: defaultsStore, key: catalog.notifications.showInMenuBar))
@@ -140,7 +142,7 @@ public struct AppSection: View {
             mainCard
         }
         .task {
-            startSettingsObservation([language, appearance, appIcon, placement, inheritDir, minimalMode, keepWorkspaceOpen, firstClick, focusHistoryIncludesPanesAndTabs, fileDrop, preferredEditor, openSupported, openMarkdown, globalFontMagnification, markdownFontSize, markdownFontFamily, markdownMaxWidth, canvasPaneGap, canvasSnapping, fileEditorWordWrap, iMessage, reorder, dockBadge, menuBarOnly, showInMenuBar, paneRing, paneFlash, desktopNotifications, agentPermissionPrompt, agentTurnComplete, agentIdleReminder, soundName, soundCommand, customSoundFile, telemetry, confirmQuit, warnCloseTab, warnCloseX, hideCloseButton, renameSelects, paletteAllSurfaces])
+            startSettingsObservation([language, appearance, appIcon, placement, inheritDir, minimalMode, keepWorkspaceOpen, firstClick, focusHistoryIncludesPanesAndTabs, fileDrop, preferredEditor, openSupported, openMarkdown, globalFontMagnification, markdownFontSize, markdownFontFamily, markdownMaxWidth, canvasPaneGap, canvasSnapping, fileEditorWordWrap, iMessage, reorder, sortByActive, dockBadge, menuBarOnly, showInMenuBar, paneRing, paneFlash, desktopNotifications, agentPermissionPrompt, agentTurnComplete, agentIdleReminder, soundName, soundCommand, customSoundFile, telemetry, confirmQuit, warnCloseTab, warnCloseX, hideCloseButton, renameSelects, paletteAllSurfaces])
             if languageAtAppear == nil { languageAtAppear = language.current }; if telemetryAtAppear == nil { telemetryAtAppear = telemetry.current }
         }
     }
@@ -534,6 +536,24 @@ public struct AppSection: View {
                 Toggle("", isOn: Binding(get: { reorder.current }, set: { reorder.set($0) }))
                     .labelsHidden()
                     .controlSize(.small)
+            }
+            SettingsCardDivider()
+
+            // Sort by Active Sessions
+            SettingsCardRow(
+                configurationReview: .json("app.sortByActiveSessions"),
+                String(localized: "settings.app.sortByActiveSessions", defaultValue: "Sort by Active Sessions"),
+                subtitle: String(localized: "settings.app.sortByActiveSessions.subtitle", defaultValue: "Keep sessions whose agents need you or are working above resting ones, inside each machine section or across the whole sidebar."),
+                controlWidth: Self.columnWidth
+            ) {
+                Picker("", selection: Binding(get: { sortByActive.current }, set: { sortByActive.set($0) })) {
+                    Text(String(localized: "settings.app.sortByActiveSessions.off", defaultValue: "Off")).tag(WorkspaceActivitySortMode.off)
+                    Text(String(localized: "settings.app.sortByActiveSessions.withinSections", defaultValue: "Per Machine")).tag(WorkspaceActivitySortMode.withinSections)
+                    Text(String(localized: "settings.app.sortByActiveSessions.global", defaultValue: "Whole Sidebar")).tag(WorkspaceActivitySortMode.global)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
             }
             SettingsCardDivider()
 

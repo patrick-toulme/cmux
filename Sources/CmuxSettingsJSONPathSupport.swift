@@ -405,6 +405,7 @@ extension CmuxSettingsFileStore {
         "app.openMarkdownInCmuxViewer",
         "app.iMessageMode",
         "app.reorderOnNotification",
+        "app.sortByActiveSessions",
         "app.sendAnonymousTelemetry",
         "app.confirmQuit",
         "app.warnBeforeQuit",

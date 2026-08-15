@@ -119,6 +119,15 @@ public struct AppCatalogSection: SettingCatalogSection {
         userDefaultsKey: "workspaceAutoReorderOnNotification"
     )
 
+    /// Live "sort by active sessions": keep sessions whose agents need the
+    /// user (approval, question, unseen finish) or are working above resting
+    /// ones, inside each machine section or across the whole sidebar.
+    public let sortByActiveSessions = DefaultsKey<WorkspaceActivitySortMode>(
+        id: "app.sortByActiveSessions",
+        defaultValue: .off,
+        userDefaultsKey: "workspaceSortByActiveSessions"
+    )
+
     public let sendAnonymousTelemetry = DefaultsKey<Bool>(
         id: "app.sendAnonymousTelemetry",
         defaultValue: true,
