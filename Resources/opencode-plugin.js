@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v3
+// cmux-feed-plugin-marker v4
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -35,6 +35,29 @@ const MAX_PLAN_BYTES = 128 * 1024;
 const TMUX_ENV_LOOKUP_TIMEOUT_MS = 3_000;
 const REMOTE_RESOLVE_TIMEOUT_MS = 10_000;
 const REMOTE_RESOLVE_ATTEMPTS = 3;
+// Disconnect recovery cadence. Event-driven recovery alone has a hole: an
+// agent deep in a long tool call (a build, a test run) emits NO bus events
+// for minutes, so after a cmux restart nothing would trigger the
+// re-resolve and the sidebar's running state stayed blank until streaming
+// resumed. While a turn is open and the socket is down, a timer retries
+// instead. Env override exists for tests.
+const RECONNECT_RECOVERY_INTERVAL_MS =
+  Number(process.env.CMUX_FEED_RECONNECT_INTERVAL_MS || "") || 8_000;
+
+// A turn-complete notification written moments before a disconnect may
+// have landed in a dying socket (the app's FIN arrives milliseconds after
+// the write "succeeds"). Sends this recent are treated as possibly lost
+// when a disconnect follows, and are redelivered after recovery:
+// at-least-once beats silently losing the unseen-done state, and the
+// duplicate window is only ever entered by an app exit racing a turn end.
+const TURN_COMPLETE_REDELIVERY_WINDOW_MS = 3_000;
+
+// Opt-in stderr tracing (CMUX_FEED_DEBUG=1) for diagnosing the plugin on a
+// remote machine without a debugger: connection lifecycle, recovery timer,
+// and resolve outcomes. Zero cost when unset.
+const feedDebugLog = (process.env.CMUX_FEED_DEBUG || "").trim()
+  ? (...parts) => console.error("[cmux-feed]", ...parts)
+  : () => {};
 
 const tmuxEnvLookup = async (name) => {
   if (!(process.env.TMUX || "").trim()) return null;
@@ -75,6 +98,14 @@ export const CMUXFeed = async (ctx) => {
   let remoteHostKey = (process.env.CMUX_REMOTE_HOST_KEY || "").trim() || null;
   const remotePaneId = (process.env.TMUX_PANE || "").trim() || null;
   let identityPromise = null;
+
+  // Disconnect recovery state: sessions whose turn was OPEN when the socket
+  // dropped (a cmux restart). If such a turn ends while disconnected, its
+  // turn-complete notification fired into the void — flush it after the
+  // next successful resolve so the unseen-done state is not silently lost.
+  const turnOpenAtDisconnect = new Set();
+  const recentTurnCompleteSends = new Map();
+  let reconnectRecoveryTimer = null;
 
   const ensureIdentity = () => {
     if (!identityPromise) {
@@ -448,24 +479,34 @@ export const CMUXFeed = async (ctx) => {
           }
         }
       });
-      conn.on("close", () => {
-        client = null;
-        // A dropped socket usually means the cmux app restarted. Mirror
-        // workspace/surface ids are minted per attach, so the cached pane
-        // resolution is stale the moment the connection dies: forget it and
-        // re-resolve lazily against the new app instance. Identity is
-        // re-read from tmux too: a replacement cmux may pin a new socket.
+      // A dropped socket usually means the cmux app restarted. Mirror
+      // workspace/surface ids are minted per attach, so the cached pane
+      // resolution is stale the moment the connection dies: forget it and
+      // re-resolve against the new app instance. Identity is re-read from
+      // tmux too: a replacement cmux may pin a new socket.
+      //
+      // 'end' is handled EXACTLY like 'close': an app-side shutdown can
+      // deliver only the FIN, leaving this side half-open — writable into
+      // the void, no 'close', no 'error' — so nothing would ever trigger
+      // recovery (the restart-loses-running-dot bug). Destroying our side
+      // on FIN completes the pair; the teardown itself runs once.
+      let disconnectHandled = false;
+      const handleDisconnect = (reason) => {
+        if (client === conn) client = null;
+        conn.destroy();
+        if (disconnectHandled) return;
+        disconnectHandled = true;
+        feedDebugLog("socket disconnected:", reason);
         remoteTarget = null;
         remoteResolvePromise = null;
         identityPromise = null;
         failPending();
-      });
-      conn.on("error", () => {
-        client = null;
-        remoteTarget = null;
-        remoteResolvePromise = null;
-        identityPromise = null;
-        failPending();
+        noteDisconnected();
+      };
+      conn.on("end", () => handleDisconnect("end"));
+      conn.on("close", () => handleDisconnect("close"));
+      conn.on("error", (error) => {
+        handleDisconnect(error?.code || error?.message || String(error));
       });
       return conn;
     } catch (e) {
@@ -549,15 +590,7 @@ export const CMUXFeed = async (ctx) => {
           const surfaceId = firstString(result?.surface_id);
           if (result?.resolved === true && workspaceId && surfaceId) {
             remoteTarget = { workspaceId, surfaceId };
-            // A fresh resolution usually follows a socket drop (cmux
-            // restarted mid-turn). Repaint the current state now instead
-            // of leaving the sidebar blank until the next busy/idle flip.
-            const busy = [...sessions.values()].some((state) => state.isBusy);
-            if (busy) {
-              writeLine(
-                `set_agent_lifecycle opencode running --tab=${workspaceId} --panel=${surfaceId}`
-              );
-            }
+            afterResolveRecovered(remoteTarget);
             return remoteTarget;
           }
         }
@@ -572,6 +605,71 @@ export const CMUXFeed = async (ctx) => {
   // process watcher, so running/idle comes from opencode's own event bus.
   // A missing target (first event, or invalidated by a socket drop after an
   // app restart) re-resolves asynchronously so the state still lands.
+  // A socket drop while a turn is open starts the recovery loop: snapshot
+  // the open turns (their completions would otherwise vanish into the dead
+  // socket) and retry identity + resolve on a timer, because an agent deep
+  // in a long tool call emits no bus events to drive the lazy path.
+  const noteDisconnected = () => {
+    if (!remotePaneId) return;
+    for (const [sid, state] of sessions) {
+      if (state.turnOpen) turnOpenAtDisconnect.add(sid);
+    }
+    // Turn-completes sent just before the drop may sit in the dead
+    // socket's buffer: schedule them for redelivery after recovery.
+    const now = Date.now();
+    for (const [sid, sentAt] of recentTurnCompleteSends) {
+      if (now - sentAt <= TURN_COMPLETE_REDELIVERY_WINDOW_MS) {
+        turnOpenAtDisconnect.add(sid);
+      }
+    }
+    recentTurnCompleteSends.clear();
+    const anythingToRecover =
+      turnOpenAtDisconnect.size > 0
+        || [...sessions.values()].some((state) => state.isBusy);
+    feedDebugLog(
+      "disconnected; recover =", anythingToRecover,
+      "timer =", reconnectRecoveryTimer != null,
+      "openTurnsAtDisconnect =", turnOpenAtDisconnect.size
+    );
+    if (!anythingToRecover || reconnectRecoveryTimer) return;
+    reconnectRecoveryTimer = setInterval(() => {
+      void (async () => {
+        feedDebugLog("recovery tick; resolveInFlight =", remoteResolvePromise != null);
+        await ensureIdentity();
+        if (!isRemote()) return;
+        await resolveRemoteTarget();
+      })();
+    }, RECONNECT_RECOVERY_INTERVAL_MS);
+    if (typeof reconnectRecoveryTimer.unref === "function") {
+      reconnectRecoveryTimer.unref();
+    }
+  };
+
+  // Runs on every successful resolve (event-driven or recovery timer):
+  // repaint the running state for a turn still in flight, deliver the
+  // turn-complete notifications for turns that ENDED while disconnected,
+  // and stop the recovery loop.
+  const afterResolveRecovered = (target) => {
+    feedDebugLog("resolved", target.workspaceId, target.surfaceId);
+    if (reconnectRecoveryTimer) {
+      clearInterval(reconnectRecoveryTimer);
+      reconnectRecoveryTimer = null;
+    }
+    const busy = [...sessions.values()].some((state) => state.isBusy);
+    if (busy) {
+      writeLine(
+        `set_agent_lifecycle opencode running --tab=${target.workspaceId} --panel=${target.surfaceId}`
+      );
+    }
+    for (const sid of [...turnOpenAtDisconnect]) {
+      turnOpenAtDisconnect.delete(sid);
+      const state = sessions.get(sid);
+      if (state && !state.turnOpen && !state.isBusy) {
+        sendRemoteTurnCompleteNotification(sid);
+      }
+    }
+  };
+
   const sendRemoteLifecycle = (state) => {
     if (!isRemote()) return;
     if (!remoteTarget) {
@@ -603,6 +701,7 @@ export const CMUXFeed = async (ctx) => {
     const subtitle = sanitizeNotifyField(state.lastUserMessage, 120);
     const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
     const send = (target) => {
+      recentTurnCompleteSends.set(sid, Date.now());
       writeLine(
         `notify_target_async ${target.workspaceId} ${target.surfaceId} ` +
           `OpenCode|${subtitle}|${body}|c=turn-complete;p=0`
@@ -625,6 +724,7 @@ export const CMUXFeed = async (ctx) => {
   // without minting spurious "finished a turn" notifications.
   const noteSessionBusyState = (sid, busy, opensTurn = false) => {
     const state = sessionState(sid);
+    feedDebugLog("busyState", sid, "busy =", busy, "opensTurn =", opensTurn);
     if (busy) {
       state.isBusy = true;
       if (opensTurn) state.turnOpen = true;

@@ -61,7 +61,8 @@ const liveSocket = `${socketDir}/live.sock`;
 const received = [];
 const conns = new Set();
 
-const server = net.createServer((conn) => {
+const handleConnection = (conn) => {
+  console.error(`[srv] accepted connection at ${Date.now()}`);
   conns.add(conn);
   conn.setEncoding("utf8");
   let buf = "";
@@ -93,8 +94,23 @@ const server = net.createServer((conn) => {
   });
   conn.on("close", () => conns.delete(conn));
   conn.on("error", () => {});
-});
+};
+
+const fs = require("node:fs");
+let server = net.createServer(handleConnection);
 await new Promise((resolve) => server.listen(liveSocket, resolve));
+const stopServer = async () => {
+  for (const conn of conns) conn.destroy();
+  await new Promise((resolve) => server.close(() => resolve()));
+  try { fs.unlinkSync(liveSocket); } catch (_) {}
+  console.error(`[srv] stopped at ${Date.now()}`);
+};
+const startServer = async () => {
+  server = net.createServer(handleConnection);
+  server.on("error", (error) => console.error(`[srv] listen error: ${error}`));
+  await new Promise((resolve) => server.listen(liveSocket, resolve));
+  console.error(`[srv] restarted at ${Date.now()}`);
+};
 
 const waitFor = async (predicate, ms, label) => {
   const deadline = Date.now() + ms;
@@ -131,6 +147,43 @@ await new Promise((resolve) => setTimeout(resolve, 150));
 await hooks.event({ event: { type: "tick" } });
 await waitFor(() => received.some((l) => l.startsWith("resolve:")), 8000, "re-resolve after socket drop");
 await waitFor(() => received.some((l) => l === runningLine), 5000, "repaint running after socket drop");
+
+// Scenario 2b: cmux fully DOWN (server gone) while an agent is deep in a
+// long tool call — no bus events flow, so only the recovery timer can
+// notice the app coming back. Open a turn on s9 first (registers the
+// user prompt so the turn-complete flush below has a real turn).
+received.length = 0;
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "m9", sessionID: "s9", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "m9", text: "run the long build" },
+} } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "turn opened on s9");
+await stopServer();
+// Scenario 2c seed: the turn ENDS while cmux is down — the turn-complete
+// notification fires into the void and must be flushed after recovery.
+await hooks.event({ event: { type: "session.status", properties: {
+  sessionID: "s9", status: { type: "idle" },
+} } });
+received.length = 0;
+await new Promise((resolve) => setTimeout(resolve, 400));
+await startServer();
+// NO further events: the recovery timer alone must reconnect, re-resolve,
+// repaint the running state (s1 is still busy), and deliver s9's missed
+// turn-complete.
+await waitFor(() => received.some((l) => l.startsWith("resolve:")), 8000, "timer-driven re-resolve");
+await waitFor(() => received.some((l) => l === runningLine), 5000, "timer-driven running repaint");
+await waitFor(
+  () => received.some(
+    (l) => l.startsWith("notify_target_async W1 S1 ") && l.includes("c=turn-complete")
+  ),
+  5000,
+  "missed turn-complete flushed after recovery"
+);
+if (received.filter((l) => l.includes("c=turn-complete")).length !== 1) {
+  throw new Error(`expected exactly one flushed turn-complete: ${JSON.stringify(received)}`);
+}
 
 // Scenario 3: stale process env (dead socket, old host key) from a shell
 // pinned by a previous cmux instance; the live tmux tables must win.
@@ -212,6 +265,9 @@ def main() -> int:
         env["TEST_PLUGIN_PATH"] = str(PLUGIN_PATH)
         env["TEST_SOCKET_DIR"] = str(root)
         env["FAKE_TMUX_LOG"] = str(fake_tmux_log)
+        # Fast recovery cadence so the timer-driven scenarios finish quickly.
+        env["CMUX_FEED_RECONNECT_INTERVAL_MS"] = "250"
+        env["CMUX_FEED_DEBUG"] = "1"
         env.pop("CMUX_SOCKET_PATH", None)
         env.pop("CMUX_REMOTE_HOST_KEY", None)
         env.pop("TMUX", None)
