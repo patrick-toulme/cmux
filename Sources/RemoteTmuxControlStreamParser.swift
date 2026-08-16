@@ -15,13 +15,22 @@ import Foundation
 /// (see ``parseOutput(rawLine:)``) so those characters survive for ghostty to
 /// reassemble; a String round-trip would replace each split half with U+FFFD.
 struct RemoteTmuxControlStreamParser {
-    static let defaultMaximumCommandBlockBytes = 16_777_216
+    /// Hard guard against a runaway command block, sized with comfortable
+    /// headroom over the largest LEGITIMATE block: a full-depth seed capture
+    /// (50,000 history lines, see `scrollbackCaptureLines`) of an SGR-dense
+    /// agent pane runs 15-25 MB. Exceeding this is a stream error that
+    /// resets the connection, so a lawful deep capture must never reach it.
+    static let defaultMaximumCommandBlockBytes = 67_108_864
 
     private let maxBufferedLineBytes: Int
     private let maxCommandBlockBytes: Int
     private var buffer: [UInt8] = []
     private var inBlock = false
     private var blockNumber = 0
+    /// The `%begin` flags field: bit 1 marks a reply to a command THIS
+    /// client sent; the attach dump carries 0. Absent (ancient servers)
+    /// defaults to client-reply, preserving positional behavior.
+    private var blockFlags: Int?
     private var blockLines: [String] = []
     private var blockBufferedBytes = 0
 
@@ -120,10 +129,16 @@ struct RemoteTmuxControlStreamParser {
             if (line.hasPrefix("%end ") || line.hasPrefix("%error ")),
                Self.field(line, 2).flatMap({ Int($0) }) == blockNumber {
                 let isError = line.hasPrefix("%error ")
-                let result = RemoteTmuxControlMessage.commandResult(
-                    commandNumber: blockNumber, lines: blockLines, isError: isError
-                )
+                let isClientReply = ((blockFlags ?? 1) & 1) == 1
+                let result: RemoteTmuxControlMessage = isClientReply
+                    ? .commandResult(
+                        commandNumber: blockNumber, lines: blockLines, isError: isError
+                    )
+                    : .serverBlock(
+                        commandNumber: blockNumber, lines: blockLines, isError: isError
+                    )
                 inBlock = false
+                blockFlags = nil
                 blockLines = []
                 blockBufferedBytes = 0
                 return prefixMessages + [result]
@@ -150,6 +165,7 @@ struct RemoteTmuxControlStreamParser {
                 return prefixMessages + [parseNotification(line)]
             }
             blockNumber = number
+            blockFlags = Self.field(line, 3).flatMap { Int($0) }
             inBlock = true
             blockLines = []
             blockBufferedBytes = 0
@@ -163,6 +179,7 @@ struct RemoteTmuxControlStreamParser {
         buffer.removeAll(keepingCapacity: false)
         inBlock = false
         blockNumber = 0
+        blockFlags = nil
         blockLines = []
         blockBufferedBytes = 0
         return .streamError(reason)

@@ -51,12 +51,13 @@ extension RemoteTmuxControlConnection {
         pendingPaneSeeds[paneId]![0].snapshot.append(data)
     }
 
-    func installPaneSeedCapture(paneId: Int, seedID: UUID, data: Data) {
+    func installPaneSeedCapture(paneId: Int, seedID: UUID, data: Data, lineCount: Int? = nil) {
         guard pendingPaneSeeds[paneId]?.first?.id == seedID,
               pendingPaneSeeds[paneId]?.first?.isCaptureInstalled == false else { return }
         guard reservePendingPaneSeedBytes(data.count, paneId: paneId) else { return }
         pendingPaneSeeds[paneId]![0].snapshot.append(data)
         pendingPaneSeeds[paneId]![0].isCaptureInstalled = true
+        pendingPaneSeeds[paneId]![0].capturedLineCount = lineCount
     }
 
     /// Absorbs live bytes until the capture/state transaction resolves. Bytes
@@ -87,7 +88,13 @@ extension RemoteTmuxControlConnection {
         observers.emitPaneOutput(paneId, data)
     }
 
-    func finishPaneSeed(paneId: Int, seedID: UUID, state: Data) {
+    func finishPaneSeed(
+        paneId: Int,
+        seedID: UUID,
+        state: Data,
+        paneHeight: Int? = nil,
+        historySize: Int? = nil
+    ) {
         guard var seeds = pendingPaneSeeds[paneId], seeds.first?.id == seedID else { return }
         let completed = seeds.removeFirst()
         releasePendingPaneSeedBytes(completed.retainedByteCount)
@@ -97,6 +104,7 @@ extension RemoteTmuxControlConnection {
             emitBufferedPaneOutput(completed, paneId: paneId)
             return
         }
+        paneSeedByteCounts[paneId, default: 0] += completed.snapshot.count
         observers.emitPaneSeed(
             paneId,
             RemoteTmuxPaneSeed(
@@ -107,6 +115,67 @@ extension RemoteTmuxControlConnection {
                 state: state
             )
         )
+        verifySeedDepthParity(
+            paneId: paneId,
+            completed: completed,
+            paneHeight: paneHeight,
+            historySize: historySize
+        )
+    }
+
+    /// Depth parity for full-history seeds: the same state reply that closes
+    /// the seed reports the pane's history size, so a capture that carried
+    /// no more than the visible screen while the remote holds real history
+    /// is PROVABLY foreign or empty (observed live during attach storms:
+    /// the mount seed's capture block came back as empty rows while a
+    /// manual capture of the same pane returned the full history). One
+    /// bounded reseed per pane heals it after the storm settles; a healthy
+    /// deep seed resets the budget.
+    private func verifySeedDepthParity(
+        paneId: Int,
+        completed: RemoteTmuxPendingPaneSeed,
+        paneHeight: Int?,
+        historySize: Int?
+    ) {
+        guard completed.kind == .fullHistory,
+              let historySize, let paneHeight,
+              let capturedLines = completed.capturedLineCount else { return }
+        guard Self.fullHistorySeedLooksShallow(
+            capturedLines: capturedLines,
+            paneHeight: paneHeight,
+            historySize: historySize
+        ) else {
+            seedDepthRecoveryAttemptsByPane[paneId] = nil
+            return
+        }
+        let attempts = seedDepthRecoveryAttemptsByPane[paneId, default: 0]
+        guard attempts < 2 else { return }
+        seedDepthRecoveryAttemptsByPane[paneId] = attempts + 1
+        record("pane-seed-shallow %\(paneId)")
+        #if DEBUG
+        cmuxDebugLog(
+            "remote.seed.shallow %\(paneId) lines=\(capturedLines)"
+                + " height=\(paneHeight) history=\(historySize)"
+                + " attempt=\(attempts + 1)/2"
+        )
+        #endif
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, self.connectionState == .connected,
+                  self.pendingPaneSeeds[paneId]?.isEmpty != false else { return }
+            self.seedPane(paneId: paneId)
+        }
+    }
+
+    /// A genuine `-S -50000` capture of a pane with real history ALWAYS
+    /// returns more rows than the visible screen; visible-or-fewer rows
+    /// alongside substantial remote history means the capture reply did
+    /// not carry that pane's content.
+    nonisolated static func fullHistorySeedLooksShallow(
+        capturedLines: Int,
+        paneHeight: Int,
+        historySize: Int
+    ) -> Bool {
+        historySize >= 100 && capturedLines <= paneHeight + 1
     }
 
     func failPaneSeedCommand(_ kind: CommandKind, errorLines: [String]) {

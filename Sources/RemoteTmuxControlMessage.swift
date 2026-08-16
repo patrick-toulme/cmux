@@ -71,8 +71,20 @@ enum RemoteTmuxControlMessage: Sendable, Equatable {
     /// `%continue %<pane>` — tmux resumed this pane's output.
     case continued(paneId: Int)
 
-    /// The coalesced output of one command block (`%begin`…`%end`/`%error`).
+    /// The coalesced output of one CLIENT command's reply block
+    /// (`%begin`…`%end`/`%error` with the client flag set). Exactly one
+    /// arrives per command this client sent, in send order: the positional
+    /// correlation FIFO consumes precisely these.
     case commandResult(commandNumber: Int, lines: [String], isError: Bool)
+
+    /// A SERVER-generated block (`%begin`…`%end` with flags 0): the attach
+    /// dump, never a reply to a queued command. Kept apart from
+    /// ``commandResult`` so it can never pop a command's slot off the
+    /// correlation FIFO. Observed live: the dump consumed a slot under
+    /// attach-storm timing, every later reply shifted one back, and pane
+    /// seeds installed FOREIGN capture blocks (an empty neighbor pane's
+    /// screen instead of the pane's 12,000-line history).
+    case serverBlock(commandNumber: Int, lines: [String], isError: Bool)
 
     /// The control stream became unsafe to keep parsing, for example because an
     /// unterminated line or command block exceeded the parser's memory budget.

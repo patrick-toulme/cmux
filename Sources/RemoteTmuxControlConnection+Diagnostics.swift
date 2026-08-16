@@ -14,6 +14,7 @@ extension RemoteTmuxControlConnection {
       windowCount: windowsByID.count,
       windowIDs: windowOrder,
       paneOutputByteCounts: paneOutputByteCounts,
+      paneSeedByteCounts: paneSeedByteCounts,
       totalOutputBytes: totalOutputBytes,
       recentEvents: diagnostics.events
     )

@@ -59,15 +59,48 @@ import Testing
         ])
     }
 
+    @Test func serverGeneratedBlockIsKeptOffTheCommandFIFO() {
+        // tmux marks server-generated blocks (the attach dump) with flags 0
+        // and client command replies with flags 1. The dump consumed a
+        // command's FIFO slot under attach-storm timing, shifting every
+        // later reply one slot back: pane seeds installed FOREIGN capture
+        // blocks (an empty neighbor pane's screen instead of the pane's
+        // full history). The two must emerge as distinct messages.
+        let messages = parse(
+            "%begin 1700000000 280 0\r\n"
+            + "%end 1700000000 280 0\r\n"
+            + "%begin 1700000000 281 1\r\n"
+            + "reply line\r\n"
+            + "%end 1700000000 281 1\r\n"
+        )
+        #expect(messages == [
+            .serverBlock(commandNumber: 280, lines: [], isError: false),
+            .commandResult(commandNumber: 281, lines: ["reply line"], isError: false),
+        ])
+    }
+
+    @Test func flaglessBlockDefaultsToClientReply() {
+        // Ancient servers omit the flags field; positional consumption is
+        // the only option there, so the block stays a commandResult.
+        let messages = parse(
+            "%begin 1700000000 5\r\n"
+            + "value\r\n"
+            + "%end 1700000000 5\r\n"
+        )
+        #expect(messages == [
+            .commandResult(commandNumber: 5, lines: ["value"], isError: false)
+        ])
+    }
+
     @Test func blockContentPreservesEscapeBackslash() {
         // `capture-pane -e` output can contain ESC `\` (an OSC String Terminator).
         // ST stripping is scoped to notification lines, so block content must
         // survive verbatim — otherwise the painted pane loses bytes.
         let esc = "\u{1b}\\" // ESC backslash (ST)
         let messages = parse(
-            "%begin 1700000000 4 0\r\n"
+            "%begin 1700000000 4 1\r\n"
             + "title\(esc)tail\r\n"
-            + "%end 1700000000 4 0\r\n"
+            + "%end 1700000000 4 1\r\n"
         )
         #expect(messages == [
             .commandResult(commandNumber: 4, lines: ["title\(esc)tail"], isError: false)
@@ -78,6 +111,7 @@ import Testing
         // The real stream prepends the `ESC P 1000 p` enter sequence to the
         // first %begin line; the parser emits `.enter` and strips the framing.
         let enter = "\u{1b}P1000p"
+        // The attach dump the enter DCS precedes is a SERVER block (flags 0).
         let messages = parse(
             enter + "%begin 1700000000 1 0\r\n"
             + "ok\r\n"
@@ -85,7 +119,7 @@ import Testing
         )
         #expect(messages == [
             .enter,
-            .commandResult(commandNumber: 1, lines: ["ok"], isError: false),
+            .serverBlock(commandNumber: 1, lines: ["ok"], isError: false),
         ])
     }
 

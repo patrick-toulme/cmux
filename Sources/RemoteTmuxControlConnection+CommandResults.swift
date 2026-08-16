@@ -3,6 +3,17 @@ import Foundation
 extension RemoteTmuxControlConnection {
 
 
+    /// Extracts one integer `key=value` field from a pane-state query line.
+    nonisolated static func stateLineValue(_ line: String?, key: String) -> Int? {
+        guard let line else { return nil }
+        for pair in line.split(separator: ",") {
+            let parts = pair.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, parts[0] == Substring(key) else { continue }
+            return Int(parts[1])
+        }
+        return nil
+    }
+
     func handleCommandResult(lines: [String], isError: Bool) {
         // The attach block was already consumed upstream (`attachBlockDrained`);
         // an empty FIFO here means an unsolicited block — drop it rather than
@@ -305,8 +316,16 @@ extension RemoteTmuxControlConnection {
             // the prompt. The `.paneState` seed then repositions the cursor within
             // the visible screen.
             let painted = "\u{1b}[H\u{1b}[2J" + lines.joined(separator: "\r\n")
+            #if DEBUG
+            cmuxDebugLog(
+                "remote.seed.capture %\(paneId) lines=\(lines.count)"
+                    + " bytes=\(painted.utf8.count)"
+            )
+            #endif
             if let data = painted.data(using: .utf8) {
-                installPaneSeedCapture(paneId: paneId, seedID: seedID, data: data)
+                installPaneSeedCapture(
+                    paneId: paneId, seedID: seedID, data: data, lineCount: lines.count
+                )
             }
         case let .paneState(paneId, seedID):
             // Restore the pane's terminal state (scroll region + DEC modes + cursor)
@@ -314,7 +333,13 @@ extension RemoteTmuxControlConnection {
             // region (DECSTBM) is the important one: without it an inline TUI's
             // region-relative redraws land on the wrong rows even at a static size.
             let state = lines.first.map(decoding.paneStateSeedSequence(from:)) ?? Data()
-            finishPaneSeed(paneId: paneId, seedID: seedID, state: state)
+            finishPaneSeed(
+                paneId: paneId,
+                seedID: seedID,
+                state: state,
+                paneHeight: Self.stateLineValue(lines.first, key: "pane_height"),
+                historySize: Self.stateLineValue(lines.first, key: "history_size")
+            )
         case let .panePath(paneId):
             if let path = lines.first?.trimmingCharacters(in: .whitespaces), !path.isEmpty {
                 observers.emitPaneCwd(paneId, path)
@@ -341,6 +366,11 @@ extension RemoteTmuxControlConnection {
             // surface REUSED across reconnect: if it was on the alt screen before and the
             // remote pane is now on primary, force it back (1049l) so the capture doesn't
             // paint onto a stale alt screen.
+            #if DEBUG
+            cmuxDebugLog(
+                "remote.seed.alt %\(paneId) value=\(lines.first ?? "<empty>")"
+            )
+            #endif
             if lines.first?.trimmingCharacters(in: .whitespaces) == "1" {
                 appendPaneSeedPrefix(
                     paneId: paneId, seedID: seedID, data: Self.altScreenEnterSequence

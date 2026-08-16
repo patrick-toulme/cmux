@@ -400,6 +400,7 @@ extension RemoteTmuxControlConnection {
         discardPendingPaneSeeds(keeping: livePanes)
         paneHeaderLabels = paneHeaderLabels.filter { livePanes.contains($0.key) }
         paneOutputByteCounts = paneOutputByteCounts.filter { livePanes.contains($0.key) }
+        paneSeedByteCounts = paneSeedByteCounts.filter { livePanes.contains($0.key) }
         paneForegroundStates = paneForegroundStates.filter { livePanes.contains($0.key) }
     }
 }

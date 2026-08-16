@@ -442,6 +442,59 @@ class Harness:
         self.send_events(self.turn_end(sid))
         time.sleep(1)
 
+    def scenario_deep_scrollback(self) -> None:
+        # The mirror's scrollback fidelity: a pane with deep pre-attach
+        # history must seed DEEP (hosts run history-limit 50000; the old
+        # 5,000-line cap seeded a tenth of a long agent session and every
+        # reconnect reseed re-truncated the local buffer to that sliver).
+        self.tmux("set", "-g", "history-limit", "50000")
+        self.tmux("kill-window", "-t", f"{SESSION_NAME}:9", check=False)
+        created = self.tmux(
+            "new-window", "-t", f"{SESSION_NAME}:9", "-d", "-P",
+            "-F", "#{pane_id}",
+            'sh -c "seq 1 12000; exec sh"',
+        )
+        deep_pane = created.stdout.strip()
+        deadline = time.time() + 20
+        history = "0"
+        while time.time() < deadline:
+            history = self.tmux(
+                "display", "-p", "-t", deep_pane, "#{history_size}",
+                check=False,
+            ).stdout.strip()
+            if history.isdigit() and int(history) > 10_000:
+                break
+            time.sleep(0.5)
+        record("deep pane accumulated history", int(history or "0") > 10_000,
+               f"history_size={history}")
+        # Restart the app leg: the fresh attach must seed the deep pane
+        # from its full history, not a shallow slice.
+        self.kill_app()
+        self.launch_app()
+        self.attach_fake_host()
+        # pane_seed_bytes counts the seed snapshot actually DELIVERED to the
+        # mirror surface (captures ride command replies, which the %output
+        # counters miss). 12k short seq lines deliver ~70KB, an order past
+        # any visible-screen footprint, so the threshold cleanly separates
+        # a shallow (clipped or foreign-block) seed from full depth. The
+        # depth-parity reseed may need a beat after the attach storm.
+        seeded = 0
+        deadline = time.time() + 45
+        while time.time() < deadline:
+            state = self.rpc("remote.tmux.state",
+                             {"host": FAKE_HOST, "session": SESSION_NAME})
+            result = state.get("result", state)
+            seeded = int((result.get("pane_seed_bytes") or {}).get(deep_pane, 0))
+            if seeded > 50_000:
+                break
+            time.sleep(1)
+        record("deep history seeded into the mirror", seeded > 50_000,
+               f"pane_seed_bytes={seeded}")
+        # Keep the deep pane alive on failure so a post-mortem can capture
+        # it manually and inspect the app's seed pipeline state.
+        if seeded > 90_000:
+            self.tmux("kill-window", "-t", deep_pane, check=False)
+
     def scenario_paste_multiline(self) -> None:
         # A multi-line paste into a mirror pane must arrive as ONE tmux
         # paste (bracketed iff the app opted in), never as raw keystrokes
@@ -539,6 +592,7 @@ class Harness:
                 "permission": self.scenario_permission,
                 "question": self.scenario_question,
                 "paste": self.scenario_paste_multiline,
+                "deep_scrollback": self.scenario_deep_scrollback,
                 "restart": self.scenario_restart_mid_turn,
                 "downtime": self.scenario_complete_during_downtime,
             }
@@ -568,7 +622,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--only", action="append", default=[],
-        help="run only the named scenario(s): working, permission, question, paste, restart, downtime",
+        help="run only the named scenario(s): working, permission, question, paste, deep_scrollback, restart, downtime",
     )
     args = parser.parse_args()
     return Harness(

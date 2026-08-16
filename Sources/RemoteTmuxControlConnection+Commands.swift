@@ -3,8 +3,20 @@ import Foundation
 
 extension RemoteTmuxControlConnection {
     /// How many lines of pane history `capture-pane` seeds onto a freshly mounted
-    /// (or reconnected) mirror surface. Clamped by the remote pane's `history-limit`.
-    private static let scrollbackCaptureLines = 5_000
+    /// (or reconnected) mirror surface.
+    ///
+    /// The remote pane's history is the truth the mirror exists to show; a
+    /// shallow cap silently clipped it (observed live: hosts run
+    /// `history-limit 50000`, the old 5,000-line cap seeded a tenth of a
+    /// long agent session, and every reconnect reseed re-truncated the local
+    /// buffer to that sliver). tmux clamps `-S` to the history that actually
+    /// exists, so fresh panes still seed almost nothing and the transfer
+    /// cost always scales with real content; sessions attach on parallel
+    /// connections, and the stdout budget (32 MB) comfortably holds one deep
+    /// capture. The local surface must be allowed to KEEP this much: Ghostty's
+    /// `scrollback-limit` is in BYTES, and an undersized value trims the seed
+    /// right back down.
+    private static let scrollbackCaptureLines = 50_000
 
     /// Sends a tmux command on the control stream (newline-terminated).
     @discardableResult
@@ -320,6 +332,7 @@ extension RemoteTmuxControlConnection {
             + "cursor_flag=#{cursor_flag},insert_flag=#{insert_flag},"
             + "keypad_cursor_flag=#{keypad_cursor_flag},keypad_flag=#{keypad_flag},"
             + "wrap_flag=#{wrap_flag},origin_flag=#{origin_flag},pane_height=#{pane_height},"
+            + "history_size=#{history_size},"
             + "mouse_all_flag=#{mouse_all_flag},mouse_button_flag=#{mouse_button_flag},"
             + "mouse_standard_flag=#{mouse_standard_flag},"
             + "mouse_sgr_flag=#{mouse_sgr_flag},mouse_utf8_flag=#{mouse_utf8_flag}\""

@@ -296,6 +296,36 @@ import Testing
         #expect(connection.pastePane(paneId: 1, text: "") == false)
     }
 
+    @Test @MainActor func seedCaptureRequestsDeepHistory() throws {
+        // The mirror's scrollback fidelity is bounded by this capture depth:
+        // a shallow cap seeded a tenth of a long agent session (hosts run
+        // history-limit 50000) and every reconnect re-truncated the local
+        // buffer to it. tmux clamps -S to the history that exists, so fresh
+        // panes stay cheap.
+        let connection = RemoteTmuxControlConnection(
+            host: RemoteTmuxHost(destination: "seed-depth-\(UUID().uuidString)@host"),
+            sessionName: "work"
+        )
+        let pipe = Pipe()
+        let writer = RemoteTmuxControlPipeWriter(
+            handle: pipe.fileHandleForWriting,
+            label: "remote-tmux-seed-depth-test",
+            maxPendingBytes: 1 << 20,
+            onFailure: {}
+        )
+        connection.installStdinWriterForTesting(writer)
+        defer {
+            writer.close()
+            try? pipe.fileHandleForReading.close()
+        }
+        connection.handleMessageForTesting(.enter)
+        _ = connection.capturePane(paneId: 7)
+        let commands = String(
+            decoding: pipe.fileHandleForReading.availableData, as: UTF8.self
+        )
+        #expect(commands.contains("capture-pane -p -e -S -50000 -t %7"))
+    }
+
     @Test @MainActor func sessionRenamedUpdatesTrackedNameAndEmitsObserverWithoutSessionId() {
         // A documented `%session-renamed <name>` must still track the new name
         // (reused for reconnect) and fire the observer the mirror listens on.

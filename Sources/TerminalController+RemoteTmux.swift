@@ -343,6 +343,10 @@ extension TerminalController {
             for (paneId, count) in snapshot.paneOutputByteCounts {
                 paneBytes["%\(paneId)"] = count
             }
+            var paneSeedBytes: [String: Int] = [:]
+            for (paneId, count) in snapshot.paneSeedByteCounts {
+                paneSeedBytes["%\(paneId)"] = count
+            }
             var payload: [String: Any] = [
                 "host": host.destination,
                 "session": session,
@@ -355,6 +359,7 @@ extension TerminalController {
                 "window_ids": snapshot.windowIDs,
                 "total_output_bytes": snapshot.totalOutputBytes,
                 "pane_output_bytes": paneBytes,
+                "pane_seed_bytes": paneSeedBytes,
                 "recent_events": snapshot.recentEvents,
             ]
             if let sessionId = snapshot.sessionId {

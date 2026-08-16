@@ -55,6 +55,10 @@ final class RemoteTmuxControlConnection {
     var paneIDsRetainedUntilWindowList: Set<Int> = []
     var activePaneByWindow: [Int: Int] = [:]
     var paneOutputByteCounts: [Int: Int] = [:]
+    /// Seed snapshot bytes delivered per pane (captures arrive as command
+    /// replies, never as `%output`, so the output counters miss them). The
+    /// truthful scrollback-depth signal for diagnostics and the harness.
+    var paneSeedByteCounts: [Int: Int] = [:]
     var totalOutputBytes = 0
     /// Per-pane capture/state transactions owning the snapshot-to-live cutover.
     var pendingPaneSeeds: [Int: [RemoteTmuxPendingPaneSeed]] = [:]
@@ -63,6 +67,8 @@ final class RemoteTmuxControlConnection {
     let pendingPaneSeedByteLimit: Int
     /// Panes whose budget overflow recovery is waiting to start an authoritative seed.
     var deferredPaneSeedBudgetRecoveryPaneIDs: Set<Int> = []
+    /// Bounded depth-parity reseeds per pane (see `verifySeedDepthParity`).
+    var seedDepthRecoveryAttemptsByPane: [Int: Int] = [:]
     /// Coalesces pane budget recovery onto one future main-actor turn.
     var paneSeedBudgetRecoveryTaskScheduled = false
     /// The one queued or in-flight visible repaint seed allowed per pane.
@@ -973,6 +979,8 @@ final class RemoteTmuxControlConnection {
                 for pane in closing.paneIDsInOrder {
                     discardPendingPaneSeeds(paneId: pane)
                     paneOutputByteCounts[pane] = nil
+                    paneSeedByteCounts[pane] = nil
+                    seedDepthRecoveryAttemptsByPane[pane] = nil
                     paneForegroundStates[pane] = nil
                     paneHeaderLabels[pane] = nil
                 }
@@ -1073,17 +1081,30 @@ final class RemoteTmuxControlConnection {
                     requestWindows()
                 }
             }
-        case let .commandResult(_, lines, isError):
-            // The first block on each control stream is the attach command's own —
-            // consume it explicitly so it can never pop a queued command's slot off
-            // the positional FIFO (see ``attachBlockDrained``).
+        case let .serverBlock(number, _, _):
+            // tmux marks server-generated blocks with flags 0 (the attach
+            // dump); they are never replies to queued commands and must
+            // never pop the positional FIFO. The first one is the attach
+            // boundary: pin the forwarded-agent env now (the server has
+            // processed this attach, so `update-environment` already ran
+            // and cannot clobber the pin) and fetch the topology.
             if !attachBlockDrained {
                 attachBlockDrained = true
-                // Pin the forwarded-agent env to the stable link now: the
-                // server has processed this attach (so `update-environment`
-                // already ran and cannot clobber the pin afterwards), and the
-                // refresh snippet in this connection's own remote command has
-                // already retargeted the link at the live socket.
+                if let pinCommand = agentEnvPinCommandProvider?() {
+                    _ = send(pinCommand)
+                }
+                requestWindows()
+            } else {
+                record("server-block \(number)")
+            }
+        case let .commandResult(_, lines, isError):
+            // Flag-less ancient servers (and tests that model the attach
+            // dump as a plain block) still drain the first block here; on a
+            // flag-bearing server the dump arrived as `.serverBlock`, so
+            // every `.commandResult` is a client reply and the FIFO stays
+            // aligned even when the attach storm reorders timing.
+            if !attachBlockDrained {
+                attachBlockDrained = true
                 if let pinCommand = agentEnvPinCommandProvider?() {
                     _ = send(pinCommand)
                 }

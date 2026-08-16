@@ -9,6 +9,9 @@ struct RemoteTmuxControlConnectionSnapshot: Sendable {
     let windowCount: Int
     let windowIDs: [Int]
     let paneOutputByteCounts: [Int: Int]
+    /// Seed snapshot bytes delivered per pane; the scrollback-depth signal
+    /// (captures ride command replies, which the output counters miss).
+    let paneSeedByteCounts: [Int: Int]
     let totalOutputBytes: Int
     let recentEvents: [String]
 }
