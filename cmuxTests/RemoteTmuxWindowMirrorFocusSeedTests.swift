@@ -273,6 +273,67 @@ import Testing
         #expect(spy.focusedPanes.count == 1)
     }
 
+    /// A recreated Ghostty runtime (wake from sleep, display
+    /// reconfiguration, hibernation resume) starts from an empty grid while
+    /// a SURVIVING control stream keeps delivering only deltas, so the pane
+    /// rendered near-blank: just the cells the remote app updated after
+    /// wake. The mirror must reseed whenever the runtime generation moves
+    /// past the one the last seed painted, exactly once per restart, and
+    /// never on the first ready (the mount seed flushed into that creation).
+    @Test func runtimeRestartReseedsThePaneExactlyOnce() throws {
+        let connection = RemoteTmuxControlConnection(
+            host: RemoteTmuxHost(destination: "seed-\(UUID().uuidString)@host"),
+            sessionName: "work"
+        )
+        let pipe = Pipe()
+        let writer = RemoteTmuxControlPipeWriter(
+            handle: pipe.fileHandleForWriting,
+            label: "remote-tmux-runtime-reseed-test",
+            maxPendingBytes: 1 << 20,
+            onFailure: {}
+        )
+        connection.installStdinWriterForTesting(writer)
+        defer {
+            writer.close()
+            try? pipe.fileHandleForReading.close()
+        }
+        connection.handleMessageForTesting(.enter)
+        let mirror = RemoteTmuxWindowMirror(
+            windowId: 1,
+            panelId: UUID(),
+            connection: connection,
+            layout: RemoteTmuxLayoutNode(width: 80, height: 24, x: 0, y: 0, content: .pane(7)),
+            makePanel: { _ in nil }
+        )
+        func seedCaptureCount() -> Int {
+            connection.pendingCommandKindsForTesting.filter {
+                if case .capturePane(7, _) = $0 { return true }
+                return false
+            }.count
+        }
+        let baseline = seedCaptureCount()
+
+        // First runtime-ready records the generation without seeding.
+        mirror.reseedIfRuntimeRestarted(paneId: 7, runtimeGeneration: 1)
+        #expect(seedCaptureCount() == baseline)
+
+        // Same generation again (focus churn, size reports): still quiet.
+        mirror.reseedIfRuntimeRestarted(paneId: 7, runtimeGeneration: 1)
+        #expect(seedCaptureCount() == baseline)
+
+        // The runtime was torn down and recreated: reseed exactly once.
+        mirror.reseedIfRuntimeRestarted(paneId: 7, runtimeGeneration: 3)
+        #expect(seedCaptureCount() == baseline + 1)
+        mirror.reseedIfRuntimeRestarted(paneId: 7, runtimeGeneration: 3)
+        #expect(seedCaptureCount() == baseline + 1)
+
+        // Every later restart reseeds again.
+        mirror.reseedIfRuntimeRestarted(paneId: 7, runtimeGeneration: 5)
+        #expect(seedCaptureCount() == baseline + 2)
+        mirror.teardown()
+        withExtendedLifetime(connection) {}
+    }
+
     @Test func noopImpositionKeepsTheFirstDividerDragRoutable() throws {
         let connection = RemoteTmuxControlConnection(
             host: RemoteTmuxHost(destination: "user@host"), sessionName: "work"

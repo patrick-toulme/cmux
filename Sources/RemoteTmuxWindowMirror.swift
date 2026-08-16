@@ -154,6 +154,11 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
     /// Last grid each pane's surface reported (from sizing samples) — the
     /// live half of the settled/mismatch probe.
     @ObservationIgnored var lastRenderedGrids: [Int: (cols: Int, rows: Int)] = [:]
+    /// The runtime-surface generation each pane's last seed painted into;
+    /// a later generation at runtime-ready means the content was lost with
+    /// the old runtime and the pane must reseed (see
+    /// ``reseedIfRuntimeRestarted(paneId:runtimeGeneration:)``).
+    @ObservationIgnored var seededRuntimeGenerationByPaneId: [Int: UInt64] = [:]
 
     // MARK: Sizing inputs (locally owned; never tmux-derived)
 
@@ -444,6 +449,8 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
             if activePaneId == paneId { activePaneId = nil }
         }
         lastRenderedGrids = lastRenderedGrids.filter { livePaneIds.contains($0.key) }
+        seededRuntimeGenerationByPaneId = seededRuntimeGenerationByPaneId
+            .filter { livePaneIds.contains($0.key) }
         // Structural change (split/close/re-nest) vs geometry-only reflow: only
         // the former re-arms client sizing (the chrome fold's output changed).
         // `init` reconciles the layout it just stored, so the first pass never
@@ -513,17 +520,50 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
             self?.handlePaneSurfaceProgress()
         }
         surface.onRuntimeReady = { [weak self, weak surface] in
+            guard let self else { return }
             if let sample = surface?.rawSizingSample() {
-                self?.handleSizingSample(sample, paneId: paneId)
+                self.handleSizingSample(sample, paneId: paneId)
             }
-            self?.onPaneSurfaceProgress?(paneId)
-            self?.handlePaneSurfaceProgress()
+            if let surface {
+                self.reseedIfRuntimeRestarted(
+                    paneId: paneId,
+                    runtimeGeneration: surface.runtimeSurfaceGeneration
+                )
+            }
+            self.onPaneSurfaceProgress?(paneId)
+            self.handlePaneSurfaceProgress()
         }
         surface.flushPendingManualSizeReportIfAttached()
         if let sample = surface.rawSizingSample() {
             handleSizingSample(sample, paneId: paneId)
         }
         if needsSeed { connection?.seedPane(paneId: paneId) }
+    }
+
+    /// A mirror surface's content is DERIVED state: whenever its Ghostty
+    /// runtime is torn down and recreated (wake from sleep, display
+    /// reconfiguration, hibernation resume), the fresh runtime starts from
+    /// an empty grid and only future `%output` deltas would paint. With a
+    /// control connection that SURVIVED the gap there is no reconnect
+    /// reseed, so the pane rendered near-blank: just the cells the remote
+    /// app happened to update afterwards (observed live after lid-close:
+    /// a void with only the TUI's ticking counters and cursor visible).
+    /// Re-run the derivation whenever the runtime generation moves past
+    /// the one the last ready observed. The first ready records without
+    /// seeding: the mount/reconnect seed was queued into that creation
+    /// (`flushPendingRemoteOutput`).
+    func reseedIfRuntimeRestarted(paneId: Int, runtimeGeneration: UInt64) {
+        guard !isTornDown else { return }
+        let seeded = seededRuntimeGenerationByPaneId[paneId]
+        seededRuntimeGenerationByPaneId[paneId] = runtimeGeneration
+        guard let seeded, seeded != runtimeGeneration else { return }
+        #if DEBUG
+        cmuxDebugLog(
+            "remote.seed.runtimeRestart @\(windowId) pane=%\(paneId)"
+                + " generation=\(seeded)->\(runtimeGeneration)"
+        )
+        #endif
+        connection?.seedPane(paneId: paneId)
     }
 
     /// Routes a tmux `%output` to the surface for `paneId` (no-op if unknown).
@@ -644,6 +684,7 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
         paneIdByTabId.removeAll()
         cwdByPaneId.removeAll()
         lastRenderedGrids.removeAll()
+        seededRuntimeGenerationByPaneId.removeAll()
         activePaneId = nil
         connection = nil
     }
