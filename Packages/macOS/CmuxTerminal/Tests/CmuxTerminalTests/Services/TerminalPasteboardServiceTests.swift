@@ -121,6 +121,55 @@ struct PasteboardTextContentsTests {
         #expect(contents == "/tmp/with\\ space.png")
     }
 
+    @Test func textOnlyPasteboardsPrepareInTheUserEventContext() throws {
+        // macOS pasteboard privacy attributes an IN-EVENT read to the
+        // user's paste and allows it; a read after an async hop counts as
+        // background access and can be silently denied (types visible,
+        // every data read nil). Text-only pasteboards must therefore be
+        // eligible for the synchronous in-event fast path; file, image,
+        // and RTFD payloads keep the asynchronous preparation pipeline.
+        let scratch = ScratchPasteboard()
+        let service = TerminalPasteboardService()
+        scratch.pasteboard.declareTypes(
+            [.init("public.utf8-plain-text"), .string, .html],
+            owner: nil
+        )
+        scratch.pasteboard.setString("hello", forType: .init("public.utf8-plain-text"))
+        scratch.pasteboard.setString("hello", forType: .string)
+        scratch.pasteboard.setString("<b>hello</b>", forType: .html)
+        #expect(!service.requiresAsynchronousPastePreparation(scratch.pasteboard))
+
+        let imageScratch = ScratchPasteboard()
+        imageScratch.pasteboard.declareTypes([.png, .string], owner: nil)
+        imageScratch.pasteboard.setData(try tinyPNGData(), forType: .png)
+        imageScratch.pasteboard.setString("caption", forType: .string)
+        #expect(service.requiresAsynchronousPastePreparation(imageScratch.pasteboard))
+
+        let fileScratch = ScratchPasteboard()
+        fileScratch.pasteboard.clearContents()
+        #expect(fileScratch.pasteboard.writeObjects(
+            [URL(fileURLWithPath: "/tmp/file.txt") as NSURL]
+        ))
+        #expect(service.requiresAsynchronousPastePreparation(fileScratch.pasteboard))
+    }
+
+    @Test func advertisedPlainTextDistinguishesDenialFromEmptyClipboard() {
+        // The denial signature: plain-text flavors advertised while every
+        // data read returns nil. The advisory must fire for that shape and
+        // stay quiet for pasteboards that never claimed text.
+        let scratch = ScratchPasteboard()
+        let service = TerminalPasteboardService()
+        scratch.pasteboard.declareTypes(
+            [.init("public.utf8-plain-text"), .html],
+            owner: nil
+        )
+        #expect(service.advertisesPlainText(in: scratch.pasteboard))
+
+        let htmlOnly = ScratchPasteboard()
+        htmlOnly.pasteboard.declareTypes([.html], owner: nil)
+        #expect(!service.advertisesPlainText(in: htmlOnly.pasteboard))
+    }
+
     @Test func imageOnlyHTMLWithNoVisibleTextReturnsNil() throws {
         let scratch = ScratchPasteboard()
         let service = TerminalPasteboardService()

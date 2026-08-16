@@ -78,6 +78,32 @@ extension TerminalPasteboardService: TerminalClipboardReading {
     public func fallbackPlainTextContents(from pasteboard: NSPasteboard) -> String? {
         plainTextContents(from: pasteboard)
     }
+
+    /// Whether paste preparation for this pasteboard needs the asynchronous
+    /// pipeline (file materialization, image decoding, RTFD attachment
+    /// walks). A pasteboard without those flavors prepares to plain text
+    /// with cheap synchronous reads, and those reads must happen INSIDE
+    /// the user-event context: macOS pasteboard privacy attributes an
+    /// in-event read to the user's paste and allows it, while the same
+    /// read after an async hop counts as background clipboard access and
+    /// can be silently denied (types stay visible, every data read
+    /// returns nil).
+    public func requiresAsynchronousPastePreparation(
+        _ pasteboard: NSPasteboard
+    ) -> Bool {
+        let types = pasteboard.types ?? []
+        if types.contains(.fileURL) || types.contains(.rtfd) {
+            return true
+        }
+        return hasImageData(in: pasteboard)
+    }
+
+    /// Whether the pasteboard advertises any plain-text flavor. Paired with
+    /// an all-reads-failed prepare outcome, this is the signature of macOS
+    /// denying clipboard access rather than of an empty clipboard.
+    public func advertisesPlainText(in pasteboard: NSPasteboard) -> Bool {
+        (pasteboard.types ?? []).contains(where: isPlainTextType)
+    }
 }
 
 extension TerminalPasteboardService {

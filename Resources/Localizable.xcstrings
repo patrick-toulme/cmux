@@ -59841,6 +59841,122 @@
         }
       }
     },
+    "clipboard.accessDenied.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The clipboard has text, but macOS returned nothing when cmux tried to read it, so the paste stayed empty. Open System Settings > Privacy & Security > Pasteboard and allow clipboard access for this app, then paste again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クリップボードにテキストがありますが、cmuxが読み取ろうとしたときmacOSが何も返さなかったため、ペーストは空のままでした。システム設定 > プライバシーとセキュリティ > ペーストボードでこのアプリのクリップボードアクセスを許可してから、もう一度ペーストしてください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "클립보드에 텍스트가 있지만 cmux가 읽으려 할 때 macOS가 아무것도 반환하지 않아 붙여넣기가 비어 있었습니다. 시스템 설정 > 개인정보 보호 및 보안 > 페이스트보드에서 이 앱의 클립보드 접근을 허용한 다음 다시 붙여넣으세요."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "У буфері обміну є текст, але macOS нічого не повернула, коли cmux спробував його прочитати, тому вставлення залишилося порожнім. Відкрийте Системні налаштування > Приватність і безпека > Буфер обміну, дозвольте цьому застосунку доступ до буфера обміну та вставте ще раз."
+          }
+        }
+      }
+    },
+    "clipboard.accessDenied.dismiss": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "확인"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OK"
+          }
+        }
+      }
+    },
+    "clipboard.accessDenied.openSettings": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Privacy Settings"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プライバシー設定を開く"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "개인정보 보호 설정 열기"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Відкрити налаштування приватності"
+          }
+        }
+      }
+    },
+    "clipboard.accessDenied.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS blocked cmux's clipboard access"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOSがcmuxのクリップボードアクセスをブロックしました"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS가 cmux의 클립보드 접근을 차단했습니다"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS заблокувала доступ cmux до буфера обміну"
+          }
+        }
+      }
+    },
     "clipboard.sshError.item": {
       "extractionState": "manual",
       "localizations": {
