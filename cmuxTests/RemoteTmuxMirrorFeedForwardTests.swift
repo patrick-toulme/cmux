@@ -422,6 +422,57 @@ import Testing
         withExtendedLifetime(connection) {}
     }
 
+    /// A transient SwiftUI re-layout can hand the geometry callback an
+    /// ancestor's content ideal that fits UNDER the window bound, so the
+    /// oversized guard cannot reject it (observed live: a 1003pt slot banked
+    /// a phantom 1491pt reading — exactly the window content width — claimed
+    /// 175 columns, and tmux reflowed the pane out from under the visible
+    /// slot every time the phantom recurred). The settled sizing pass must
+    /// judge the banked container against the owner's PROBE frame (layout
+    /// truth, planted in the region's own subtree) and correct it before
+    /// pushing, so tmux never hears the spike at all.
+    @Test func phantomContentIdealReadingIsReconciledToTheSettledProbeFrame() throws {
+        let slot = CGSize(width: 800, height: 620)
+        let phantom = CGSize(width: 1100, height: 750)
+        let (mirror, connection) = makeMirror(layout: reflow123, geometry: calibratedGeometry)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        defer { window.orderOut(nil) }
+        window.orderFrontRegardless()
+        try #require(window.isVisible)
+        let probe = NSView(frame: NSRect(origin: .zero, size: slot))
+        try #require(window.contentView).addSubview(probe)
+        let host = UUID()
+        mirror.registerHostProbe(probe, token: host)
+        mirror.noteHostVisibility(token: host, visible: true)
+        mirror.noteHostContainerSize(token: host, pointSize: slot, scale: 2)
+        mirror.performSizingPassNow()
+        let real = try #require(pushed(connection))
+
+        // The phantom fits the (huge) bound, so it banks like any reading...
+        mirror.noteHostContainerSize(token: host, pointSize: phantom, scale: 2)
+        #expect(mirror.containerSizePt == phantom)
+        // ...but the probe still sits at the true slot when the pass runs:
+        // the bank is corrected and the claim never moves.
+        mirror.performSizingPassNow()
+        #expect(mirror.containerSizePt == slot)
+        #expect(pushed(connection)?.cols == real.cols)
+        #expect(pushed(connection)?.rows == real.rows)
+
+        // A REAL slot change moves the probe with it: the same reading is
+        // now truth, survives the settled judgment, and re-claims.
+        probe.frame = NSRect(origin: .zero, size: phantom)
+        mirror.noteHostContainerSize(token: host, pointSize: phantom, scale: 2)
+        mirror.performSizingPassNow()
+        #expect(mirror.containerSizePt == phantom)
+        #expect(pushed(connection)?.cols != real.cols)
+
+        mirror.teardown()
+        withExtendedLifetime(connection) {}
+    }
+
     @Test func pushIsAPureFunctionOfPixelsAndStructureNotTheAssignment() {
         // The SAME pixels with a re-dividet (geometry-only) tree push the SAME
         // size — the mechanical form of the no-feedback-loop theorem: tmux's

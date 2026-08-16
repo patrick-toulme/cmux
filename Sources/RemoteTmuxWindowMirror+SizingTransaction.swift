@@ -257,6 +257,43 @@ extension RemoteTmuxWindowMirror {
         setNeedsSizingPass()
     }
 
+    /// The banked container must match the sizing owner's probe view once
+    /// layout has settled: the probe is planted in the mirror's own region
+    /// subtree, so its AppKit frame IS the slot the region actually laid out
+    /// at. The geometry callback, by contrast, reports whatever SwiftUI
+    /// proposed — and a transient re-layout (sidebar rebuild, panel churn)
+    /// can propose an ancestor's content ideal that fits UNDER the window
+    /// bound, so the oversized guard cannot reject it. Observed live: a
+    /// mirror whose real slot was 1003pt banked a phantom 1491pt reading
+    /// (exactly the window content width), claimed 175 columns, and tmux
+    /// reflowed the pane out from under the visible 117-column slot —
+    /// flip-flopping every time the phantom recurred. Judging at PASS time
+    /// (a runloop turn later, layout committed) separates phantom from
+    /// truth: a real slot change moves the probe with it, a phantom leaves
+    /// the probe untouched and the banked value is corrected back before
+    /// the claim is pushed, so tmux never hears the spike at all.
+    private func reconcileContainerWithSettledProbe() {
+        guard isVisibleForSizing,
+              let owner = sizingOwnerToken,
+              let probe = hostProbeViewsByToken[owner]?.view,
+              let window = probe.window, window.isVisible,
+              !window.inLiveResize
+        else { return }
+        let settled = probe.bounds.size
+        guard settled.width > 1, settled.height > 1,
+              let banked = containerSizePt else { return }
+        guard abs(banked.width - settled.width) > 1.5
+            || abs(banked.height - settled.height) > 1.5 else { return }
+        #if DEBUG
+        cmuxDebugLog(
+            "mirror.container.reconcile @\(windowId)"
+                + " banked=\(Int(banked.width))x\(Int(banked.height))"
+                + " probe=\(Int(settled.width))x\(Int(settled.height)) -> adopt"
+        )
+        #endif
+        containerSizePt = settled
+    }
+
     /// Finds a trustworthy host from any pane whose portal is attached to a
     /// visible window. Dictionary order cannot decide which pane is mounted;
     /// every consumer uses this predicate so sizing and portal catch-up target
@@ -529,6 +566,7 @@ extension RemoteTmuxWindowMirror {
                 containerSizePt = size
             }
         }
+        reconcileContainerWithSettledProbe()
         let inputs = currentSizingInputs()
         if inputs == lastCompletedSizingInputs {
             // Settled by the input proof — but that proof says nothing about
