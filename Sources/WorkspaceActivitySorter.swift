@@ -15,11 +15,13 @@ import Foundation
 /// - **Section scoping** (`.withinSections`): units sort only inside their
 ///   contiguous host run (machine section or local run); nothing crosses a
 ///   section boundary, so the sidebar's section topology is preserved.
-/// - **Section cohesion** (`.global`): whole sections float by their most
-///   urgent member and units sort within them; a section is never split.
-///   Interleaving individual sessions across hosts rendered a DUPLICATE
-///   header per split run (observed live: two "xxl5" sections once one
-///   session's activity outranked the local run between them).
+/// - **Individual float** (`.global`): units sort across the whole sidebar,
+///   so an active session rises to the top WITHOUT dragging its machine's
+///   idle siblings along; they stay below in their own run. The sidebar
+///   renders a header for every contiguous run of a section, so both the
+///   floated session and the parked remainder keep their machine header.
+///   (Deliberate, per dogfood preference: a section-cohesive variant that
+///   moved whole machines was tried and rejected.)
 enum WorkspaceActivitySorter {
     /// One workspace row's sort-relevant projection, in current strip order.
     struct Item {
@@ -70,44 +72,9 @@ enum WorkspaceActivitySorter {
         case .withinSections:
             sortedUnits = hostRuns(units: units).flatMap(sortWithinFixedPins)
         case .global:
-            sortedUnits = sortSectionsThenUnits(units)
+            sortedUnits = sortWithinFixedPins(units)
         }
         return sortedUnits.flatMap { $0.items.map(\.id) }
-    }
-
-    /// "Whole Sidebar": sections reorder as blocks by their most urgent
-    /// member (healing any previously split runs of the same host), units
-    /// sort within their section, and a section containing a pinned row
-    /// holds its slot exactly like a pinned unit does within one.
-    private static func sortSectionsThenUnits(_ units: [Unit]) -> [Unit] {
-        struct SectionBlock {
-            var units: [Unit]
-            let index: Int
-            var isPinned: Bool { units.contains(where: \.isPinned) }
-            var rank: Int { units.map(\.rank).min() ?? Int.max }
-        }
-        var blocks: [SectionBlock] = []
-        var blockIndexBySection: [String?: Int] = [:]
-        for unit in units {
-            if let index = blockIndexBySection[unit.hostKey] {
-                blocks[index].units.append(unit)
-            } else {
-                blockIndexBySection[unit.hostKey] = blocks.count
-                blocks.append(SectionBlock(units: [unit], index: blocks.count))
-            }
-        }
-        let movable = blocks.filter { !$0.isPinned }
-        let orderedBlocks: [SectionBlock]
-        if movable.count > 1 {
-            let sortedMovable = movable.sorted { ($0.rank, $0.index) < ($1.rank, $1.index) }
-            var movableIterator = sortedMovable.makeIterator()
-            orderedBlocks = blocks.map { block in
-                block.isPinned ? block : movableIterator.next() ?? block
-            }
-        } else {
-            orderedBlocks = blocks
-        }
-        return orderedBlocks.flatMap { sortWithinFixedPins($0.units) }
     }
 
     /// Groups contiguous same-group items into blocks (group contiguity is a

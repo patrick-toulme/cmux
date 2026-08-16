@@ -110,7 +110,13 @@ import Testing
         )
     }
 
-    @Test func globalModeMovesWholeSectionsByMostUrgentMember() {
+    @Test func globalModeFloatsActiveSessionsWithoutDraggingIdleSiblings() {
+        // The dogfood-preferred contract: an active session rises to the
+        // top on its own; its machine's idle siblings stay put below in
+        // their own run (the sidebar renders a header for every run, so
+        // both the floated session and the remainder keep their machine
+        // header). A section-cohesive variant that moved whole machines
+        // was tried and explicitly rejected.
         let rowIds = ids(4)
         let items = [
             WorkspaceActivitySorter.Item(id: rowIds[0], hostKey: "xxl5"),
@@ -118,21 +124,16 @@ import Testing
             WorkspaceActivitySorter.Item(id: rowIds[2], hostKey: "xxl6", attentionRank: Self.working),
             WorkspaceActivitySorter.Item(id: rowIds[3], hostKey: "xxl6"),
         ]
-        // The active host's WHOLE section floats; sessions sort within it.
-        // (Interleaving individual sessions split sections and rendered a
-        // duplicate header per run.)
         #expect(
             WorkspaceActivitySorter.desiredOrder(items: items, mode: .global)
-                == [rowIds[2], rowIds[3], rowIds[0], rowIds[1]]
+                == [rowIds[2], rowIds[0], rowIds[1], rowIds[3]]
         )
     }
 
-    @Test func globalModeHealsASectionSplitByAnEarlierSort() {
-        // The live repro: one xxl5 session's activity had floated it above
-        // the local workspace, leaving [xxl5, local, xxl5, xxl5] and TWO
-        // "xxl5" headers. Re-sorting must merge the host back into one
-        // contiguous section (first-appearance position, most urgent first)
-        // instead of preserving the split.
+    @Test func globalModeLeavesIdleSiblingsParkedBelowTheLocalRun() {
+        // The live shape: the active xxl5 session sits above the local
+        // workspace; the three idle xxl5 sessions stay below it under
+        // their own header run and must not be pulled up by a re-sort.
         let rowIds = ids(4)
         let items = [
             WorkspaceActivitySorter.Item(id: rowIds[0], hostKey: "xxl5", attentionRank: Self.done),
@@ -142,7 +143,7 @@ import Testing
         ]
         #expect(
             WorkspaceActivitySorter.desiredOrder(items: items, mode: .global)
-                == [rowIds[3], rowIds[0], rowIds[2], rowIds[1]]
+                == [rowIds[3], rowIds[0], rowIds[1], rowIds[2]]
         )
     }
 
