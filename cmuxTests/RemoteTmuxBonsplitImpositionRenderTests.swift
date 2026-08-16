@@ -1728,10 +1728,12 @@ import Testing
         )
     }
 
-    /// The exact-fit tree leaves the region margin this suite's fill-policy
-    /// test is about: a small grid inside a larger region renders with a
-    /// real bottom band.
-    @Test func exactFitTreeLeavesRegionMargin() throws {
+    /// The tree fills the WHOLE region: no chrome-colored band may remain
+    /// below or beside the grid (the strip the user kept seeing under the
+    /// TUI's status line). The edge pane absorbs the remainder as view
+    /// padding while its grid stays pinned to the tmux assignment, and the
+    /// planned surplus is tracked so calibration can subtract it.
+    @Test func renderFrameFillsTheRegionAndTracksEdgeSurplus() throws {
         // A tree far smaller than its region, so the margin is tall enough
         // to matter: 30x8 cells at 8x17pt inside a 400x300 region.
         let layout = node(.pane(1), w: 30, h: 8, x: 0, y: 0)
@@ -1771,9 +1773,16 @@ import Testing
         mirror.performSizingPassNow()
         let tree = try #require(mirror.renderFrameSize)
         #expect(
-            tree.height < 260 && tree.width < 360,
-            "the exact-fit tree must sit inside the region with a real margin: \(tree)"
+            tree == CGSize(width: 400, height: 300),
+            "the tree must fill the region exactly, leaving no margin band: \(tree)"
         )
+        // 30x8 cells at 8x17pt + 4x0pt pad + the pane's one rail-slack
+        // point per axis = 245x137 ideal; the single (edge) pane absorbs
+        // the whole remainder, and calibration must know the surplus so
+        // the pad constants stay true.
+        let surplus = try #require(mirror.plannedSurplusByPane[1])
+        #expect(Int(surplus.width.rounded()) == 400 - 245, "width surplus: \(surplus.width)")
+        #expect(Int(surplus.height.rounded()) == 300 - 137, "height surplus: \(surplus.height)")
         withExtendedLifetime(connection) {}
     }
 }

@@ -288,13 +288,25 @@ extension RemoteTmuxWindowMirror {
     }
 
     /// Ingests one sizing sample into the min-tracked pad constants.
-    private func ingest(sample: TerminalSurfaceRawSizingSample) {
+    ///
+    /// The tree fills the region, so edge panes carry the plan's surplus
+    /// (the sub-cell remainder plus any claim shortfall) as extra view
+    /// pixels beyond their grid. That surplus is NOT pad: min-tracking it
+    /// would calibrate the pad constants up by as much as a cell, the
+    /// claim would lose a row for it, and the deficit would persist.
+    /// Subtract each pane's planned surplus before ingesting; a transient
+    /// sample taken before the plan applied can go negative and is skipped
+    /// by the existing guards.
+    private func ingest(sample: TerminalSurfaceRawSizingSample, paneId: Int) {
         guard sample.cellWidthPx > 0, sample.cellHeightPx > 0,
               sample.columns > 1, sample.rows > 1,
               let scale = sample.backingScale ?? containerScale, scale > 0
         else { return }
-        let nonGridW = sample.surfaceWidthPx - sample.columns * sample.cellWidthPx
-        let nonGridH = sample.surfaceHeightPx - sample.rows * sample.cellHeightPx
+        let surplus = plannedSurplusByPane[paneId] ?? .zero
+        let surplusWPx = Int((surplus.width * scale).rounded())
+        let surplusHPx = Int((surplus.height * scale).rounded())
+        let nonGridW = sample.surfaceWidthPx - sample.columns * sample.cellWidthPx - surplusWPx
+        let nonGridH = sample.surfaceHeightPx - sample.rows * sample.cellHeightPx - surplusHPx
         if nonGridW >= 0 {
             minNonGridWidthPxByScale[scale] = min(minNonGridWidthPxByScale[scale] ?? nonGridW, nonGridW)
         }
@@ -688,38 +700,34 @@ extension RemoteTmuxWindowMirror {
         setNeedsSizingPass()
     }
 
-    /// The point size the split tree renders at: the tmux grid it holds plus
-    /// its chrome — not the whole region. The region is rarely an exact
-    /// multiple of the cell grid; the sub-cell remainder (up to one cell per
-    /// axis) must stay OUTSIDE the tree as trailing margin, because inside it
-    /// would land in some pane along a split axis and floor to an extra row
-    /// or column there. Same answer tmux gives a too-big client: a border.
-    /// Inputs are the region, the metrics, and tmux's tree — nothing measured
-    /// from rendering — so this cannot feed back.
+    /// The point size the split tree renders at: the WHOLE region. The
+    /// region is rarely an exact multiple of the cell grid; the rail
+    /// allocation hands each split's surplus to its trailing child, so the
+    /// remainder (sub-cell leftovers plus any rows tmux kept back from the
+    /// claim) lands INSIDE the bottom/right edge panes, where Ghostty
+    /// paints it as terminal padding. Rendering the tree at exact fit
+    /// instead left the remainder as a chrome-colored margin strip below
+    /// the grid — visibly lighter than the terminal under a translucent
+    /// theme or any TUI that paints its own background. Edge panes larger
+    /// than their grid are safe: `applyAssignedGrids` pins every surface
+    /// to its tmux-assigned cells (the view letterboxes the difference),
+    /// and calibration subtracts the planned surplus before min-tracking
+    /// pad constants (see `ingest(sample:paneId:)`). Inputs are the
+    /// region, the metrics, and tmux's tree — nothing measured from
+    /// rendering — so this cannot feed back.
     func updateRenderFrameSize() {
         guard let container = containerSizePt,
-              let metrics = nativeLayoutMetrics(),
+              nativeLayoutMetrics() != nil,
               renderedLayout.width > 0, renderedLayout.height > 0 else {
             if renderFrameSize != nil { renderFrameSize = nil }
             return
         }
-        let exact = metrics.exactFitSize(
-            columns: renderedLayout.width,
-            rows: renderedLayout.height,
-            layout: renderedLayout
-        )
-        let clamped = CGSize(
-            width: min(exact.width, container.width),
-            height: min(exact.height, container.height)
-        )
-        if renderFrameSize != clamped {
-            renderFrameSize = clamped
+        if renderFrameSize != container {
+            renderFrameSize = container
             #if DEBUG
             cmuxDebugLog(
                 "mirror.renderFrame @\(windowId) grid=\(renderedLayout.width)x\(renderedLayout.height)"
-                    + " exact=\(Int(exact.width))x\(Int(exact.height))"
-                    + " region=\(Int(container.width))x\(Int(container.height))"
-                    + " -> \(Int(clamped.width))x\(Int(clamped.height))"
+                    + " region=\(Int(container.width))x\(Int(container.height)) -> fill"
             )
             #endif
         }
@@ -785,7 +793,7 @@ extension RemoteTmuxWindowMirror {
 
     func handleSizingSample(_ sample: TerminalSurfaceRawSizingSample, paneId: Int) {
         guard !isTornDown else { return }
-        ingest(sample: sample)
+        ingest(sample: sample, paneId: paneId)
         lastRenderedGrids[paneId] = (cols: sample.columns, rows: sample.rows)
         #if DEBUG
         // The one line that makes "tests green, screen wrong" a grep instead
@@ -831,13 +839,14 @@ extension RemoteTmuxWindowMirror {
         setNeedsSizingPass()
     }
 
-    /// Sweeps every pane's current sizing sample through ``ingest(sample:)``
-    /// — the push path's calibration refresh for triggers that don't carry a
-    /// sample of their own (container changes, structure changes).
+    /// Sweeps every pane's current sizing sample through
+    /// ``ingest(sample:paneId:)`` — the push path's calibration refresh for
+    /// triggers that don't carry a sample of their own (container changes,
+    /// structure changes).
     private func refreshGeometryConstants() {
-        for panel in panelsByPaneId.values {
+        for (paneId, panel) in panelsByPaneId {
             guard let sample = panel.surface.rawSizingSample() else { continue }
-            ingest(sample: sample)
+            ingest(sample: sample, paneId: paneId)
         }
     }
 

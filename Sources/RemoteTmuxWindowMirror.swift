@@ -321,6 +321,10 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
     /// of the output-parity check in `rearmIfOutputMissedPlan()` and of the
     /// chrome-parity probe in ``handleSizingSample``.
     @ObservationIgnored var lastPlannedOuterSizes: [Int: CGSize] = [:]
+    /// Points each pane's planned outer size exceeds its exact-fit ideal
+    /// (edge panes absorb the region remainder when the tree fills it);
+    /// calibration subtracts this before min-tracking pad constants.
+    @ObservationIgnored var plannedSurplusByPane: [Int: CGSize] = [:]
     /// Output-parity re-arm state: how many bounded recovery passes this
     /// input fixed point has spent, and which fixed point they belong to
     /// (the counter resets when the completed inputs change). Tracked apart
@@ -685,6 +689,7 @@ final class RemoteTmuxWindowMirror: RemoteTmuxControlPaneMutationOwner {
         cwdByPaneId.removeAll()
         lastRenderedGrids.removeAll()
         seededRuntimeGenerationByPaneId.removeAll()
+        plannedSurplusByPane.removeAll()
         activePaneId = nil
         connection = nil
     }

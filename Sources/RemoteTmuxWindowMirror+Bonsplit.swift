@@ -122,11 +122,11 @@ extension RemoteTmuxWindowMirror {
         )
         if let metrics = nativeLayoutMetrics() {
             let planner = RemoteTmuxNativeSplitLayoutPlanner(metrics: metrics)
-            // Plan against the exact-fit render size, not the whole region:
-            // at the exact fit every split divides precisely its children's
-            // ideals, so no pane absorbs the region's sub-cell remainder
-            // along a split axis (the remainder sits outside the tree as
-            // trailing margin — see renderFrameSize).
+            // Plan against the WHOLE region (the render frame fills it): the
+            // rail allocation hands each split's surplus to its trailing
+            // child, so the sub-cell remainder and any claim shortfall land
+            // inside the bottom/right edge panes as Ghostty-painted padding
+            // instead of a chrome-colored margin strip below the grid.
             //
             // INVARIANT plan(w) ≤ w: the parent the plan divides may never
             // exceed the banked region. A claimed≠layout disagreement (a
@@ -141,14 +141,35 @@ extension RemoteTmuxWindowMirror {
             let planParent = Self.regionBoundedPlanParent(
                 renderFrame: renderFrameSize, region: containerSizePt
             )
-            let plan = planner.plan(
-                tree: RemoteTmuxNativeMeasuredSplitTree(
-                    tree: splitTree,
-                    metrics: metrics
-                ),
-                parentSize: planParent
+            let measured = RemoteTmuxNativeMeasuredSplitTree(
+                tree: splitTree,
+                metrics: metrics
             )
+            let plan = planner.plan(tree: measured, parentSize: planParent)
             let plannedOuterSizes = planner.outerSizes(of: plan)
+            // The surplus each pane carries beyond its exact-fit ideal (edge
+            // panes absorb the region remainder). Calibration subtracts it
+            // before min-tracking pad constants, or the pad would inflate by
+            // up to a cell and the claim would lose a row for it.
+            let exact = metrics.exactFitSize(
+                columns: renderedLayout.width,
+                rows: renderedLayout.height,
+                layout: renderedLayout
+            )
+            let idealParent = planParent.map { parent in
+                CGSize(width: min(exact.width, parent.width),
+                       height: min(exact.height, parent.height))
+            }
+            let idealOuterSizes = planner.outerSizes(
+                of: planner.plan(tree: measured, parentSize: idealParent)
+            )
+            plannedSurplusByPane = plannedOuterSizes.reduce(into: [:]) { result, entry in
+                guard let ideal = idealOuterSizes[entry.key] else { return }
+                result[entry.key] = CGSize(
+                    width: max(0, entry.value.width - ideal.width),
+                    height: max(0, entry.value.height - ideal.height)
+                )
+            }
             #if DEBUG
             // Log only a CHANGED plan: settled passes re-impose the same
             // outers every trigger, and repeating the line buries the
@@ -173,6 +194,7 @@ extension RemoteTmuxWindowMirror {
             // below is not the plan the parity check should judge views
             // against, so a stale exact plan must not linger here.
             lastPlannedOuterSizes = [:]
+            plannedSurplusByPane = [:]
             applyFallbackDividerPositions(
                 tmuxTree: splitTree, treeNode: treeNode, skippingSubtree: heldSplitId
             )

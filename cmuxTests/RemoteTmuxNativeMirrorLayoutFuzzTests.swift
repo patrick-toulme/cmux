@@ -544,11 +544,11 @@ private struct SplitMix64 {
     /// full-height pane beside a top/bottom stack (chrome-ASYMMETRIC — the
     /// exact-fit fuzz below only generates symmetric trees, which is how
     /// this hid), in a region that is NOT an exact multiple of the grid.
-    /// Planning against the whole region hands the sub-cell remainder to the
-    /// stack's trailing pane, which floors onto an extra row. The contract:
-    /// the tree renders at its exact-fit size (what the mirror's
-    /// renderFrameSize computes), the remainder stays outside as margin, and
-    /// at the exact fit every stacked pane renders exactly its span.
+    /// The plan at the EXACT FIT gives every stacked pane exactly its span:
+    /// this is the ideal plan the mirror derives per-pane surplus from now
+    /// that the render frame fills the region (edge panes absorb the
+    /// remainder as view padding while `applyAssignedGrids` pins their
+    /// grids, and calibration subtracts the surplus these ideals define).
     @Test func subCellLeftoverStaysOutsideTheTreeNotInATrailingPane() throws {
         let scale: CGFloat = 2
         let cellPx = (w: 16, h: 34)
