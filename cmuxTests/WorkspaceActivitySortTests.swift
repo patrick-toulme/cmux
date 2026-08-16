@@ -110,7 +110,7 @@ import Testing
         )
     }
 
-    @Test func globalModeMayInterleaveSections() {
+    @Test func globalModeMovesWholeSectionsByMostUrgentMember() {
         let rowIds = ids(4)
         let items = [
             WorkspaceActivitySorter.Item(id: rowIds[0], hostKey: "xxl5"),
@@ -118,9 +118,31 @@ import Testing
             WorkspaceActivitySorter.Item(id: rowIds[2], hostKey: "xxl6", attentionRank: Self.working),
             WorkspaceActivitySorter.Item(id: rowIds[3], hostKey: "xxl6"),
         ]
+        // The active host's WHOLE section floats; sessions sort within it.
+        // (Interleaving individual sessions split sections and rendered a
+        // duplicate header per run.)
         #expect(
             WorkspaceActivitySorter.desiredOrder(items: items, mode: .global)
-                == [rowIds[2], rowIds[0], rowIds[1], rowIds[3]]
+                == [rowIds[2], rowIds[3], rowIds[0], rowIds[1]]
+        )
+    }
+
+    @Test func globalModeHealsASectionSplitByAnEarlierSort() {
+        // The live repro: one xxl5 session's activity had floated it above
+        // the local workspace, leaving [xxl5, local, xxl5, xxl5] and TWO
+        // "xxl5" headers. Re-sorting must merge the host back into one
+        // contiguous section (first-appearance position, most urgent first)
+        // instead of preserving the split.
+        let rowIds = ids(4)
+        let items = [
+            WorkspaceActivitySorter.Item(id: rowIds[0], hostKey: "xxl5", attentionRank: Self.done),
+            WorkspaceActivitySorter.Item(id: rowIds[1]),
+            WorkspaceActivitySorter.Item(id: rowIds[2], hostKey: "xxl5"),
+            WorkspaceActivitySorter.Item(id: rowIds[3], hostKey: "xxl5", attentionRank: Self.approval),
+        ]
+        #expect(
+            WorkspaceActivitySorter.desiredOrder(items: items, mode: .global)
+                == [rowIds[3], rowIds[0], rowIds[2], rowIds[1]]
         )
     }
 
