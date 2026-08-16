@@ -94,6 +94,82 @@ import Testing
         #expect(env.checkCount() == 2)
     }
 
+    // MARK: - Master generation (the agent-bridge death signal)
+
+    @Test func masterGenerationCountsDeadToServingEdges() async throws {
+        let env = try FakeSSHEnvironment(behavior: .opensOnFirstRun)
+        defer { env.cleanUp() }
+        let transport = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host"),
+            sshExecutablePath: env.executablePath
+        )
+        #expect(await transport.masterGeneration == 0)
+
+        #expect(try await transport.ensureMasterReady())
+        #expect(await transport.masterGeneration == 1)
+
+        // Warm re-checks confirm the SAME master: no new generation, or every
+        // reconnect blip would pointlessly reconfigure the agent bridge.
+        #expect(try await transport.ensureMasterReady())
+        #expect(await transport.masterGeneration == 1)
+
+        // The master dies behind the app's back (sleep, network drop) and the
+        // next gate pass reopens it. The replacement carries none of the old
+        // master's reverse-forward registrations, so it MUST be a new
+        // generation: this is the signal that restores the agent bridge.
+        env.killMaster()
+        #expect(try await transport.ensureMasterReady())
+        #expect(await transport.masterGeneration == 2)
+    }
+
+    @Test func survivingMasterFromAPreviousRunIsTheFirstGeneration() async throws {
+        // A fresh transport (new app run) over a master that outlived the old
+        // app: the first confirmation is generation 1, so the forced attach
+        // records a real generation and later reopen heals compare against it.
+        let env = try FakeSSHEnvironment(behavior: .alreadyRunning)
+        defer { env.cleanUp() }
+        let transport = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host"),
+            sshExecutablePath: env.executablePath
+        )
+        #expect(try await transport.ensureMasterReady())
+        #expect(await transport.masterGeneration == 1)
+        #expect(env.openCount() == 0)
+    }
+
+    @Test func unconfirmedMasterMintsNoGeneration() async throws {
+        let env = try FakeSSHEnvironment(behavior: .openSucceedsButMasterStaysDown)
+        defer { env.cleanUp() }
+        let transport = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host"),
+            sshExecutablePath: env.executablePath
+        )
+        #expect(try await transport.ensureMasterReady() == false)
+        #expect(await transport.masterGeneration == 0)
+    }
+
+    @Test func shutdownThenExternalReopenIsANewGeneration() async throws {
+        // The stale-master teardown → interactive-terminal handover flow: the
+        // app tears the master down, the USER's terminal ssh reopens it, and
+        // the transport's next probe sees "serving" without ever observing
+        // dead via `-O check`. The deliberate shutdown must count as the dead
+        // edge, or the handover would leave the agent bridge dead forever.
+        let env = try FakeSSHEnvironment(behavior: .opensOnFirstRun)
+        defer { env.cleanUp() }
+        let transport = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host"),
+            sshExecutablePath: env.executablePath
+        )
+        #expect(try await transport.ensureMasterReady())
+        #expect(await transport.masterGeneration == 1)
+
+        await transport.shutdownMaster()
+        env.reviveMaster()
+
+        #expect(try await transport.ensureMasterReady())
+        #expect(await transport.masterGeneration == 2)
+    }
+
     @Test func killDeadlineForceStopsCancellationBlindSSH() async throws {
         let env = try FakeSSHEnvironment(behavior: .hangsIgnoringTermination)
         defer { env.cleanUp() }
@@ -180,14 +256,21 @@ import Testing
             STATE='\(statePath)'
             LOG='\(logPath)'
             is_check=0
+            is_exit=0
             prev=''
             for arg in "$@"; do
                 if [ "$prev" = "-O" ] && [ "$arg" = "check" ]; then is_check=1; fi
+                if [ "$prev" = "-O" ] && [ "$arg" = "exit" ]; then is_exit=1; fi
                 prev="$arg"
             done
             if [ "$is_check" = "1" ]; then
                 printf 'check\\n' >> "$LOG"
                 if [ -e "$STATE" ]; then exit 0; else exit 255; fi
+            fi
+            if [ "$is_exit" = "1" ]; then
+                printf 'exit\\n' >> "$LOG"
+                rm -f "$STATE"
+                exit 0
             fi
             printf 'open\\n' >> "$LOG"
             \(openBody)
@@ -206,6 +289,87 @@ import Testing
         func openCount() -> Int { lines().filter { $0 == "open" }.count }
         func checkCount() -> Int { lines().filter { $0 == "check" }.count }
 
+        /// The master dies behind the app's back (network drop, sleep, remote
+        /// reboot): the sentinel vanishes without any local `-O exit`.
+        func killMaster() { try? FileManager.default.removeItem(atPath: statePath) }
+
+        /// Something OTHER than this transport's opener brings the master up
+        /// (the user's interactive terminal ssh after an auth handover).
+        func reviveMaster() { FileManager.default.createFile(atPath: statePath, contents: Data()) }
+
         func cleanUp() { try? FileManager.default.removeItem(at: root) }
+    }
+}
+
+/// The scheduling half of the agent-bridge heal (the generation signal above
+/// is the observing half): one bridge configuration per master generation, no
+/// stacking across coalesced gate passes, forced refresh on user attach, and
+/// retry eligibility after failures. Kept beside the readiness-gate tests
+/// because the schedule is meaningless without the generation contract they
+/// pin down.
+@Suite struct RemoteTmuxAgentBridgeScheduleTests {
+
+    @Test func newGenerationBeginsExactlyOnceAcrossCoalescedGatePasses() {
+        var schedule = RemoteTmuxAgentBridgeSchedule()
+        let first = schedule.begin(connectionHash: "h", generation: 1, force: false)
+        #expect(first)
+        // Five more parked reconnect loops ride the same reopened master:
+        // the in-flight claim absorbs them all.
+        for _ in 0..<5 {
+            let stacked = schedule.begin(connectionHash: "h", generation: 1, force: false)
+            #expect(!stacked)
+        }
+        schedule.finish(connectionHash: "h", generation: 1, configured: true)
+        // Configured: the same generation never reconfigures (a control-stream
+        // blip on a surviving master is a no-op)...
+        let sameGeneration = schedule.begin(connectionHash: "h", generation: 1, force: false)
+        #expect(!sameGeneration)
+        // ...but the next master death+reopen does.
+        let nextGeneration = schedule.begin(connectionHash: "h", generation: 2, force: false)
+        #expect(nextGeneration)
+    }
+
+    @Test func forceAlwaysRefreshesAConfiguredGeneration() {
+        var schedule = RemoteTmuxAgentBridgeSchedule()
+        let first = schedule.begin(connectionHash: "h", generation: 1, force: true)
+        #expect(first)
+        schedule.finish(connectionHash: "h", generation: 1, configured: true)
+        // An `ssh-tmux` rerun on the same generation still refreshes pins and
+        // plugin (force is the user-driven manual heal)...
+        let rerun = schedule.begin(connectionHash: "h", generation: 1, force: true)
+        #expect(rerun)
+        // ...but even force never stacks on an in-flight attempt.
+        let stacked = schedule.begin(connectionHash: "h", generation: 1, force: true)
+        #expect(!stacked)
+    }
+
+    @Test func failureKeepsTheEndpointEligibleForRetry() {
+        var schedule = RemoteTmuxAgentBridgeSchedule()
+        let first = schedule.begin(connectionHash: "h", generation: 1, force: false)
+        #expect(first)
+        schedule.finish(connectionHash: "h", generation: 1, configured: false)
+        // Nothing was recorded, so the caller's retry (or the next gate pass)
+        // may claim the same generation again.
+        let retry = schedule.begin(connectionHash: "h", generation: 1, force: false)
+        #expect(retry)
+    }
+
+    @Test func unobservedGenerationNeedsForce() {
+        var schedule = RemoteTmuxAgentBridgeSchedule()
+        // Generation 0 = the master was never observed serving; only a forced
+        // attach (which just confirmed the master out-of-band) may configure.
+        let unforced = schedule.begin(connectionHash: "h", generation: 0, force: false)
+        #expect(!unforced)
+        let forced = schedule.begin(connectionHash: "h", generation: 0, force: true)
+        #expect(forced)
+    }
+
+    @Test func endpointsAreIndependent() {
+        var schedule = RemoteTmuxAgentBridgeSchedule()
+        let first = schedule.begin(connectionHash: "a", generation: 1, force: false)
+        #expect(first)
+        // One machine's in-flight configure never blocks another's.
+        let second = schedule.begin(connectionHash: "b", generation: 1, force: false)
+        #expect(second)
     }
 }

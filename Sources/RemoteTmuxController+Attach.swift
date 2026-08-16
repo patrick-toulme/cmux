@@ -122,9 +122,9 @@ extension RemoteTmuxController {
         }
         // Fire-and-forget so bridge setup (forward + env + plugin push, all
         // best-effort mux-client work) never adds latency to the attach.
-        Task { [weak self] in
-            await self?.configureRemoteAgentBridge(host: host)
-        }
+        // Forced: a user-driven attach always refreshes the forward, env
+        // pins, and plugin, so rerunning `cmux ssh-tmux` stays the manual heal.
+        scheduleAgentBridgeRefresh(host: host, force: true)
         return .mirrored(windowId: resolvedWindowId, workspaceIds: workspaceIds)
     }
 

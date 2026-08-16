@@ -51,6 +51,25 @@ actor RemoteTmuxSSHTransport {
         agentSocketHint = path
     }
 
+    /// Count of observed dead-to-serving master transitions. Every `-O forward`
+    /// registration (the remote agent bridge) lives inside one master process,
+    /// so consumers key their configuration to this number: a bridge configured
+    /// for generation N is dead the moment generation N+1 exists, no matter how
+    /// the old master died (sleep, network blip, ControlPersist expiry, quit).
+    /// Starts at 0 = never observed serving; the first confirmation, including
+    /// a master surviving from a previous app run, is generation 1.
+    private(set) var masterGeneration: UInt64 = 0
+
+    /// Whether the most recent `-O check` observation found the master serving,
+    /// so ``noteMasterAliveObservation(_:)`` bumps the generation exactly once
+    /// per dead-to-serving edge (not on every warm re-check).
+    private var lastObservedMasterAlive = false
+
+    private func noteMasterAliveObservation(_ alive: Bool) {
+        if alive, !lastObservedMasterAlive { masterGeneration &+= 1 }
+        lastObservedMasterAlive = alive
+    }
+
     /// - Parameters:
     ///   - host: the remote destination.
     ///   - sshExecutablePath: the local `ssh` binary (overridable for tests).
@@ -401,7 +420,7 @@ actor RemoteTmuxSSHTransport {
     /// the interactive terminal ssh.
     private func performMasterReady() async throws -> Bool {
         try? host.ensureControlSocketDirectory()
-        if try await masterIsRunning() { return true }
+        if try await observedMasterRunning() { return true }
         // Warm the shared master once, then confirm. The open's exit code is not
         // trusted (a non-multiplexed fallback can make the open exit 0 with no
         // live master — see the doc comment); the post-open `ssh -O check` is
@@ -419,11 +438,21 @@ actor RemoteTmuxSSHTransport {
             ],
             role: .opener
         )
-        if try await masterIsRunning() { return true }
+        if try await observedMasterRunning() { return true }
         if !opened.succeeded {
             throw RemoteTmuxError.commandFailed(exitCode: opened.exitCode, stderr: opened.stderr)
         }
         return false
+    }
+
+    /// ``masterIsRunning()`` plus generation bookkeeping: the ONLY way the
+    /// warmup consults the check, so every dead-to-serving edge (including a
+    /// master the interactive terminal or a previous app run opened) is
+    /// counted exactly once.
+    private func observedMasterRunning() async throws -> Bool {
+        let alive = try await masterIsRunning()
+        noteMasterAliveObservation(alive)
+        return alive
     }
 
     /// Adds a reverse unix-socket forward (remote path → local path) to the
@@ -446,6 +475,28 @@ actor RemoteTmuxSSHTransport {
             ]
         )
         return result.succeeded
+    }
+
+    /// Removes a previously registered reverse forward from the LIVE master.
+    /// Bridge reconfiguration over a healthy master (an `ssh-tmux` rerun, a
+    /// forced attach refresh) must drop the old registration first: without
+    /// the cancel, the pre-bind `rm` unlinks the live listener's path and the
+    /// duplicate `-O forward` stacks a second registration on an orphaned
+    /// socket. Best-effort: a fresh master with nothing registered (or no
+    /// master at all) just fails fast, like every other `-O` control command.
+    func cancelReverseUnixForward(
+        remoteSocketPath: String,
+        localSocketPath: String
+    ) async {
+        _ = try? await Self.runProcess(
+            executable: sshExecutablePath,
+            arguments: [
+                "-O", "cancel",
+                "-o", "ControlPath=\(host.controlSocketPath)",
+                "-R", "\(remoteSocketPath):\(localSocketPath)",
+                "--", host.destination,
+            ]
+        )
     }
 
     /// Whether the shared ControlMaster is live and accepting sessions, via the
@@ -476,6 +527,10 @@ actor RemoteTmuxSSHTransport {
             executable: sshExecutablePath,
             arguments: ["-O", "exit", "-o", "ControlPath=\(host.controlSocketPath)", "--", host.destination]
         )
+        // Deliberate teardown is a known dead edge: the next serving
+        // confirmation is a new generation (its replacement master carries
+        // none of this one's forward registrations).
+        noteMasterAliveObservation(false)
     }
 
     /// Fire-and-forget `ssh -O exit` to close the host's shared SSH ControlMaster.

@@ -51,6 +51,12 @@ final class RemoteTmuxController {
     private var pendingReauthHosts: [RemoteTmuxHost] = []
     private var pendingReauthFlush: DispatchWorkItem?
 
+    /// Pairs each endpoint's master generation with the generation its agent
+    /// bridge was last configured for, so the reconnect gate can restore the
+    /// reverse forward a reopened master silently dropped (see
+    /// ``scheduleAgentBridgeRefresh(host:force:)``).
+    private var agentBridgeSchedule = RemoteTmuxAgentBridgeSchedule()
+
     init() {}
 
     /// Synchronous read of the `remoteTmux` beta flag for AppKit/socket paths
@@ -197,6 +203,12 @@ final class RemoteTmuxController {
             // auth can ride it now.
             clearReauthStateAndResumeSuspended(host: host)
             await warmRemoteHome(host: host)
+            // A REOPENED master carries none of its predecessor's reverse
+            // forwards, so the agent bridge died with it while tmux still
+            // points every pane at the forwarded socket path. Restore it when
+            // the generation moved; a mere control-stream blip on a surviving
+            // master is a no-op here.
+            scheduleAgentBridgeRefresh(host: host, force: false)
             return .ready
         } catch is CancellationError {
             return .retryLater
@@ -1154,6 +1166,38 @@ final class RemoteTmuxController {
         return "/tmp/cmux-agent-\(hex).sock"
     }
 
+    /// Configures the agent bridge when the endpoint needs it: always on a
+    /// user-driven attach (`force`), and otherwise only when the master
+    /// generation moved past the one the bridge was configured for (the
+    /// reconnect-gate heal for a master reopened behind the user's back).
+    /// Fire-and-forget (bridge work must never add latency to an attach or a
+    /// gate pass); ``RemoteTmuxAgentBridgeSchedule`` keeps N coalesced gate
+    /// passes from stacking N configurations. A failed attempt retries a few
+    /// times while the claim generation still stands, then waits for the next
+    /// gate pass or attach.
+    func scheduleAgentBridgeRefresh(host: RemoteTmuxHost, force: Bool) {
+        guard Self.isEnabled else { return }
+        Task { [weak self] in
+            for attempt in 0..<3 {
+                guard let self else { return }
+                let generation = await self.transport(for: host).masterGeneration
+                guard self.agentBridgeSchedule.begin(
+                    connectionHash: host.connectionHash,
+                    generation: generation,
+                    force: force && attempt == 0
+                ) else { return }
+                let configured = await self.configureRemoteAgentBridge(host: host)
+                self.agentBridgeSchedule.finish(
+                    connectionHash: host.connectionHash,
+                    generation: generation,
+                    configured: configured
+                )
+                if configured { return }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
     /// Sets up the remote agent bridge after a successful attach: forwards the
     /// local control socket onto the machine over the EXISTING master (`-O
     /// forward` cannot authenticate, so the single-auth guarantee holds),
@@ -1161,15 +1205,17 @@ final class RemoteTmuxController {
     /// tmux server environment (new panes inherit them), and installs the
     /// opencode plugin so agents in the machine's tmux sessions self-report
     /// lifecycle, feed activity, and notifications exactly like local ones.
-    /// Best-effort throughout: any failure logs and leaves the zero-install
-    /// pane-command heuristic in charge.
-    func configureRemoteAgentBridge(host: RemoteTmuxHost) async {
-        guard Self.isEnabled else { return }
+    /// Best-effort throughout: any failure logs, returns `false` (so the
+    /// schedule keeps the endpoint eligible for retry), and leaves the
+    /// zero-install pane-command heuristic in charge.
+    @discardableResult
+    func configureRemoteAgentBridge(host: RemoteTmuxHost) async -> Bool {
+        guard Self.isEnabled else { return false }
         let localSocketPath = TerminalController.shared.socketServer.currentSocketPath
         guard !localSocketPath.isEmpty,
               TerminalController.shared.socketServer.isRunning else {
             Self.logger.info("remote-tmux: agent bridge skipped, no local socket [\(host.connectionHash, privacy: .public)]")
-            return
+            return false
         }
         let transport = transport(for: host)
         let remoteSocketPath = Self.remoteAgentSocketPath(
@@ -1177,15 +1223,23 @@ final class RemoteTmuxController {
             connectionHash: host.connectionHash
         )
         do {
-            // A stale socket file from a previous run blocks the re-bind
-            // (sshd rarely enables StreamLocalBindUnlink); clear it first.
+            // Reconfiguring over a LIVE master must drop the old registration
+            // first: without the cancel, the rm below would unlink the live
+            // listener's path and the fresh `-O forward` would stack a second
+            // registration on an orphaned socket. No-op on a fresh master.
+            await transport.cancelReverseUnixForward(
+                remoteSocketPath: remoteSocketPath,
+                localSocketPath: localSocketPath
+            )
+            // A stale socket file from a dead master generation blocks the
+            // re-bind (sshd rarely enables StreamLocalBindUnlink); clear it.
             _ = try await transport.run(["rm", "-f", remoteSocketPath])
             guard try await transport.requestReverseUnixForward(
                 remoteSocketPath: remoteSocketPath,
                 localSocketPath: localSocketPath
             ) else {
                 Self.logger.info("remote-tmux: agent bridge forward failed [\(host.connectionHash, privacy: .public)]")
-                return
+                return false
             }
             _ = try await transport.runTmux(
                 ["set-environment", "-g", "CMUX_SOCKET_PATH", remoteSocketPath]
@@ -1195,8 +1249,10 @@ final class RemoteTmuxController {
             )
             await installOpencodePluginIfNeeded(host: host)
             Self.logger.info("remote-tmux: agent bridge ready [\(host.connectionHash, privacy: .public)]")
+            return true
         } catch {
             Self.logger.info("remote-tmux: agent bridge setup failed [\(host.connectionHash, privacy: .public)]")
+            return false
         }
     }
 
