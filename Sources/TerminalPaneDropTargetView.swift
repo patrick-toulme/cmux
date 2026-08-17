@@ -365,7 +365,7 @@ final class PaneDropTargetView: NSView {
     /// for the same file types, so a silent `[]` here SHADOWS the terminal's
     /// own drag handling and the whole pane refuses Finder/screenshot drops
     /// (observed live: drops onto mirror panes bounced with no log). Hand the
-    /// drag to the hosted terminal surface instead — its own destination logic
+    /// drag to the hosted terminal surface instead: its own destination logic
     /// accepts file payloads, rejects tab transfers, and its perform path
     /// already uploads to the tmux host for mirror surfaces.
     private func terminalFileDropFallbackOperation(
