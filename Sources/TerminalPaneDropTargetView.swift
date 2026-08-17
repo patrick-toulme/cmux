@@ -129,10 +129,12 @@ final class PaneDropTargetView: NSView {
     override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         guard let dropContext else {
             transferDropRouter.clear()
-            return false
+            return hostedView?.surfaceView != nil
+                && DragOverlayRoutingPolicy.hasFileDropPayload(sender.draggingPasteboard.types)
         }
         guard let container = transferDropRouter.container(for: dropContext) else {
-            return false
+            return hostedView?.surfaceView != nil
+                && DragOverlayRoutingPolicy.hasFileDropPayload(sender.draggingPasteboard.types)
         }
 
         let textDestinationKind = container.fileDropTextDestinationKind(
@@ -171,16 +173,16 @@ final class PaneDropTargetView: NSView {
 
         guard let dropContext else {
 #if DEBUG
-            cmuxDebugLog("terminal.paneDrop.perform allowed=0 reason=missingContext")
+            cmuxDebugLog("terminal.paneDrop.perform reason=missingContext fallback=terminal")
 #endif
-            return false
+            return performTerminalFileDropFallback(sender)
         }
 
         guard let container = transferDropRouter.container(for: dropContext) else {
 #if DEBUG
-            cmuxDebugLog("terminal.paneDrop.perform allowed=0 reason=missingContainer")
+            cmuxDebugLog("terminal.paneDrop.perform reason=missingContainer fallback=terminal")
 #endif
-            return false
+            return performTerminalFileDropFallback(sender)
         }
 
         let textDestinationKind = container.fileDropTextDestinationKind(
@@ -283,12 +285,12 @@ final class PaneDropTargetView: NSView {
 
         guard let dropContext else {
             clearDragState(phase: "\(phase).reject")
-            return []
+            return terminalFileDropFallbackOperation(sender, phase: phase)
         }
 
         guard let container = transferDropRouter.container(for: dropContext) else {
             clearDragState(phase: "\(phase).reject")
-            return []
+            return terminalFileDropFallbackOperation(sender, phase: phase)
         }
 
         let textDestinationKind = container.fileDropTextDestinationKind(
@@ -354,6 +356,47 @@ final class PaneDropTargetView: NSView {
         )
 #endif
         return .copy
+    }
+
+    /// File drags targeting a pane whose panel is NOT in the workspace's outer
+    /// bonsplit (remote-tmux mirror panes: their panels live in the window
+    /// mirror's own tree) resolve no ``PaneDropContainer``. This drop target
+    /// sits ABOVE the terminal as the pane's topmost subview and is registered
+    /// for the same file types, so a silent `[]` here SHADOWS the terminal's
+    /// own drag handling and the whole pane refuses Finder/screenshot drops
+    /// (observed live: drops onto mirror panes bounced with no log). Hand the
+    /// drag to the hosted terminal surface instead — its own destination logic
+    /// accepts file payloads, rejects tab transfers, and its perform path
+    /// already uploads to the tmux host for mirror surfaces.
+    private func terminalFileDropFallbackOperation(
+        _ sender: any NSDraggingInfo,
+        phase: String
+    ) -> NSDragOperation {
+        guard let surfaceView = hostedView?.surfaceView,
+              DragOverlayRoutingPolicy.hasFileDropPayload(sender.draggingPasteboard.types)
+        else { return [] }
+        let operation = phase == "entered"
+            ? surfaceView.draggingEntered(sender)
+            : surfaceView.draggingUpdated(sender)
+#if DEBUG
+        cmuxDebugLog(
+            "terminal.paneDrop.\(phase) fallback=terminal operation=\(operation.rawValue)"
+        )
+#endif
+        return operation
+    }
+
+    /// Perform-phase counterpart of
+    /// ``terminalFileDropFallbackOperation(_:phase:)``.
+    private func performTerminalFileDropFallback(_ sender: any NSDraggingInfo) -> Bool {
+        guard let surfaceView = hostedView?.surfaceView,
+              DragOverlayRoutingPolicy.hasFileDropPayload(sender.draggingPasteboard.types)
+        else { return false }
+        let handled = surfaceView.performDragOperation(sender)
+#if DEBUG
+        cmuxDebugLog("terminal.paneDrop.perform fallback=terminal handled=\(handled ? 1 : 0)")
+#endif
+        return handled
     }
 
     static func simulatorFileDropOperation(
@@ -461,8 +504,9 @@ final class PaneDropTargetView: NSView {
         cmuxDebugLog(
             "terminal.paneDrop.hitTest capture=\(capture ? 1 : 0) " +
             "hasTransfer=\(hasTransferType ? 1 : 0) hasFileDrop=\(hasFileDropPayload ? 1 : 0) " +
-            "context=\(dropContext != nil ? 1 : 0) " +
-            "event=\(eventType.map { String($0.rawValue) } ?? "nil") types=\(types)"
+            "ctx\(dropContext != nil ? 1 : 0) " +
+            "evt\(eventType.map { String($0.rawValue) } ?? "-") " +
+            "btn\(WindowInputRoutingContext.isLeftMouseButtonPressed ? 1 : 0) types=\(types)"
         )
     }
 #endif
