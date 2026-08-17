@@ -327,9 +327,13 @@ enum DragOverlayRoutingPolicy {
 
     static func shouldCaptureFileDropOverlay(
         pasteboardTypes: [NSPasteboard.PasteboardType]?,
-        eventType: NSEvent.EventType?
+        eventType: NSEvent.EventType?,
+        leftMouseButtonPressed: Bool = false
     ) -> Bool {
-        guard WindowInputRoutingContext.allowsFileDropOverlayHitTesting(eventType: eventType) else { return false }
+        guard WindowInputRoutingContext.allowsFileDropOverlayHitTesting(
+            eventType: eventType,
+            leftMouseButtonPressed: leftMouseButtonPressed
+        ) else { return false }
         guard shouldCaptureFileDropDestination(pasteboardTypes: pasteboardTypes) else { return false }
         return true
     }
@@ -380,10 +384,13 @@ enum DragOverlayRoutingPolicy {
     static func shouldPassThroughTerminalPortalHitTesting(
         pasteboardTypes: [NSPasteboard.PasteboardType]?,
         eventType: NSEvent.EventType?,
-        hasActiveDropDrag: Bool = false
+        hasActiveDropDrag: Bool = false,
+        leftMouseButtonPressed: Bool = false
     ) -> Bool {
         let routingContext = WindowInputRoutingContext(eventType: eventType)
-        guard routingContext.allowsTerminalPortalDragRouting else { return false }
+        guard routingContext.allowsTerminalPortalDragRouting(
+            leftMouseButtonPressed: leftMouseButtonPressed
+        ) else { return false }
         switch routingContext.eventKind {
         case .pointerDrag:
             return shouldPassThroughPortalHitTesting(
@@ -397,7 +404,13 @@ enum DragOverlayRoutingPolicy {
                 eventType: eventType,
                 hasActiveDropDrag: hasActiveDropDrag
             )
-        case .noEvent, .keyboard, .pointerDown, .pointerHover, .scroll, .appKitRouting, .other:
+        case .noEvent, .pointerHover, .appKitRouting, .other:
+            // Reached only while the left button is held (the guard above):
+            // an EXTERNAL drag is hit-testing under a non-pointer event.
+            // File payloads only; tab transfers are internal by
+            // construction and keep their in-app pointer signatures.
+            return hasFileURL(pasteboardTypes)
+        case .keyboard, .pointerDown, .scroll:
             return false
         }
     }

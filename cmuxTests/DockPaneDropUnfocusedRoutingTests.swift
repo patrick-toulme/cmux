@@ -102,8 +102,10 @@ struct DockPaneDropUnfocusedRoutingTests {
                 pasteboardTypes: pasteboardTypes,
                 eventType: .leftMouseUp
             ))
-            #expect(WindowInputRoutingContext(eventType: .leftMouseDragged).allowsTerminalPortalDragRouting)
-            #expect(WindowInputRoutingContext(eventType: .leftMouseUp).allowsTerminalPortalDragRouting)
+            #expect(WindowInputRoutingContext(eventType: .leftMouseDragged)
+                .allowsTerminalPortalDragRouting(leftMouseButtonPressed: false))
+            #expect(WindowInputRoutingContext(eventType: .leftMouseUp)
+                .allowsTerminalPortalDragRouting(leftMouseButtonPressed: false))
             #expect(DragOverlayRoutingPolicy.shouldPassThroughTerminalPortalHitTesting(
                 pasteboardTypes: pasteboardTypes,
                 eventType: .leftMouseDragged

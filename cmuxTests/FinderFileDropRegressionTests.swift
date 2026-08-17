@@ -68,6 +68,97 @@ final class FinderFileDropRegressionTests: XCTestCase {
         )
     }
 
+    /// EXTERNAL drags (Finder, screenshot thumbnails, browsers) own the drag
+    /// loop, so this app hit-tests them under whatever event ran last (an
+    /// appKitDefined tick, a stale hover, nil), never an in-app pointer
+    /// drag. Gating file-drop capture on pointer kinds alone rejected every
+    /// external drop: observed live as screenshot drags logging `capture=0`
+    /// with the file-promise and PNG flavors advertised, then snapping back.
+    /// The held left button is the drag-session signal; a button-up hover
+    /// over the STALE drag pasteboard (macOS retains the last drag's types)
+    /// must stay rejected so tracking and cursors never see phantom targets.
+    func testExternalDragCapturesWhileButtonHeldDespiteForeignCurrentEvent() {
+        let fileTypes: [NSPasteboard.PasteboardType] = [.fileURL]
+        for eventType: NSEvent.EventType? in [.appKitDefined, .mouseMoved] {
+            XCTAssertTrue(
+                PaneDropTargetView.shouldCaptureHitTesting(
+                    pasteboardTypes: fileTypes,
+                    eventType: eventType,
+                    leftMouseButtonPressed: true
+                ),
+                "pane target must capture an external drag under \(String(describing: eventType))"
+            )
+            XCTAssertFalse(
+                PaneDropTargetView.shouldCaptureHitTesting(
+                    pasteboardTypes: fileTypes,
+                    eventType: eventType,
+                    leftMouseButtonPressed: false
+                ),
+                "stale drag types with the button up must never capture"
+            )
+        }
+        for eventType: NSEvent.EventType? in [.appKitDefined, .mouseMoved, nil] {
+            XCTAssertTrue(
+                DragOverlayRoutingPolicy.shouldCaptureFileDropOverlay(
+                    pasteboardTypes: fileTypes,
+                    eventType: eventType,
+                    leftMouseButtonPressed: true
+                ),
+                "overlay must capture an external drag under \(String(describing: eventType))"
+            )
+            XCTAssertTrue(
+                DragOverlayRoutingPolicy.shouldPassThroughTerminalPortalHitTesting(
+                    pasteboardTypes: fileTypes,
+                    eventType: eventType,
+                    leftMouseButtonPressed: true
+                ),
+                "portal must let an external drag through to the terminal under \(String(describing: eventType))"
+            )
+            XCTAssertFalse(
+                DragOverlayRoutingPolicy.shouldCaptureFileDropOverlay(
+                    pasteboardTypes: fileTypes,
+                    eventType: eventType,
+                    leftMouseButtonPressed: false
+                )
+            )
+            XCTAssertFalse(
+                DragOverlayRoutingPolicy.shouldPassThroughTerminalPortalHitTesting(
+                    pasteboardTypes: fileTypes,
+                    eventType: eventType,
+                    leftMouseButtonPressed: false
+                )
+            )
+        }
+        // The typing-latency and click-integrity guards outrank the
+        // external-drag fallback even with the button physically down.
+        for eventType: NSEvent.EventType in [.keyDown, .leftMouseDown, .scrollWheel] {
+            XCTAssertFalse(PaneDropTargetView.shouldCaptureHitTesting(
+                pasteboardTypes: fileTypes,
+                eventType: eventType,
+                leftMouseButtonPressed: true
+            ))
+            XCTAssertFalse(DragOverlayRoutingPolicy.shouldCaptureFileDropOverlay(
+                pasteboardTypes: fileTypes,
+                eventType: eventType,
+                leftMouseButtonPressed: true
+            ))
+            XCTAssertFalse(DragOverlayRoutingPolicy.shouldPassThroughTerminalPortalHitTesting(
+                pasteboardTypes: fileTypes,
+                eventType: eventType,
+                leftMouseButtonPressed: true
+            ))
+        }
+        // Tab transfers are internal by construction: no external fallback.
+        XCTAssertFalse(
+            DragOverlayRoutingPolicy.shouldPassThroughTerminalPortalHitTesting(
+                pasteboardTypes: [DragOverlayRoutingPolicy.bonsplitTabTransferType],
+                eventType: .appKitDefined,
+                leftMouseButtonPressed: true
+            ),
+            "a tab transfer under a foreign event is stale state, not an external drag"
+        )
+    }
+
     func testDefaultFileDropRoutesToTextDestinationForAnyFileURLPayload() {
         XCTAssertTrue(
             DragOverlayRoutingPolicy.shouldRouteFileDropToTextDestination(

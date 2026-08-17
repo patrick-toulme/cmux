@@ -355,10 +355,12 @@ final class PortalTabDragRoutingTests: XCTestCase {
         XCTAssertFalse(context.allowsFirstResponderHitTesting)
         XCTAssertFalse(context.allowsPortalPointerHitTesting)
         XCTAssertFalse(context.allowsPaneDropHitTesting)
-        XCTAssertFalse(context.allowsFileDropOverlayHitTesting)
+        // Keyboard events stay rejected even mid-drag (button held): the
+        // typing-latency guard outranks the external-drag fallback.
+        XCTAssertFalse(context.allowsFileDropOverlayHitTesting(leftMouseButtonPressed: true))
         XCTAssertFalse(context.allowsWorkspaceDropOverlayHitTesting)
         XCTAssertFalse(context.allowsBrowserPortalDragRouting)
-        XCTAssertFalse(context.allowsTerminalPortalDragRouting)
+        XCTAssertFalse(context.allowsTerminalPortalDragRouting(leftMouseButtonPressed: true))
     }
 
     func testWindowInputRoutingContextKeepsScrollOutOfTabBarPassThrough() {

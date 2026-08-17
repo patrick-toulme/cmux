@@ -70,17 +70,45 @@ struct WindowInputRoutingContext: Equatable {
         }
     }
 
-    var allowsFileDropPaneHitTesting: Bool {
+    /// Whether the left mouse button is physically held, per the shared event
+    /// source. This is the one session signal an EXTERNAL drag gives the
+    /// destination app: Finder, screenshot thumbnails, and browsers own the
+    /// drag loop, so cmux never sees pointer events while their drag is over
+    /// our window. `NSApp.currentEvent` stays whatever ran last (an
+    /// appKitDefined tick, a stale hover, nil). Gating file-drop hit-testing
+    /// purely on in-app pointer kinds therefore rejected every external drop
+    /// (observed live: screenshot drags logging `capture=0` with the promise
+    /// and PNG flavors advertised, and the image snapping back).
+    static var isLeftMouseButtonPressed: Bool {
+        NSEvent.pressedMouseButtons & 0x1 != 0
+    }
+
+    /// File-drop capture for pane drop targets. In-app drags identify
+    /// themselves by pointer kind; the non-pointer kinds are admitted only
+    /// while the button is held (an external drag in flight). Button-up
+    /// hovers over a STALE drag pasteboard (macOS retains the last drag's
+    /// types) stay rejected, so tracking areas and cursor updates never see
+    /// a phantom drop target.
+    func allowsFileDropPaneHitTesting(leftMouseButtonPressed: Bool) -> Bool {
         switch eventKind {
         case .pointerDrag, .pointerUp:
             return true
-        case .noEvent, .keyboard, .pointerDown, .pointerHover, .scroll, .appKitRouting, .other:
+        case .noEvent, .pointerHover, .appKitRouting, .other:
+            return leftMouseButtonPressed
+        case .keyboard, .pointerDown, .scroll:
             return false
         }
     }
 
-    var allowsFileDropOverlayHitTesting: Bool {
-        eventKind == .pointerDrag
+    func allowsFileDropOverlayHitTesting(leftMouseButtonPressed: Bool) -> Bool {
+        switch eventKind {
+        case .pointerDrag:
+            return true
+        case .noEvent, .pointerHover, .appKitRouting, .other:
+            return leftMouseButtonPressed
+        case .keyboard, .pointerDown, .pointerUp, .scroll:
+            return false
+        }
     }
 
     var allowsWorkspaceDropOverlayHitTesting: Bool {
@@ -99,8 +127,19 @@ struct WindowInputRoutingContext: Equatable {
         }
     }
 
-    var allowsTerminalPortalDragRouting: Bool {
-        eventKind == .pointerDrag || eventKind == .pointerUp
+    /// Terminal surfaces live behind the window portal, so a drag can only
+    /// reach them when this admits the routing pass. Same external-drag rule
+    /// as the pane gate above: non-pointer kinds count only while the button
+    /// is held.
+    func allowsTerminalPortalDragRouting(leftMouseButtonPressed: Bool) -> Bool {
+        switch eventKind {
+        case .pointerDrag, .pointerUp:
+            return true
+        case .noEvent, .pointerHover, .appKitRouting, .other:
+            return leftMouseButtonPressed
+        case .keyboard, .pointerDown, .scroll:
+            return false
+        }
     }
 
     static func allowsTabBarPassThroughHitTesting(eventType: NSEvent.EventType?) -> Bool {
@@ -111,16 +150,24 @@ struct WindowInputRoutingContext: Equatable {
         WindowInputRoutingContext(eventType: eventType).allowsPaneDropHitTesting
     }
 
-    static func allowsFileDropOverlayHitTesting(eventType: NSEvent.EventType?) -> Bool {
-        WindowInputRoutingContext(eventType: eventType).allowsFileDropOverlayHitTesting
+    static func allowsFileDropOverlayHitTesting(
+        eventType: NSEvent.EventType?,
+        leftMouseButtonPressed: Bool = false
+    ) -> Bool {
+        WindowInputRoutingContext(eventType: eventType)
+            .allowsFileDropOverlayHitTesting(leftMouseButtonPressed: leftMouseButtonPressed)
     }
 
     static func allowsWorkspaceDropOverlayHitTesting(eventType: NSEvent.EventType?) -> Bool {
         WindowInputRoutingContext(eventType: eventType).allowsWorkspaceDropOverlayHitTesting
     }
 
-    static func allowsTerminalPortalDragRouting(eventType: NSEvent.EventType?) -> Bool {
-        WindowInputRoutingContext(eventType: eventType).allowsTerminalPortalDragRouting
+    static func allowsTerminalPortalDragRouting(
+        eventType: NSEvent.EventType?,
+        leftMouseButtonPressed: Bool = false
+    ) -> Bool {
+        WindowInputRoutingContext(eventType: eventType)
+            .allowsTerminalPortalDragRouting(leftMouseButtonPressed: leftMouseButtonPressed)
     }
 
     private static func kind(for eventType: NSEvent.EventType?) -> EventKind {

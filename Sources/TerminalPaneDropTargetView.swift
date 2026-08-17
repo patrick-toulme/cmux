@@ -52,7 +52,8 @@ final class PaneDropTargetView: NSView {
 
     static func shouldCaptureHitTesting(
         pasteboardTypes: [NSPasteboard.PasteboardType]?,
-        eventType: NSEvent.EventType?
+        eventType: NSEvent.EventType?,
+        leftMouseButtonPressed: Bool = false
     ) -> Bool {
         let routingContext = WindowInputRoutingContext(eventType: eventType)
         guard routingContext.allowsPaneDropHitTesting else { return false }
@@ -62,7 +63,12 @@ final class PaneDropTargetView: NSView {
         guard hasTabTransfer || hasFileDropPayload else { return false }
 
         if hasFileDropPayload, !hasTabTransfer {
-            return routingContext.allowsFileDropPaneHitTesting
+            // External drags (Finder, screenshot thumbnails) hit-test with
+            // whatever event ran last, never an in-app pointer drag; the
+            // held button is their session signal (see the gate's doc).
+            return routingContext.allowsFileDropPaneHitTesting(
+                leftMouseButtonPressed: leftMouseButtonPressed
+            )
         }
         return true
     }
@@ -82,7 +88,8 @@ final class PaneDropTargetView: NSView {
         let pasteboardTypes = NSPasteboard(name: .drag).types
         let capture = Self.shouldCaptureHitTesting(
             pasteboardTypes: pasteboardTypes,
-            eventType: eventType
+            eventType: eventType,
+            leftMouseButtonPressed: WindowInputRoutingContext.isLeftMouseButtonPressed
         )
 #if DEBUG
         logHitTestDecision(capture: capture, pasteboardTypes: pasteboardTypes, eventType: eventType)

@@ -114,7 +114,11 @@ final class FileDropOverlayView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let eventType = NSApp.currentEvent?.type
-        guard WindowInputRoutingContext.allowsFileDropOverlayHitTesting(eventType: eventType) else {
+        let leftMouseButtonPressed = WindowInputRoutingContext.isLeftMouseButtonPressed
+        guard WindowInputRoutingContext.allowsFileDropOverlayHitTesting(
+            eventType: eventType,
+            leftMouseButtonPressed: leftMouseButtonPressed
+        ) else {
 #if DEBUG
             logHitTestDecision(
                 pasteboardTypes: nil,
@@ -128,7 +132,8 @@ final class FileDropOverlayView: NSView {
         let pb = NSPasteboard(name: .drag)
         let shouldCapture = DragOverlayRoutingPolicy.shouldCaptureFileDropOverlay(
             pasteboardTypes: pb.types,
-            eventType: eventType
+            eventType: eventType,
+            leftMouseButtonPressed: leftMouseButtonPressed
         )
 #if DEBUG
         logHitTestDecision(

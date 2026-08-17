@@ -157,12 +157,14 @@ final class WindowTerminalHostView: NSView {
             }
 
             clearActiveDividerCursor(restoreArrow: true)
-            if routingContext.allowsTerminalPortalDragRouting,
+            let leftMouseButtonPressed = WindowInputRoutingContext.isLeftMouseButtonPressed
+            if routingContext.allowsTerminalPortalDragRouting(leftMouseButtonPressed: leftMouseButtonPressed),
                routingContext.eventKind != .pointerUp || hasActivePaneDropDrag || AppDelegate.shared?.sidebarWorkspaceDragRegistry.currentWorkspaceId != nil {
                 let dragPasteboardTypes = NSPasteboard(name: .drag).types
                 let shouldPassThrough = DragOverlayRoutingPolicy.shouldPassThroughTerminalPortalHitTesting(
                     pasteboardTypes: dragPasteboardTypes,
-                    eventType: eventType, hasActiveDropDrag: hasActivePaneDropDrag || AppDelegate.shared?.sidebarWorkspaceDragRegistry.currentWorkspaceId != nil
+                    eventType: eventType, hasActiveDropDrag: hasActivePaneDropDrag || AppDelegate.shared?.sidebarWorkspaceDragRegistry.currentWorkspaceId != nil,
+                    leftMouseButtonPressed: leftMouseButtonPressed
                 )
                 if shouldPassThrough {
                     let hitView = super.hitTest(point)
