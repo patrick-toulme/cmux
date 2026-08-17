@@ -355,16 +355,12 @@ if (received.some((l) => l.includes("c=turn-complete"))) {
   throw new Error(`child session turn minted a notification: ${JSON.stringify(received)}`);
 }
 
-// First goal iteration boundary: the lead idles (the typed turn genuinely
-// ends — exactly ONE turn-complete) and the loop re-prompts within the
-// grace window, so no idle write may appear (the strobe).
+// Goal iteration boundary: the lead idles and the loop re-prompts within
+// the grace windows. NOTHING may fire — no idle write (the strobe) and
+// no turn-complete toast (the typed turn's debt is HELD across the
+// bounce; iterating is not completing).
 received.length = 0;
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
-await waitFor(
-  () => received.filter((l) => l.includes("c=turn-complete")).length === 1,
-  5000,
-  "typed turn completion notifies exactly once"
-);
 await new Promise((resolve) => setTimeout(resolve, 40));
 // The loop's continuation nudge: an engine-authored (synthetic) user
 // message, then busy again.
@@ -375,18 +371,27 @@ await hooks.event({ event: { type: "message.part.updated", properties: {
   part: { type: "text", messageID: "m51", text: "Continue if you have next steps.", synthetic: true },
 } } });
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
-await new Promise((resolve) => setTimeout(resolve, 300));
+await new Promise((resolve) => setTimeout(resolve, 400));
 if (received.some((l) => l === idleLine)) {
   throw new Error(`iteration boundary inside the grace window strobed the slot: ${JSON.stringify(received)}`);
 }
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`iteration boundary minted a mid-goal toast: ${JSON.stringify(received)}`);
+}
 
-// Later iterations were opened by the nudge, not the user: their ends
-// mint NO further turn-completes, and the final settle writes idle once.
+// TRUE completion: the loop finally rests. The settled idle writes once,
+// and the typed prompt's carried debt delivers exactly ONE toast.
 received.length = 0;
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
 await waitFor(() => received.some((l) => l === idleLine), 5000, "settled idle lands after the grace window");
-if (received.some((l) => l.includes("c=turn-complete"))) {
-  throw new Error(`nudge-opened iteration minted a turn-complete: ${JSON.stringify(received)}`);
+await waitFor(
+  () => received.filter((l) => l.includes("c=turn-complete")).length === 1,
+  5000,
+  "goal completion notifies exactly once at settle"
+);
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.filter((l) => l.includes("c=turn-complete")).length !== 1) {
+  throw new Error(`completion toast repeated after settle: ${JSON.stringify(received)}`);
 }
 
 // A WATCH wake: the card is a synthetic delivery, but the busy edge must
@@ -466,6 +471,8 @@ def main() -> int:
         # Short idle grace so the debounced lifecycle writes land inside the
         # scenario windows instead of stretching the run by 2.5s per settle.
         env["CMUX_FEED_IDLE_GRACE_MS"] = "120"
+        # Same for the turn-complete settle (fires after the idle grace).
+        env["CMUX_FEED_TURN_SETTLE_MS"] = "200"
         env["CMUX_FEED_DEBUG"] = "1"
         env.pop("CMUX_SOCKET_PATH", None)
         env.pop("CMUX_REMOTE_HOST_KEY", None)

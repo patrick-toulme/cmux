@@ -70,6 +70,15 @@ const TURN_COMPLETE_REDELIVERY_WINDOW_MS = 3_000;
 const IDLE_LIFECYCLE_GRACE_MS =
   Number(process.env.CMUX_FEED_IDLE_GRACE_MS || "") || 2_500;
 
+// Turn-complete notifications fire only at TRUE completion: a typed
+// prompt's debt is carried across goal-loop iterations (each raw idle is
+// followed by a continuation nudge within moments) and settles when the
+// SESSION stays idle for this long. Wider than the lifecycle grace: a
+// false mid-goal "finished" toast costs attention, a real toast arriving
+// a few seconds late costs nothing. Env override exists for tests.
+const TURN_SETTLE_GRACE_MS =
+  Number(process.env.CMUX_FEED_TURN_SETTLE_MS || "") || 5_000;
+
 // Opt-in stderr tracing (CMUX_FEED_DEBUG=1) for diagnosing the plugin on a
 // remote machine without a debugger: connection lifecycle, recovery timer,
 // and resolve outcomes. Zero cost when unset.
@@ -133,11 +142,10 @@ export const CMUXFeed = async (ctx) => {
   const remotePaneId = (process.env.TMUX_PANE || "").trim() || null;
   let identityPromise = null;
 
-  // Disconnect recovery state: sessions whose turn was OPEN when the socket
-  // dropped (a cmux restart). If such a turn ends while disconnected, its
-  // turn-complete notification fired into the void — flush it after the
-  // next successful resolve so the unseen-done state is not silently lost.
-  const turnOpenAtDisconnect = new Set();
+  // Disconnect recovery state. Completion debts live on the session states
+  // themselves (`completionOwed` survives socket churn); this map only
+  // remembers sends recent enough to have died in a dying socket's buffer,
+  // so a disconnect can re-mark them owed for redelivery.
   const recentTurnCompleteSends = new Map();
   let reconnectRecoveryTimer = null;
 
@@ -186,6 +194,11 @@ export const CMUXFeed = async (ctx) => {
         // They flap busy/idle constantly and their prompts are engine
         // deliveries, so they never mint turn-complete notifications.
         parentId: null,
+        // A typed turn ended but the completion notification has not been
+        // delivered yet: it settles (see armCompletionSettle) or carries
+        // across goal-loop iterations and disconnects until a send lands.
+        completionOwed: false,
+        settleTimer: null,
       });
     }
     return sessions.get(key);
@@ -697,25 +710,23 @@ export const CMUXFeed = async (ctx) => {
   // in a long tool call emits no bus events to drive the lazy path.
   const noteDisconnected = () => {
     if (!remotePaneId) return;
-    for (const [sid, state] of sessions) {
-      if (state.turnOpen) turnOpenAtDisconnect.add(sid);
-    }
     // Turn-completes sent just before the drop may sit in the dead
-    // socket's buffer: schedule them for redelivery after recovery.
+    // socket's buffer: re-mark them owed so recovery redelivers them
+    // (at-least-once; the duplicate window is only entered by an app
+    // exit racing a settle).
     const now = Date.now();
     for (const [sid, sentAt] of recentTurnCompleteSends) {
       if (now - sentAt <= TURN_COMPLETE_REDELIVERY_WINDOW_MS) {
-        turnOpenAtDisconnect.add(sid);
+        const state = sessions.get(sid);
+        if (state && !state.parentId) state.completionOwed = true;
       }
     }
     recentTurnCompleteSends.clear();
     const anythingToRecover =
-      turnOpenAtDisconnect.size > 0
-        || [...sessions.values()].some((state) => state.isBusy);
+      [...sessions.values()].some((state) => state.isBusy || state.completionOwed);
     feedDebugLog(
       "disconnected; recover =", anythingToRecover,
-      "timer =", reconnectRecoveryTimer != null,
-      "openTurnsAtDisconnect =", turnOpenAtDisconnect.size
+      "timer =", reconnectRecoveryTimer != null
     );
     if (!anythingToRecover || reconnectRecoveryTimer) return;
     reconnectRecoveryTimer = setInterval(() => {
@@ -752,10 +763,11 @@ export const CMUXFeed = async (ctx) => {
       // aggregate edge must write even if it matches the pre-drop state.
       lastLifecycleSent = null;
     }
-    for (const sid of [...turnOpenAtDisconnect]) {
-      turnOpenAtDisconnect.delete(sid);
-      const state = sessions.get(sid);
-      if (state && !state.turnOpen && !state.isBusy) {
+    // Recovery is already seconds late, so owed completions of settled
+    // (idle) sessions fire without re-waiting the settle grace. A send
+    // that fails again keeps the debt for the next recovery.
+    for (const [sid, state] of sessions) {
+      if (state.completionOwed && !state.isBusy && !state.parentId) {
         sendRemoteTurnCompleteNotification(sid);
       }
     }
@@ -852,14 +864,22 @@ export const CMUXFeed = async (ctx) => {
   const sendRemoteTurnCompleteNotification = (sid) => {
     if (!isRemote()) return;
     const state = sessionState(sid);
+    // The debt is the send token: every path re-checks it at write time,
+    // so a settle firing during downtime (whose deferred resolve races the
+    // recovery flush toward the same toast) can never deliver twice.
+    if (!state.completionOwed) return;
     const subtitle = sanitizeNotifyField(state.lastUserMessage, 120);
     const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
     const send = (target) => {
+      if (!state.completionOwed) return;
       recentTurnCompleteSends.set(sid, Date.now());
-      writeLine(
+      const wrote = writeLine(
         `notify_target_async ${target.workspaceId} ${target.surfaceId} ` +
           `OpenCode|${subtitle}|${body}|c=turn-complete;p=0`
       );
+      // The debt clears only when the line actually left: a write into a
+      // dead socket keeps it owed for the recovery flush.
+      if (wrote) state.completionOwed = false;
     };
     if (!remoteTarget) {
       void resolveRemoteTarget().then((target) => {
@@ -868,6 +888,20 @@ export const CMUXFeed = async (ctx) => {
       return;
     }
     send(remoteTarget);
+  };
+
+  // One settle timer per session: the notification fires only when the
+  // session stays idle for the whole grace (busy returning cancels it and
+  // the debt carries to the next idle). This is what turns "a goal loop
+  // iterated 40 times" into ONE toast at the end instead of 40.
+  const armCompletionSettle = (sid, state) => {
+    if (state.settleTimer) clearTimeout(state.settleTimer);
+    state.settleTimer = setTimeout(() => {
+      state.settleTimer = null;
+      if (!sessions.has(sid) || state.isBusy || !state.completionOwed) return;
+      sendRemoteTurnCompleteNotification(sid);
+    }, TURN_SETTLE_GRACE_MS);
+    if (typeof state.settleTimer.unref === "function") state.settleTimer.unref();
   };
 
   // Turn-boundary tracker shared by "session.status" (current builds) and the
@@ -884,6 +918,12 @@ export const CMUXFeed = async (ctx) => {
     feedDebugLog("busyState", sid, "busy =", busy, "opensTurn =", opensTurn);
     if (busy) {
       state.isBusy = true;
+      // Busy returning inside the settle grace is a goal loop (or queued
+      // follow-up) continuing: hold the debt, cancel the pending toast.
+      if (state.settleTimer) {
+        clearTimeout(state.settleTimer);
+        state.settleTimer = null;
+      }
       if (opensTurn && !state.parentId) state.turnOpen = true;
       updateAggregateLifecycle();
       return;
@@ -892,7 +932,8 @@ export const CMUXFeed = async (ctx) => {
     state.isBusy = false;
     state.turnOpen = false;
     updateAggregateLifecycle();
-    if (hadOpenTurn && !state.parentId) sendRemoteTurnCompleteNotification(sid);
+    if (hadOpenTurn && !state.parentId) state.completionOwed = true;
+    if (state.completionOwed && !state.parentId) armCompletionSettle(sid, state);
   };
 
   const base = (sessionId, extra) => {
