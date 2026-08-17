@@ -810,6 +810,50 @@ final class RemoteTmuxController {
         return target.mirror.connection.send("kill-window -t @\(target.windowId)")
     }
 
+    /// Session-level foreground activity for a mirrored workspace, or nil when
+    /// the workspace isn't a live mirror. The first window with an active
+    /// command answers for the whole session, so the close dialog can name it
+    /// exactly like the window-tab dialog does.
+    func cachedMirrorSessionActivity(workspaceId: UUID) -> MirrorTabActivity? {
+        guard let mirror = sessionMirrors.values.first(where: { $0.mirroredWorkspaceId == workspaceId })
+        else { return nil }
+        var idle = MirrorTabActivity(hasActiveCommand: false, activeCommandName: nil)
+        for windowId in mirror.connection.windowsByID.keys.sorted() {
+            let activity = mirrorTabActivityFromCache(target: (mirror, windowId))
+            if activity.hasActiveCommand { return activity }
+            idle = activity
+        }
+        return idle
+    }
+
+    /// An EXPLICIT user close of a mirrored workspace kills its remote session:
+    /// the workspace-level analogue of the window-tab X, which kills that tmux
+    /// window. This deliberately narrows the blanket detach-on-close contract
+    /// from the upstream review (PR #7264) to the non-explicit paths: with the
+    /// X quietly detaching and no per-session kill anywhere in the UI, every
+    /// "new session on host" + close cycle leaked a session on the machine
+    /// (observed live: sessions 27-33 accumulating). Window close, app quit,
+    /// and non-interactive socket closes still detach; the caller gates this
+    /// with the session-activity confirmation.
+    ///
+    /// The kill rides the LIVE control connection, so tmux's own `%exit`
+    /// drives the local teardown (``handleSessionEndedRemotely``) exactly as
+    /// if the session ended remotely — the caller VETOES its local close on
+    /// `true`. Returns `false` when no live connected mirror exists (the
+    /// caller falls through to the local detach-close, which never kills:
+    /// see ``workspaceCloseKillTarget(connectionExited:sessionId:sessionName:)``).
+    func handleMirrorWorkspaceCloseRequested(workspaceId: UUID) -> Bool {
+        guard let mirror = sessionMirrors.values.first(where: { $0.mirroredWorkspaceId == workspaceId }),
+              mirror.connection.connectionState == .connected,
+              let target = Self.workspaceCloseKillTarget(
+                  connectionExited: mirror.connection.exited,
+                  sessionId: mirror.connection.sessionId,
+                  sessionName: mirror.sessionName
+              )
+        else { return false }
+        return mirror.connection.send("kill-session -t \(target)")
+    }
+
     /// ``MirrorTabActivity`` from the subscription-fed cache (≤~1s stale).
     private func mirrorTabActivityFromCache(
         target: (mirror: RemoteTmuxSessionMirror, windowId: Int)

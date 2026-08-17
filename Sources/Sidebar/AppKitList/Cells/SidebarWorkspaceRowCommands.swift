@@ -125,6 +125,18 @@ struct SidebarWorkspaceRowCommands {
         tabManager?.closeWorkspaceWithConfirmation(tab)
     }
 
+    /// Non-destructive exit for a mirrored workspace: detach from the remote
+    /// session (it keeps running on the machine) and close the local
+    /// workspace. Routed through the controller's detach so a dedicated
+    /// last-mirror window closes correctly; detach never kills.
+    func detachRemoteWorkspace() {
+        guard tab.isRemoteTmuxMirror,
+              let mirror = tab.remoteTmuxSessionMirror,
+              let controller = AppDelegate.shared?.remoteTmuxController else { return }
+        controller.detach(host: mirror.host, sessionName: mirror.sessionName)
+        syncSelectionAfterMutation()
+    }
+
     func reconnectRemoteConnection() {
         tab.reconnectRemoteConnection()
     }
@@ -683,6 +695,20 @@ struct SidebarWorkspaceRowMenuBuilder {
         ) { [commands] in
             commands.closeTabs(commands.contextMenuWorkspaceIds, allowPinned: true)
         })
+        // Close on a mirror KILLS the remote session, so the non-destructive
+        // exit needs its own verb: detach leaves the session running on the
+        // machine for a later re-attach (the old close semantics).
+        if commands.tab.isRemoteTmuxMirror {
+            menu.addItem(item(
+                String(
+                    localized: "contextMenu.detachRemoteWorkspace",
+                    defaultValue: "Detach (Keep Session Running)"
+                ),
+                enabled: true
+            ) { [commands] in
+                commands.detachRemoteWorkspace()
+            })
+        }
         menu.addItem(item(
             String(localized: "contextMenu.closeOtherWorkspaces", defaultValue: "Close Other Workspaces"),
             enabled: !(tabManager.tabs.count <= 1 || targetIds.count == tabManager.tabs.count)

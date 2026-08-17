@@ -2318,10 +2318,13 @@ class TabManager: ObservableObject {
         guard tabs.contains(where: { $0.id == workspace.id }) else { return }
         panelTitleUpdateCoalescer.flushNow()
         sentryBreadcrumb("workspace.close", data: ["tabCount": tabs.count - 1])
-        // Closing a mirrored remote tmux workspace DETACHES from the remote session,
-        // leaving it alive on the server for resume. Killing the session is never a
-        // side effect of closing a tab (PR #7264 review); it is only ever an explicit
-        // disconnect action.
+        // This raw teardown DETACHES a mirrored workspace (session stays alive
+        // for resume): it serves the window-close, app-quit, socket, and
+        // dead-connection paths. The EXPLICIT user close (X, Cmd+W, context
+        // menu) kills the session upstream of here — see the mirror branch in
+        // closeWorkspaceIfRunningProcess, which vetoes the local close and
+        // lets tmux's %exit drive the teardown, so a routed kill never
+        // reaches this detach.
         if workspace.isRemoteTmuxMirror {
             AppDelegate.shared?.remoteTmuxController.detachMirrorWorkspaceKeptOpenLocally(workspaceId: workspace.id)
         }
@@ -2556,15 +2559,16 @@ class TabManager: ObservableObject {
         sidebarMultiSelection.replaceSelection(with: workspaceIds.intersection(existingIds))
     }
 
-    /// No-op: closing a remote-tmux mirror workspace/tab/window must DETACH from the
-    /// remote session, never kill it. Killing a live tmux session is only ever an
-    /// explicit disconnect action, never a side effect of closing a tab (PR #7264
-    /// review by the ssh-tmux author). This seam formerly set the window
-    /// kill-on-close marker so the close committed a `kill-session`; it is retained
-    /// as a no-op (still called from the last-workspace and batch/anchor close paths)
-    /// so those paths fall through to detach via `AppDelegate`'s window-close handlers
-    /// and the app-quit deferral gate stays empty. The marker machinery is left in
-    /// place for a future explicit "disconnect host" action.
+    /// No-op: WINDOW-level closes (last workspace, batch close-all, app quit)
+    /// must DETACH mirrored sessions, never kill them — closing a window or
+    /// quitting is how you leave sessions running (PR #7264's core concern).
+    /// EXPLICIT per-workspace closes now kill instead, gated by the remote
+    /// session-activity confirmation: see the mirror branch in
+    /// `closeWorkspaceIfRunningProcess`. This seam formerly set the window
+    /// kill-on-close marker; it stays a no-op (still called from the
+    /// last-workspace and batch/anchor close paths) so window closes fall
+    /// through to detach via `AppDelegate`'s handlers and the app-quit
+    /// deferral gate stays empty.
     func markRemoteTmuxKillOnWindowCloseIfNeeded(for workspaces: [Workspace]) {}
 
     func closeWorkspacesWithConfirmation(_ workspaceIds: [UUID], allowPinned: Bool) {
@@ -2849,6 +2853,34 @@ class TabManager: ObservableObject {
         // grouped instead of scattering to root. No special anchor prompt is
         // needed; the normal running-process confirmation below still applies.
         let willCloseWindow = tabs.count <= 1
+        // Explicit close of a mirrored remote-tmux workspace KILLS the remote
+        // session: the workspace-level analogue of the window-tab X, which
+        // kills its tmux window. The confirmation reads the REMOTE session's
+        // activity (local process checks cannot see remote commands) and the
+        // local close is vetoed — tmux's %exit tears the workspace down, the
+        // same shape as the window-tab flow. When no live connection can
+        // carry the kill, this falls through to the detach-close below (the
+        // pre-existing behavior, now the degraded path). Detach stays first
+        // class through the row's context menu and the window/app close paths.
+        if workspace.isRemoteTmuxMirror,
+           let remoteTmuxController = AppDelegate.shared?.remoteTmuxController,
+           let activity = remoteTmuxController.cachedMirrorSessionActivity(workspaceId: workspace.id) {
+            if requiresConfirmation,
+               shouldConfirmClose(requiresConfirmation: activity.hasActiveCommand, source: source),
+               !confirmClose(
+                   title: String(
+                       localized: "dialog.killRemoteSession.title",
+                       defaultValue: "Kill remote tmux session?"
+                   ),
+                   message: killRemoteSessionMessage(workspace: workspace, activity: activity),
+                   acceptCmdD: willCloseWindow
+               ) {
+                return false
+            }
+            if remoteTmuxController.handleMirrorWorkspaceCloseRequested(workspaceId: workspace.id) {
+                return true
+            }
+        }
         let needsCloseConfirmation = workspaceNeedsConfirmClose(workspace)
         if requiresConfirmation,
            shouldConfirmClose(requiresConfirmation: needsCloseConfirmation, source: source),
@@ -2875,6 +2907,25 @@ class TabManager: ObservableObject {
             closeWorkspace(workspace)
         }
         return true
+    }
+
+    /// Names the running command and machine in the kill-session dialog, so
+    /// the user knows exactly what dies (mirrors the window-tab dialog).
+    private func killRemoteSessionMessage(
+        workspace: Workspace,
+        activity: RemoteTmuxMirrorTabActivity
+    ) -> String {
+        let host = workspace.remoteTmuxHostLabel ?? workspace.title
+        if let command = activity.activeCommandName, !command.isEmpty {
+            return String(
+                localized: "dialog.killRemoteSession.messageWithCommand",
+                defaultValue: "“\(command)” is still running. This kills the tmux session on \(host) and everything running in it."
+            )
+        }
+        return String(
+            localized: "dialog.killRemoteSession.message",
+            defaultValue: "This kills the tmux session on \(host) and everything running in it. To keep it running, use Detach in the workspace’s context menu."
+        )
     }
 
     private func shouldConfirmClose(requiresConfirmation: Bool, source: CloseConfirmationSource) -> Bool {

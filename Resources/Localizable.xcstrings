@@ -83019,6 +83019,35 @@
         }
       }
     },
+    "contextMenu.detachRemoteWorkspace": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detach (Keep Session Running)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デタッチ（セッションを実行したまま）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "분리 (세션 계속 실행)"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Відʼєднати (сесія продовжить працювати)"
+          }
+        }
+      }
+    },
     "contextMenu.disconnectWorkspace": {
       "extractionState": "manual",
       "localizations": {
@@ -96268,6 +96297,93 @@
           "stringUnit": {
             "state": "translated",
             "value": "為 cmux 啟用通知"
+          }
+        }
+      }
+    },
+    "dialog.killRemoteSession.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This kills the tmux session on %@ and everything running in it. To keep it running, use Detach in the workspace’s context menu."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 上の tmux セッションと、その中で実行中のものすべてを終了します。実行を続けるには、ワークスペースのコンテキストメニューから「デタッチ」を選んでください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@의 tmux 세션과 그 안에서 실행 중인 모든 항목이 종료됩니다. 계속 실행하려면 워크스페이스의 컨텍스트 메뉴에서 '분리'를 사용하세요."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Це завершить сесію tmux на %@ і все, що в ній запущено. Щоб залишити її запущеною, скористайтеся пунктом «Відʼєднати» в контекстному меню робочого простору."
+          }
+        }
+      }
+    },
+    "dialog.killRemoteSession.messageWithCommand": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@” is still running. This kills the tmux session on %@ and everything running in it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」が実行中です。%@ 上の tmux セッションと、その中で実行中のものすべてを終了します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "'%@'이(가) 아직 실행 중입니다. %@의 tmux 세션과 그 안에서 실행 중인 모든 항목이 종료됩니다."
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "«%@» ще виконується. Це завершить сесію tmux на %@ і все, що в ній запущено."
+          }
+        }
+      }
+    },
+    "dialog.killRemoteSession.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kill remote tmux session?"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リモート tmux セッションを終了しますか？"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "원격 tmux 세션을 종료할까요?"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершити віддалену сесію tmux?"
           }
         }
       }

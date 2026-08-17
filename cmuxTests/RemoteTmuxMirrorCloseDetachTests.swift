@@ -9,22 +9,28 @@ import Testing
 @testable import cmux
 #endif
 
-/// Regression coverage for the remote-tmux mirror close contract
-/// (https://github.com/manaflow-ai/cmux/pull/7264 review): closing a mirrored
-/// remote-tmux workspace must DETACH from the remote session, never `kill-session`
-/// it. The ssh-tmux author flagged that with mirrors living as plain workspaces in
-/// the current window, the natural "close this tab to get it off my screen" gesture
-/// would silently kill the user's live tmux session on the server. Killing a remote
-/// session is only ever an explicit disconnect action, never a side effect of
-/// closing a tab, a window, or quitting the app.
+/// Regression coverage for the remote-tmux mirror close contract.
 ///
-/// The seam that used to translate a tab close into "kill on commit" is
+/// The contract has two halves:
+/// - EXPLICIT per-workspace closes (sidebar X, tab X, Cmd+W, context-menu
+///   Close) KILL the remote session, gated by the remote session-activity
+///   confirmation — the workspace-level analogue of the window-tab X, which
+///   kills its tmux window. This deliberately narrows the original blanket
+///   detach-on-close rule (https://github.com/manaflow-ai/cmux/pull/7264
+///   review): with the X quietly detaching and no per-session kill anywhere
+///   in the UI, every "new session on host" + close cycle leaked a session
+///   on the machine. The kill needs a LIVE control connection; without one
+///   the close degrades to the detach below.
+/// - Everything else still DETACHES and the session survives for resume:
+///   window close, app quit, batch close-all routed through the window
+///   path, non-interactive socket closes, the raw `closeWorkspace` teardown,
+///   and the context menu's explicit "Detach (Keep Session Running)".
+///
+/// The seam that used to translate a window close into "kill on commit" is
 /// `TabManager.markRemoteTmuxKillOnWindowCloseIfNeeded`, which set the window
-/// kill-on-close marker in `RemoteTmuxWindowRegistry`. After the fix that seam must
-/// never mark a mirror for kill, so every close path (non-last tab, last-tab window
-/// close, and the app-quit deferral gate) detaches and the remote session survives.
-/// The marker is set-then-consumed synchronously inside the real close gesture, so
-/// this test exercises the marking decision directly to observe it deterministically.
+/// kill-on-close marker in `RemoteTmuxWindowRegistry`. That seam stays a
+/// no-op: window-level closes must never mark a mirror for kill, so the
+/// last-tab window close and the app-quit deferral gate keep detaching.
 @MainActor
 @Suite(.serialized) struct RemoteTmuxMirrorCloseDetachTests {
     private let sshOverrideKey = "CMUX_REMOTE_TMUX_SSH_FOR_TESTING"
@@ -223,9 +229,11 @@ import Testing
         #expect(!harness.manager.tabs.contains { $0.id == mirrorWorkspace.id })
     }
 
-    /// The ordinary non-last tab-close route shares the same detach contract as
-    /// socket/window close: removing the mirror from a mixed local window must
-    /// stop its control client without issuing `tmux kill-session`.
+    /// The RAW `closeWorkspace` teardown is the detach primitive shared by the
+    /// window-close, socket, and dead-connection paths: it must stop the
+    /// control client without ever issuing `tmux kill-session`. (The explicit
+    /// user close kills UPSTREAM of this primitive, vetoes the local close,
+    /// and never reaches it — see closeWorkspaceIfRunningProcess.)
     @Test func ordinaryCloseOfLiveMirrorDetachesWithoutKillingSession() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("remote-tmux-tab-close-\(UUID().uuidString)", isDirectory: true)
@@ -441,6 +449,87 @@ import Testing
         #expect(focusedAfter["workspace_id"] as? String == workspaceIDBefore)
         #expect(focusedAfter["pane_id"] as? String == paneIDBefore)
         #expect(focusedAfter["surface_id"] as? String == surfaceIDBefore)
+    }
+
+    /// An explicit user close whose mirror has NO live control connection
+    /// cannot kill; it must degrade to the detach-close (mirror removed,
+    /// no `kill-session` on the wire) instead of wedging or erroring. This
+    /// also pins the routing guard: `handleMirrorWorkspaceCloseRequested`
+    /// refuses unconnected mirrors so the caller falls through.
+    @Test func explicitCloseWithoutLiveConnectionDegradesToDetach() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("remote-tmux-explicit-close-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let logURL = root.appendingPathComponent("ssh.log")
+        let sshURL = root.appendingPathComponent("ssh")
+        try writeExecutable(
+            at: sshURL,
+            contents: """
+            #!/bin/sh
+            for arg in "$@"; do
+              printf 'ARG=%s\\n' "$arg" >> "${CMUX_PR7264_SSH_LOG:?}"
+            done
+            exit 0
+            """
+        )
+        let previousSSH = environmentValue(for: sshOverrideKey)
+        let previousLog = environmentValue(for: sshLogKey)
+        setenv(sshOverrideKey, sshURL.path, 1)
+        setenv(sshLogKey, logURL.path, 1)
+        defer {
+            restoreEnvironment(sshOverrideKey, previousValue: previousSSH)
+            restoreEnvironment(sshLogKey, previousValue: previousLog)
+        }
+
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let host = RemoteTmuxHost(destination: "explicit-close-\(UUID().uuidString)@example.test")
+        let connection = RemoteTmuxControlConnection(host: host, sessionName: "dev")
+        let controller = harness.controller
+        defer {
+            if controller.sessionMirror(host: host, sessionName: "dev") != nil {
+                controller.detach(host: host, sessionName: "dev")
+            }
+        }
+        controller.cacheConnection(connection)
+        #expect(try controller.mirrorSession(host: host, sessionName: "dev", into: harness.manager))
+        let mirrorWorkspace = try #require(harness.manager.tabs.first(where: { $0.isRemoteTmuxMirror }))
+        #expect(harness.manager.tabs.count == 2)
+
+        // The kill route refuses without a connected control client...
+        #expect(!controller.handleMirrorWorkspaceCloseRequested(workspaceId: mirrorWorkspace.id))
+        // ...and the session-level activity read still answers (idle), so the
+        // explicit close pipeline reaches its routing step instead of the
+        // generic local-process dialog.
+        let activity = try #require(controller.cachedMirrorSessionActivity(workspaceId: mirrorWorkspace.id))
+        #expect(!activity.hasActiveCommand)
+
+        // Both warning toggles off so no branch of the close pipeline can
+        // raise a modal in the test host; an idle session skips the kill
+        // dialog on its own merits either way.
+        let shortcutWarnKey = "warnBeforeClosingTabShortcut"
+        let xButtonWarnKey = "warnBeforeClosingTabXButton"
+        let previousShortcutWarn = UserDefaults.standard.object(forKey: shortcutWarnKey)
+        let previousXButtonWarn = UserDefaults.standard.object(forKey: xButtonWarnKey)
+        UserDefaults.standard.set(false, forKey: shortcutWarnKey)
+        UserDefaults.standard.set(false, forKey: xButtonWarnKey)
+        defer {
+            for (key, value) in [shortcutWarnKey: previousShortcutWarn, xButtonWarnKey: previousXButtonWarn] {
+                if let value { UserDefaults.standard.set(value, forKey: key) }
+                else { UserDefaults.standard.removeObject(forKey: key) }
+            }
+        }
+
+        // The explicit close gesture (tab X path) with an idle session and
+        // no live connection: no dialog, no kill — detach.
+        #expect(harness.manager.closeWorkspaceFromTabCloseButton(mirrorWorkspace))
+
+        let log = try await waitForSSHArgument("exit", at: logURL)
+        #expect(!log.contains("kill-session"), Comment(rawValue: log))
+        #expect(harness.manager.tabs.map(\.id) == [harness.workspace.id])
+        #expect(controller.sessionMirror(host: host, sessionName: "dev") == nil)
+        #expect(connection.exited)
     }
 
     private func writeExecutable(at url: URL, contents: String) throws {
