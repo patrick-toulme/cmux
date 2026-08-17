@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v5
+// cmux-feed-plugin-marker v6
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -62,6 +62,14 @@ const KEEPALIVE_INTERVAL_MS =
 // duplicate window is only ever entered by an app exit racing a turn end.
 const TURN_COMPLETE_REDELIVERY_WINDOW_MS = 3_000;
 
+// A goal loop (and any queued follow-up) re-prompts the session moments
+// after it idles, so writing "idle" on the raw edge strobed the sidebar
+// spinner at every iteration boundary. The idle write waits out this
+// grace window and is cancelled by busy returning; "running" still writes
+// immediately. Env override exists for tests.
+const IDLE_LIFECYCLE_GRACE_MS =
+  Number(process.env.CMUX_FEED_IDLE_GRACE_MS || "") || 2_500;
+
 // Opt-in stderr tracing (CMUX_FEED_DEBUG=1) for diagnosing the plugin on a
 // remote machine without a debugger: connection lifecycle, recovery timer,
 // and resolve outcomes. Zero cost when unset.
@@ -109,6 +117,14 @@ export const CMUXFeed = async (ctx) => {
   const pendingConcludes = new Map();
   const messageRoles = new Map();
   const sessions = new Map();
+  // Message ids whose typed text already opened a turn (streaming
+  // re-delivers a growing part; one prompt = one UserPromptSubmit).
+  const promptedMessageIds = new Set();
+  // The last lifecycle state actually written, so aggregate updates only
+  // write edges. Reset on every reconnect (a fresh cmux must be repainted).
+  let lastLifecycleSent = null;
+  // Pending delayed idle write (see updateAggregateLifecycle's grace).
+  let idleGraceTimer = null;
 
   // Identity is mutable: tmux-first with process env fallback, refreshed
   // after a socket drop so a new cmux instance's pins are picked up live.
@@ -166,6 +182,10 @@ export const CMUXFeed = async (ctx) => {
         cwd: null,
         isBusy: false,
         turnOpen: false,
+        // Subagent sessions (task tool, swarms) carry the lead's id here.
+        // They flap busy/idle constantly and their prompts are engine
+        // deliveries, so they never mint turn-complete notifications.
+        parentId: null,
       });
     }
     return sessions.get(key);
@@ -580,12 +600,24 @@ export const CMUXFeed = async (ctx) => {
 
   // Keeps the shared connection out of the app's idle reaper and probes
   // half-open sockets. Runs for the plugin's whole life; write errors
-  // surface through the socket's own error event.
+  // surface through the socket's own error event. While any session is
+  // busy it also refreshes the deduped "running" lifecycle line, so an
+  // app-side clear (the shell-clear safety net firing on a suspended
+  // agent) heals within one keepalive instead of waiting for a busy edge.
   const keepaliveTimer = setInterval(() => {
     if (!client) return;
     try {
       client.write("\n");
     } catch (_) {}
+    if (
+      lastLifecycleSent === "running"
+      && remoteTarget
+      && [...sessions.values()].some((state) => state.isBusy)
+    ) {
+      writeLine(
+        `set_agent_lifecycle opencode running --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+      );
+    }
   }, KEEPALIVE_INTERVAL_MS);
   if (typeof keepaliveTimer.unref === "function") keepaliveTimer.unref();
 
@@ -711,9 +743,14 @@ export const CMUXFeed = async (ctx) => {
     }
     const busy = [...sessions.values()].some((state) => state.isBusy);
     if (busy) {
+      lastLifecycleSent = "running";
       writeLine(
         `set_agent_lifecycle opencode running --tab=${target.workspaceId} --panel=${target.surfaceId}`
       );
+    } else {
+      // A fresh cmux instance knows nothing about this pane; the next
+      // aggregate edge must write even if it matches the pre-drop state.
+      lastLifecycleSent = null;
     }
     for (const sid of [...turnOpenAtDisconnect]) {
       turnOpenAtDisconnect.delete(sid);
@@ -750,6 +787,14 @@ export const CMUXFeed = async (ctx) => {
 
   const sendRemoteLifecycle = (state) => {
     if (!isRemote()) return;
+    if (state === "running" && idleGraceTimer) {
+      // A parked idle write must never land on top of a fresher running
+      // one (the timer's own busy re-check covers tracked sessions, but
+      // direct writers like the sid-less prompt fallback bypass them).
+      clearTimeout(idleGraceTimer);
+      idleGraceTimer = null;
+    }
+    lastLifecycleSent = state;
     if (!remoteTarget) {
       void resolveRemoteTarget().then((target) => {
         if (!target) return;
@@ -762,6 +807,37 @@ export const CMUXFeed = async (ctx) => {
     writeLine(
       `set_agent_lifecycle opencode ${state} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
     );
+  };
+
+  // The pane's lifecycle entry is ONE slot shared by every session in this
+  // opencode process (the lead + all its subagents). Per-session busy/idle
+  // events must therefore aggregate: the slot is "running" while ANY
+  // session is busy and "idle" only when NONE is. Writing per-event
+  // (last-writer-wins) made a lead running a swarm flicker running/idle on
+  // every worker turn boundary. Deduped: only edges write; reconnects
+  // reset the dedup so a fresh cmux always gets repainted. The idle edge
+  // additionally waits out a grace window (goal loops re-prompt moments
+  // after idling; the strobe served no one) and is cancelled by busy
+  // returning first.
+  const updateAggregateLifecycle = () => {
+    const desired = [...sessions.values()].some((state) => state.isBusy)
+      ? "running"
+      : "idle";
+    if (desired === "running") {
+      if (idleGraceTimer) {
+        clearTimeout(idleGraceTimer);
+        idleGraceTimer = null;
+      }
+      if (lastLifecycleSent !== "running") sendRemoteLifecycle("running");
+      return;
+    }
+    if (lastLifecycleSent === "idle" || idleGraceTimer) return;
+    idleGraceTimer = setTimeout(() => {
+      idleGraceTimer = null;
+      const stillIdle = ![...sessions.values()].some((state) => state.isBusy);
+      if (stillIdle && lastLifecycleSent !== "idle") sendRemoteLifecycle("idle");
+    }, IDLE_LIFECYCLE_GRACE_MS);
+    if (typeof idleGraceTimer.unref === "function") idleGraceTimer.unref();
   };
 
   // The wire payload is |-separated; fields must never smuggle a separator.
@@ -796,24 +872,27 @@ export const CMUXFeed = async (ctx) => {
 
   // Turn-boundary tracker shared by "session.status" (current builds) and the
   // deprecated "session.idle" (older builds, co-published on current ones).
-  // A turn OPENS only on a user prompt and completes on the next idle, so
-  // the co-published pair cannot double-fire — and background busy cycles
-  // (auto-compaction, cache keepalive) update the running/idle spinner
-  // without minting spurious "finished a turn" notifications.
+  // A turn OPENS only on a real typed user prompt and completes on the next
+  // idle, so the co-published pair cannot double-fire — and background busy
+  // cycles (auto-compaction, cache keepalive) update the running/idle
+  // spinner without minting spurious "finished a turn" notifications.
+  // Subagent sessions never open turns: their prompts are engine
+  // deliveries, and a swarm's workers finishing would otherwise spam
+  // green unseen-done flashes while the lead is still mid-goal.
   const noteSessionBusyState = (sid, busy, opensTurn = false) => {
     const state = sessionState(sid);
     feedDebugLog("busyState", sid, "busy =", busy, "opensTurn =", opensTurn);
     if (busy) {
       state.isBusy = true;
-      if (opensTurn) state.turnOpen = true;
-      sendRemoteLifecycle("running");
+      if (opensTurn && !state.parentId) state.turnOpen = true;
+      updateAggregateLifecycle();
       return;
     }
     const hadOpenTurn = state.turnOpen === true;
     state.isBusy = false;
     state.turnOpen = false;
-    sendRemoteLifecycle("idle");
-    if (hadOpenTurn) sendRemoteTurnCompleteNotification(sid);
+    updateAggregateLifecycle();
+    if (hadOpenTurn && !state.parentId) sendRemoteTurnCompleteNotification(sid);
   };
 
   const base = (sessionId, extra) => {
@@ -873,7 +952,25 @@ export const CMUXFeed = async (ctx) => {
     if (!text) return null;
     const state = sessionState(meta.sessionId);
     if (meta.role === "user") {
+      // Engine-authored parts carry `synthetic: true`: goal-loop
+      // continuation nudges, subagent reports delivered to the lead,
+      // watch/schedule cards, task prompts fanned out to workers, and
+      // scaffolding attached to real prompts. None of them is the user
+      // typing, so none may open a turn — counting them made every goal
+      // iteration and every worker report mint a "finished a turn"
+      // green flash plus a notification while the agent was still
+      // working. Only a really typed part is a user turn (the same rule
+      // the TUI uses to tell deliveries from prompts).
+      if (part.synthetic === true) return null;
       state.lastUserMessage = text;
+      // Streaming re-delivers the same part as it grows; one prompt is
+      // one turn, so later updates of a message already counted only
+      // refresh the notification subtitle above.
+      if (promptedMessageIds.has(part.messageID)) return null;
+      promptedMessageIds.add(part.messageID);
+      if (promptedMessageIds.size > 300) {
+        promptedMessageIds.delete(promptedMessageIds.keys().next().value);
+      }
       return base(meta.sessionId, {
         hook_event_name: "UserPromptSubmit",
         tool_input: { prompt: text },
@@ -998,7 +1095,15 @@ export const CMUXFeed = async (ctx) => {
           const info = event.properties?.info || {};
           const state = sessionState(info.id || "unknown");
           state.cwd = info.directory || ctx?.directory || state.cwd;
-          sendRemoteLifecycle("running");
+          if (typeof info.parentID === "string" && info.parentID) {
+            state.parentId = info.parentID;
+          }
+          // Creation is not busyness: a freshly opened session idles until
+          // its first prompt, and a spawned worker's busy arrives as its
+          // own session.status. The old unconditional "running" here
+          // painted the spinner for idle sessions and re-wrote the slot on
+          // every worker spawn.
+          updateAggregateLifecycle();
           pushTelemetry(base(info.id || "unknown", {
             hook_event_name: "SessionStart",
             cwd: state.cwd,
@@ -1035,7 +1140,9 @@ export const CMUXFeed = async (ctx) => {
           const sid = event.properties?.info?.id;
           if (!sid) break;
           sessions.delete(sid);
-          sendRemoteLifecycle("idle");
+          // A deleted worker must not blank the spinner while its lead
+          // (or any sibling) is still busy: recompute, don't overwrite.
+          updateAggregateLifecycle();
           pushTelemetry(base(sid, {
             hook_event_name: "SessionEnd",
           }));

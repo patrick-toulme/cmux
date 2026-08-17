@@ -287,7 +287,128 @@ await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-99"), 8000, "
 await waitFor(() => received.filter((l) => l === runningLine).length >= 2, 8000, "recovery repaints drained");
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
 await hooksStale.event({ event: { type: "session.status", properties: { sessionID: "s3", status: { type: "idle" } } } });
+// Both factories' delayed idle writes land inside this drain window
+// (CMUX_FEED_IDLE_GRACE_MS=120 in the test env).
+await new Promise((resolve) => setTimeout(resolve, 300));
+
+// Scenario 3f: swarm/goal-loop semantics. Engine deliveries (synthetic
+// parts: goal-continuation nudges, worker reports to the lead, task
+// prompts fanned out to workers) never open turns; worker sessions
+// (parentID set) never mint turn-complete notifications; a worker idling
+// never blanks the running slot while the lead is busy; and an idle-then-
+// busy bounce inside the grace window writes no idle line at all (the
+// blue/green strobe a goal loop produced at every iteration boundary).
+received.length = 0;
+const idleLine = "set_agent_lifecycle opencode idle --tab=W1 --panel=S1";
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "m50", sessionID: "s1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "m50", text: "start the goal" },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "lead turn opened");
+
+// A worker spawns under the lead and receives its engine-authored prompt.
+received.length = 0;
+await hooks.event({ event: { type: "session.created", properties: {
+  info: { id: "w1", parentID: "s1", directory: "/tmp/x" },
+} } });
+await waitFor(() => received.filter((l) => l.startsWith("v2:feed.push")).length === 1, 5000, "worker SessionStart telemetry");
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "mw1", sessionID: "w1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "mw1", text: "delegated unit", synthetic: true },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "w1", status: { type: "busy" } } } });
 await new Promise((resolve) => setTimeout(resolve, 200));
+if (received.filter((l) => l.startsWith("v2:feed.push")).length !== 1) {
+  throw new Error(`synthetic delivery must not mint UserPromptSubmit telemetry: ${JSON.stringify(received)}`);
+}
+
+// The worker idles while the lead is still busy: no idle write, no
+// turn-complete, ever — its report to the lead is not a finished turn.
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "w1", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.some((l) => l === idleLine)) {
+  throw new Error(`worker idle blanked the slot while the lead is busy: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`worker idle minted a turn-complete: ${JSON.stringify(received)}`);
+}
+
+// Even a REAL typed part in a child session (a user driving the worker
+// directly) opens no turn: child sessions never notify.
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "mw2", sessionID: "w1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "mw2", text: "typed at the worker" },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "w1", status: { type: "busy" } } } });
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "w1", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 250));
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`child session turn minted a notification: ${JSON.stringify(received)}`);
+}
+
+// First goal iteration boundary: the lead idles (the typed turn genuinely
+// ends — exactly ONE turn-complete) and the loop re-prompts within the
+// grace window, so no idle write may appear (the strobe).
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
+await waitFor(
+  () => received.filter((l) => l.includes("c=turn-complete")).length === 1,
+  5000,
+  "typed turn completion notifies exactly once"
+);
+await new Promise((resolve) => setTimeout(resolve, 40));
+// The loop's continuation nudge: an engine-authored (synthetic) user
+// message, then busy again.
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "m51", sessionID: "s1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "m51", text: "Continue if you have next steps.", synthetic: true },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.some((l) => l === idleLine)) {
+  throw new Error(`iteration boundary inside the grace window strobed the slot: ${JSON.stringify(received)}`);
+}
+
+// Later iterations were opened by the nudge, not the user: their ends
+// mint NO further turn-completes, and the final settle writes idle once.
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "settled idle lands after the grace window");
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`nudge-opened iteration minted a turn-complete: ${JSON.stringify(received)}`);
+}
+
+// A WATCH wake: the card is a synthetic delivery, but the busy edge must
+// repaint running immediately — a resting (or green unseen-done) agent
+// goes blue the moment a watch wakes it.
+received.length = 0;
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "m52", sessionID: "s1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "m52", text: "[watch] borg job finished", synthetic: true },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "watch wake repaints running from idle");
+// The wake's work ending mints no turn-complete (nudge semantics) and
+// settles back to idle through the same grace window.
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "watch work settles back to idle");
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`watch-opened work minted a turn-complete: ${JSON.stringify(received)}`);
+}
 
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
@@ -342,6 +463,9 @@ def main() -> int:
         # Fast recovery cadence so the timer-driven scenarios finish quickly.
         env["CMUX_FEED_RECONNECT_INTERVAL_MS"] = "250"
         env["CMUX_FEED_KEEPALIVE_INTERVAL_MS"] = "200"
+        # Short idle grace so the debounced lifecycle writes land inside the
+        # scenario windows instead of stretching the run by 2.5s per settle.
+        env["CMUX_FEED_IDLE_GRACE_MS"] = "120"
         env["CMUX_FEED_DEBUG"] = "1"
         env.pop("CMUX_SOCKET_PATH", None)
         env.pop("CMUX_REMOTE_HOST_KEY", None)
