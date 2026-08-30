@@ -156,6 +156,10 @@ process.env.FAKE_TMUX_HOST_KEY = "host-live";
 process.env.FAKE_TMUX_SOCKET_PATH = liveSocket;
 
 const hooks = await mod.CMUXFeed({ directory: "/tmp/x" });
+// Streaming deltas prove a session lives in this process (mirrored
+// sibling sessions never deliver them); each scenario seeds one before
+// the first busy edge, like a real turn's first token.
+await hooks.event({ event: { type: "message.part.delta", properties: { sessionID: "s1", delta: "x" } } });
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
 await waitFor(() => received.some((l) => l === "resolve:host-live:%7"), 5000, "resolve via tmux env fallback");
 await waitFor(() => received.some((l) => l === runningLine), 5000, "lifecycle running via tmux env fallback");
@@ -180,6 +184,8 @@ await hooks.event({ event: { type: "message.updated", properties: {
 await hooks.event({ event: { type: "message.part.updated", properties: {
   part: { type: "text", messageID: "m9", text: "run the long build" },
 } } });
+// The queued typed prompt applies once s9 proves local.
+await hooks.event({ event: { type: "message.part.delta", properties: { sessionID: "s9", delta: "x" } } });
 await waitFor(() => received.some((l) => l === runningLine), 5000, "turn opened on s9");
 await stopServer();
 // Scenario 2c seed: the turn ENDS while cmux is down — the turn-complete
@@ -212,6 +218,7 @@ received.length = 0;
 process.env.CMUX_SOCKET_PATH = `${socketDir}/dead.sock`;
 process.env.CMUX_REMOTE_HOST_KEY = "host-stale";
 const hooksStale = await mod.CMUXFeed({ directory: "/tmp/x" });
+await hooksStale.event({ event: { type: "message.part.delta", properties: { sessionID: "s3", delta: "x" } } });
 await hooksStale.event({ event: { type: "session.status", properties: { sessionID: "s3", status: { type: "busy" } } } });
 await waitFor(() => received.some((l) => l === "resolve:host-live:%7"), 5000, "live tmux identity wins over stale env");
 await waitFor(() => received.some((l) => l === runningLine), 5000, "lifecycle running with live identity");
@@ -426,16 +433,16 @@ const activityLine = (text) =>
 const activityClearLine = "clear_status opencode.activity --tab=W1";
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
 await hooks.event({ event: { type: "message.part.updated", properties: {
-  part: { type: "tool", messageID: "mt1", tool: "bash", state: { status: "running", input: { command: "git status" } } },
+  part: { type: "tool", sessionID: "s1", messageID: "mt1", tool: "bash", state: { status: "running", input: { command: "git status" } } },
 } } });
 await waitFor(() => received.some((l) => l === activityLine("bash: git status")), 5000, "first activity paints immediately");
 // A burst inside the throttle window coalesces to the LATEST text; the
 // intermediate tool never reaches the wire.
 await hooks.event({ event: { type: "message.part.updated", properties: {
-  part: { type: "tool", messageID: "mt2", tool: "read", state: { status: "running", input: { filePath: "/tmp/a.txt" } } },
+  part: { type: "tool", sessionID: "s1", messageID: "mt2", tool: "read", state: { status: "running", input: { filePath: "/tmp/a.txt" } } },
 } } });
 await hooks.event({ event: { type: "message.part.updated", properties: {
-  part: { type: "tool", messageID: "mt3", tool: "edit", state: { status: "running", input: { filePath: "/tmp/b.txt" } } },
+  part: { type: "tool", sessionID: "s1", messageID: "mt3", tool: "edit", state: { status: "running", input: { filePath: "/tmp/b.txt" } } },
 } } });
 await waitFor(() => received.some((l) => l === activityLine("edit: /tmp/b.txt")), 5000, "trailing flush lands the newest activity");
 if (received.some((l) => l === activityLine("read: /tmp/a.txt"))) {
@@ -445,7 +452,7 @@ if (received.some((l) => l === activityLine("read: /tmp/a.txt"))) {
 received.length = 0;
 await new Promise((resolve) => setTimeout(resolve, 250));
 await hooks.event({ event: { type: "message.part.updated", properties: {
-  part: { type: "tool", messageID: "mt4", tool: "edit", state: { status: "running", input: { filePath: "/tmp/b.txt" } } },
+  part: { type: "tool", sessionID: "s1", messageID: "mt4", tool: "edit", state: { status: "running", input: { filePath: "/tmp/b.txt" } } },
 } } });
 await new Promise((resolve) => setTimeout(resolve, 300));
 if (received.some((l) => l.startsWith("set_status opencode.activity"))) {
@@ -453,7 +460,7 @@ if (received.some((l) => l.startsWith("set_status opencode.activity"))) {
 }
 // Completed tool states carry no activity.
 await hooks.event({ event: { type: "message.part.updated", properties: {
-  part: { type: "tool", messageID: "mt5", tool: "bash", state: { status: "completed", input: { command: "ls" } } },
+  part: { type: "tool", sessionID: "s1", messageID: "mt5", tool: "bash", state: { status: "completed", input: { command: "ls" } } },
 } } });
 await new Promise((resolve) => setTimeout(resolve, 300));
 if (received.some((l) => l.includes("bash: ls"))) {
@@ -466,7 +473,7 @@ await waitFor(() => received.some((l) => l === activityClearLine), 5000, "settle
 // A parked blocking decision clears the repainted activity line.
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
 await hooks.event({ event: { type: "message.part.updated", properties: {
-  part: { type: "tool", messageID: "mt6", tool: "bash", state: { status: "running", input: { command: "make deploy" } } },
+  part: { type: "tool", sessionID: "s1", messageID: "mt6", tool: "bash", state: { status: "running", input: { command: "make deploy" } } },
 } } });
 await waitFor(() => received.some((l) => l === activityLine("bash: make deploy")), 5000, "activity repaints on the next turn");
 received.length = 0;
@@ -480,6 +487,71 @@ await pendingAsk3g;
 // Settle s1 idle so scenario 4's quiet window stays quiet.
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
 await new Promise((resolve) => setTimeout(resolve, 300));
+
+// Scenario 3h: same-folder sibling quarantine. The engine mirrors
+// same-project sessions across processes: a sibling pane's session
+// delivers session.created, session.status BUSY, and message parts onto
+// this bus, but never its idle edge or streaming deltas. Unproven
+// sessions must not paint the pane running, must not leak their typed
+// prompt into this pane's telemetry, must not paint activity text, and
+// must never mint a toast. A REAL first turn (prompt queued before the
+// first delta proves the session) applies in full on confirmation.
+received.length = 0;
+await hooks.event({ event: { type: "session.created", properties: {
+  info: { id: "f1", directory: "/tmp/x" },
+} } });
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "mf1", sessionID: "f1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "mf1", sessionID: "f1", text: "sibling pane's prompt" },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "f1", status: { type: "busy" } } } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", sessionID: "f1", messageID: "mf2", tool: "bash", state: { status: "running", input: { command: "sibling job" } } },
+} } });
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.some((l) => l === runningLine)) {
+  throw new Error(`a mirrored sibling's busy painted this pane running: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.startsWith("v2:feed.push"))) {
+  throw new Error(`a mirrored sibling's prompt leaked into telemetry: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.includes("sibling job"))) {
+  throw new Error(`a mirrored sibling's tool painted activity text: ${JSON.stringify(received)}`);
+}
+
+// A REAL first turn on a fresh session: the typed prompt is queued while
+// ownership is unproven, then the first streaming delta confirms the
+// session and the prompt applies in full (telemetry, running paint, and
+// the turn debt that mints exactly one toast at settle).
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "m80", sessionID: "s8", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "m80", sessionID: "s8", text: "first turn in a fresh pane" },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s8", status: { type: "busy" } } } });
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (received.some((l) => l === runningLine) || received.some((l) => l.startsWith("v2:feed.push"))) {
+  throw new Error(`an unproven session acted before its first delta: ${JSON.stringify(received)}`);
+}
+await hooks.event({ event: { type: "message.part.delta", properties: { sessionID: "s8", delta: "F" } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "confirmed first turn paints running");
+await waitFor(() => received.some((l) => l.startsWith("v2:feed.push")), 5000, "queued UserPromptSubmit flushes on confirmation");
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s8", status: { type: "idle" } } } });
+await waitFor(
+  () => received.filter((l) => l.includes("c=turn-complete")).length === 1,
+  5000,
+  "confirmed first turn mints exactly one toast at settle"
+);
+// The sibling ghost still parks unproven: quiet forever, no toast.
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.some((l) => l.includes("sibling"))) {
+  throw new Error(`the sibling ghost surfaced after settle: ${JSON.stringify(received)}`);
+}
+received.length = 0;
 
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.

@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v7
+// cmux-feed-plugin-marker v8
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -218,9 +218,76 @@ export const CMUXFeed = async (ctx) => {
         // across goal-loop iterations and disconnects until a send lands.
         completionOwed: false,
         settleTimer: null,
+        // The engine mirrors same-project sessions ACROSS processes: a
+        // sibling agent in the same folder delivers its session.created,
+        // session.status BUSY, and message parts onto this process's bus
+        // (its idle and streaming deltas never cross). Only sessions
+        // proven to live in THIS process may drive the pane's lifecycle,
+        // turns, notifications, or activity text; everything else would
+        // paint a sibling pane's work onto this pane's sidebar row.
+        confirmedLocal: false,
+        // Work queued while ownership is unproven, flushed on
+        // confirmation: telemetry frames plus the typed-prompt turn open.
+        pendingTelemetry: [],
+        pendingPromptOpensTurn: false,
+        lastEventAt: Date.now(),
       });
     }
-    return sessions.get(key);
+    const state = sessions.get(key);
+    state.lastEventAt = Date.now();
+    return state;
+  };
+
+  // Ownership proof: streaming deltas, idle edges, and blocking asks are
+  // emitted only by the process that runs the session (mirrored copies
+  // carry busy edges and message parts, never these). A confirmed lead
+  // confirms its subagents: workers run in the lead's process.
+  const confirmSessionLocal = (sid) => {
+    const state = sessionState(sid);
+    if (state.confirmedLocal) return state;
+    state.confirmedLocal = true;
+    for (const frame of state.pendingTelemetry.splice(0)) {
+      pushTelemetry(frame);
+    }
+    if (state.pendingPromptOpensTurn) {
+      state.pendingPromptOpensTurn = false;
+      // The queued typed prompt now applies exactly as it would have on
+      // arrival: busy + turn open (an idle that follows in the same
+      // handler still closes the turn and banks the completion debt).
+      noteSessionBusyState(sid, true, true);
+    }
+    // Child sessions created before the parent's proof arrive here too.
+    for (const [childId, childState] of sessions) {
+      if (!childState.confirmedLocal && childState.parentId === sid) {
+        confirmSessionLocal(childId);
+      }
+    }
+    updateAggregateLifecycle();
+    return state;
+  };
+
+  // Foreign busy ghosts never receive the idle that would clean them up;
+  // without pruning every sibling session in the folder accumulates
+  // forever. Confirmed sessions are kept: they are this process's own.
+  const pruneUnconfirmedSessions = () => {
+    if (sessions.size <= 200) return;
+    const candidates = [...sessions.entries()]
+      .filter(([, state]) => !state.confirmedLocal)
+      .sort((a, b) => a[1].lastEventAt - b[1].lastEventAt);
+    for (const [sid, state] of candidates.slice(0, sessions.size - 200)) {
+      if (state.settleTimer) clearTimeout(state.settleTimer);
+      sessions.delete(sid);
+    }
+  };
+
+  const queueTelemetryUntilConfirmed = (sid, frame) => {
+    const state = sessionState(sid);
+    if (state.confirmedLocal) {
+      pushTelemetry(frame);
+      return;
+    }
+    state.pendingTelemetry.push(frame);
+    if (state.pendingTelemetry.length > 4) state.pendingTelemetry.shift();
   };
 
   const contextForSession = (sessionId) => {
@@ -644,7 +711,7 @@ export const CMUXFeed = async (ctx) => {
     if (
       lastLifecycleSent === "running"
       && remoteTarget
-      && [...sessions.values()].some((state) => state.isBusy)
+      && [...sessions.values()].some((state) => state.confirmedLocal && state.isBusy)
     ) {
       writeLine(
         `set_agent_lifecycle opencode running --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
@@ -741,8 +808,9 @@ export const CMUXFeed = async (ctx) => {
       }
     }
     recentTurnCompleteSends.clear();
-    const anythingToRecover =
-      [...sessions.values()].some((state) => state.isBusy || state.completionOwed);
+    const anythingToRecover = [...sessions.values()].some(
+      (state) => (state.confirmedLocal && state.isBusy) || state.completionOwed
+    );
     feedDebugLog(
       "disconnected; recover =", anythingToRecover,
       "timer =", reconnectRecoveryTimer != null
@@ -771,7 +839,9 @@ export const CMUXFeed = async (ctx) => {
       clearInterval(reconnectRecoveryTimer);
       reconnectRecoveryTimer = null;
     }
-    const busy = [...sessions.values()].some((state) => state.isBusy);
+    const busy = [...sessions.values()].some(
+      (state) => state.confirmedLocal && state.isBusy
+    );
     if (busy) {
       lastLifecycleSent = "running";
       writeLine(
@@ -930,7 +1000,12 @@ export const CMUXFeed = async (ctx) => {
   // after idling; the strobe served no one) and is cancelled by busy
   // returning first.
   const updateAggregateLifecycle = () => {
-    const desired = [...sessions.values()].some((state) => state.isBusy)
+    // Only sessions PROVEN to run in this process count: a mirrored
+    // sibling's busy edge (whose idle never crosses) would otherwise pin
+    // every same-folder pane to "running" forever.
+    const desired = [...sessions.values()].some(
+      (state) => state.confirmedLocal && state.isBusy
+    )
       ? "running"
       : "idle";
     if (desired === "running") {
@@ -944,7 +1019,9 @@ export const CMUXFeed = async (ctx) => {
     if (lastLifecycleSent === "idle" || idleGraceTimer) return;
     idleGraceTimer = setTimeout(() => {
       idleGraceTimer = null;
-      const stillIdle = ![...sessions.values()].some((state) => state.isBusy);
+      const stillIdle = ![...sessions.values()].some(
+        (state) => state.confirmedLocal && state.isBusy
+      );
       if (stillIdle && lastLifecycleSent !== "idle") sendRemoteLifecycle("idle");
     }, IDLE_LIFECYCLE_GRACE_MS);
     if (typeof idleGraceTimer.unref === "function") idleGraceTimer.unref();
@@ -1110,11 +1187,22 @@ export const CMUXFeed = async (ctx) => {
       if (promptedMessageIds.size > 300) {
         promptedMessageIds.delete(promptedMessageIds.keys().next().value);
       }
-      return base(meta.sessionId, {
+      const frame = base(meta.sessionId, {
         hook_event_name: "UserPromptSubmit",
         tool_input: { prompt: text },
         context: { lastUserMessage: text },
       });
+      // Message parts mirror across same-folder processes; a sibling
+      // pane's typed prompt must not open a turn here or paint this
+      // pane's row with the sibling's text. Queue the prompt work until
+      // this session proves local (first streaming delta confirms it,
+      // seconds at most), then it flushes with the turn debt intact.
+      if (!state.confirmedLocal) {
+        state.pendingPromptOpensTurn = true;
+        queueTelemetryUntilConfirmed(meta.sessionId, frame);
+        return null;
+      }
+      return frame;
     }
     if (meta.role === "assistant") {
       state.assistantPreamble = text;
@@ -1216,9 +1304,19 @@ export const CMUXFeed = async (ctx) => {
     event: async ({ event }) => {
       await ensureIdentity();
       if (isRemote()) await resolveRemoteTarget();
+      if (event.type === "message.part.delta") {
+        // Streaming deltas exist only in the process that runs the
+        // session: the cheapest and earliest ownership proof.
+        const deltaSid = firstString(event.properties?.sessionID);
+        if (deltaSid) confirmSessionLocal(deltaSid);
+      }
       if (event.type === "message.part.updated") {
-        const activity = activityTextFromPart(event.properties?.part);
-        if (activity) noteActivity(activity);
+        const part = event.properties?.part;
+        const partSid = firstString(part?.sessionID);
+        if (partSid && sessionState(partSid).confirmedLocal) {
+          const activity = activityTextFromPart(part);
+          if (activity) noteActivity(activity);
+        }
       }
       const tracked = trackMessage(event);
       if (tracked) {
@@ -1239,10 +1337,17 @@ export const CMUXFeed = async (ctx) => {
       switch (event.type) {
         case "session.created": {
           const info = event.properties?.info || {};
-          const state = sessionState(info.id || "unknown");
+          const sid = info.id || "unknown";
+          const state = sessionState(sid);
           state.cwd = info.directory || ctx?.directory || state.cwd;
           if (typeof info.parentID === "string" && info.parentID) {
             state.parentId = info.parentID;
+          }
+          // Workers run inside their lead's process: a confirmed parent
+          // confirms the child. A mirrored sibling's session (its parent
+          // is unknown here) stays quarantined.
+          if (state.parentId && sessions.get(state.parentId)?.confirmedLocal) {
+            confirmSessionLocal(sid);
           }
           // Creation is not busyness: a freshly opened session idles until
           // its first prompt, and a spawned worker's busy arrives as its
@@ -1250,15 +1355,18 @@ export const CMUXFeed = async (ctx) => {
           // painted the spinner for idle sessions and re-wrote the slot on
           // every worker spawn.
           updateAggregateLifecycle();
-          pushTelemetry(base(info.id || "unknown", {
+          queueTelemetryUntilConfirmed(sid, base(sid, {
             hook_event_name: "SessionStart",
             cwd: state.cwd,
           }));
+          pruneUnconfirmedSessions();
           break;
         }
         case "session.idle": {
           const sid = event.properties?.sessionID;
           if (!sid) break;
+          // Idle edges never mirror across processes: proof of ownership.
+          confirmSessionLocal(sid);
           noteSessionBusyState(sid, false);
           pushTelemetry(base(sid, {
             hook_event_name: "Stop",
@@ -1270,12 +1378,15 @@ export const CMUXFeed = async (ctx) => {
           // ("session.idle" is deprecated there and can be cut off by
           // process exit in one-shot runs). Lifecycle + turn boundary only:
           // the Stop feed event still rides "session.idle" so feed
-          // semantics are unchanged where both fire.
+          // semantics are unchanged where both fire. Mirrored siblings
+          // deliver BUSY edges (never idle): busy is recorded but only
+          // confirmed-local sessions drive the pane's aggregate.
           const sid = event.properties?.sessionID;
           if (!sid) break;
           const status = event.properties?.status;
           const statusType = typeof status === "string" ? status : status?.type;
           if (statusType === "idle") {
+            confirmSessionLocal(sid);
             noteSessionBusyState(sid, false);
           } else if (statusType === "busy" || statusType === "retry") {
             noteSessionBusyState(sid, true);
@@ -1285,19 +1396,22 @@ export const CMUXFeed = async (ctx) => {
         case "session.deleted": {
           const sid = event.properties?.info?.id;
           if (!sid) break;
+          const wasConfirmed = sessions.get(sid)?.confirmedLocal === true;
           sessions.delete(sid);
           // A deleted worker must not blank the spinner while its lead
           // (or any sibling) is still busy: recompute, don't overwrite.
           updateAggregateLifecycle();
-          pushTelemetry(base(sid, {
-            hook_event_name: "SessionEnd",
-          }));
+          if (wasConfirmed) {
+            pushTelemetry(base(sid, {
+              hook_event_name: "SessionEnd",
+            }));
+          }
           break;
         }
         case "todo.updated": {
           const sid = event.properties?.sessionID;
           if (!sid) break;
-          pushTelemetry(base(sid, {
+          queueTelemetryUntilConfirmed(sid, base(sid, {
             hook_event_name: "TodoWrite",
             tool_input: event.properties?.todos || [],
           }));
@@ -1326,6 +1440,8 @@ export const CMUXFeed = async (ctx) => {
           const requestId = props.id;
           if (!requestId) break;
           const sid = props.sessionID || "unknown";
+          // A blocking ask parks THIS process's tool call: ownership proof.
+          confirmSessionLocal(sid);
           const permission = firstString(props.permission, props.tool?.name) || "permission";
           const metadata = isObject(props.metadata) ? props.metadata : {};
           const frame = base(sid, {
@@ -1372,6 +1488,8 @@ export const CMUXFeed = async (ctx) => {
           const requestId = props.id;
           const sid = props.sessionID || "unknown";
           if (!requestId) break;
+          // A blocking ask parks THIS process's tool call: ownership proof.
+          confirmSessionLocal(sid);
           const questions = (props.questions || []).map((q, idx) => ({
             id: q.id || `q${idx}`,
             header: q.header || q.title,
