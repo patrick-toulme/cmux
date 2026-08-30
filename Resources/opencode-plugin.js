@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v8
+// cmux-feed-plugin-marker v9
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -92,6 +92,10 @@ const ACTIVITY_STATUS_INTERVAL_MS =
 // feed's needs-input entry (priority 0) outranks it while both are shown.
 const ACTIVITY_STATUS_KEY = "opencode.activity";
 const ACTIVITY_TEXT_MAX = 80;
+// Long-term-goal state for the sidebar row (engine `goal.updated` bus
+// events, emitted by the server on every goal transition). Priority -2
+// keeps it under both the needs-input line (0) and the activity line (-1).
+const GOAL_STATUS_KEY = "opencode.goal";
 
 // Opt-in stderr tracing (CMUX_FEED_DEBUG=1) for diagnosing the plugin on a
 // remote machine without a debugger: connection lifecycle, recovery timer,
@@ -218,6 +222,8 @@ export const CMUXFeed = async (ctx) => {
         // across goal-loop iterations and disconnects until a send lands.
         completionOwed: false,
         settleTimer: null,
+        // Latest goal.updated payload for this session (null = no goal).
+        goal: null,
         // The engine mirrors same-project sessions ACROSS processes: a
         // sibling agent in the same folder delivers its session.created,
         // session.status BUSY, and message parts onto this process's bus
@@ -852,6 +858,8 @@ export const CMUXFeed = async (ctx) => {
       // aggregate edge must write even if it matches the pre-drop state.
       lastLifecycleSent = null;
     }
+    // A fresh cmux instance also needs the goal line repainted.
+    repaintGoalLine();
     // Recovery is already seconds late, so owed completions of settled
     // (idle) sessions fire without re-waiting the settle grace. A send
     // that fails again keeps the debt for the next recovery.
@@ -989,6 +997,58 @@ export const CMUXFeed = async (ctx) => {
     );
   };
 
+  // One goal line per pane (the lead's; workers never carry goals). The
+  // wire value must never smuggle a flag token, and identical text never
+  // re-sends.
+  let lastGoalLineText = null;
+
+  const goalLineText = (goal) => {
+    if (!goal) return null;
+    const objective = normalizeText(goal.objective, 70);
+    switch (goal.status) {
+      case "active":
+        return objective ? `Goal: ${objective}` : "Goal active";
+      case "paused":
+        return goal.pausedBy === "agent" ? "Goal parked (watch armed)" : "Goal paused";
+      case "budget_limited":
+        return "Goal halted (token budget)";
+      case "time_limited":
+        return "Goal halted (time budget)";
+      default:
+        // complete (and anything unknown) drops the line: the toast is
+        // the completion signal, the row returns to normal.
+        return null;
+    }
+  };
+
+  const paintGoalLine = (goal) => {
+    if (!isRemote() || !remoteTarget) return;
+    const raw = goalLineText(goal);
+    const text = raw ? raw.replace(/--/g, "-") : null;
+    if (text === lastGoalLineText) return;
+    lastGoalLineText = text;
+    if (text) {
+      writeLine(
+        `set_status ${GOAL_STATUS_KEY} ${text} --priority=-2 ` +
+          `--tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+      );
+    } else {
+      writeLine(
+        `clear_status ${GOAL_STATUS_KEY} --tab=${remoteTarget.workspaceId}`
+      );
+    }
+  };
+
+  // Repaints the goal line for a fresh cmux instance (which knows nothing
+  // about this pane) from the lead's tracked state.
+  const repaintGoalLine = () => {
+    lastGoalLineText = null;
+    const bearer = [...sessions.values()].find(
+      (state) => state.confirmedLocal && !state.parentId && state.goal
+    );
+    if (bearer) paintGoalLine(bearer.goal);
+  };
+
   // The pane's lifecycle entry is ONE slot shared by every session in this
   // opencode process (the lead + all its subagents). Per-session busy/idle
   // events must therefore aggregate: the slot is "running" while ANY
@@ -1043,6 +1103,13 @@ export const CMUXFeed = async (ctx) => {
     // so a settle firing during downtime (whose deferred resolve races the
     // recovery flush toward the same toast) can never deliver twice.
     if (!state.completionOwed) return;
+    // A live goal HOLDS per-turn toasts: the loop idling between
+    // iterations (or parked on a watch) is not completion. The debt
+    // carries until the goal completes, which delivers its own toast
+    // and settles the debt.
+    if (state.goal && (state.goal.status === "active" || state.goal.status === "paused")) {
+      return;
+    }
     const subtitle = sanitizeNotifyField(state.lastUserMessage, 120);
     const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
     const send = (target) => {
@@ -1415,6 +1482,54 @@ export const CMUXFeed = async (ctx) => {
             hook_event_name: "TodoWrite",
             tool_input: event.properties?.todos || [],
           }));
+          break;
+        }
+        case "goal.updated": {
+          // Process-local by contract (BusEvent, never mirrored across
+          // sibling processes): both an ownership proof and the exact
+          // transition signal, so integrations never diff session rows.
+          const sid = firstString(event.properties?.sessionID);
+          if (!sid) break;
+          confirmSessionLocal(sid);
+          const state = sessionState(sid);
+          const previous = state.goal;
+          const goal = event.properties?.goal ?? null;
+          state.goal = goal;
+          paintGoalLine(goal);
+          if (!isRemote() || state.parentId) break;
+          const finished = goal?.status === "complete" && previous?.status !== "complete";
+          const halted =
+            (goal?.status === "budget_limited" || goal?.status === "time_limited")
+            && previous?.status !== goal.status;
+          if (!finished && !halted) break;
+          // The goal edge IS the true completion signal: it replaces the
+          // per-turn toast the active goal has been holding back.
+          const subtitle = sanitizeNotifyField(goal.objective, 120);
+          const body = finished
+            ? "Goal complete"
+            : goal.status === "budget_limited"
+              ? "Goal halted: token budget exhausted"
+              : "Goal halted: time budget elapsed";
+          if (finished) {
+            state.completionOwed = false;
+            if (state.settleTimer) {
+              clearTimeout(state.settleTimer);
+              state.settleTimer = null;
+            }
+          }
+          const deliver = (target) => {
+            writeLine(
+              `notify_target_async ${target.workspaceId} ${target.surfaceId} ` +
+                `OpenCode|${subtitle}|${body}|c=turn-complete;p=0`
+            );
+          };
+          if (remoteTarget) {
+            deliver(remoteTarget);
+          } else {
+            void resolveRemoteTarget().then((target) => {
+              if (target) deliver(target);
+            });
+          }
           break;
         }
         case "permission.replied":

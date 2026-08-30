@@ -553,6 +553,58 @@ if (received.some((l) => l.includes("sibling"))) {
 }
 received.length = 0;
 
+// Scenario 3j: goal-aware rows and toasts. goal.updated bus events are
+// process-local: attach proves the session ours and paints the row's
+// goal line; an ACTIVE goal holds per-turn completion toasts (a loop
+// idling between iterations is not completion); an agent park flips the
+// line without a toast; completion clears the line, delivers exactly ONE
+// goal toast, and settles the held turn debt.
+received.length = 0;
+const goalLine = (text) => `set_status opencode.goal ${text} --priority=-2 --tab=W1 --panel=S1`;
+const goalClear = "clear_status opencode.goal --tab=W1";
+await hooks.event({ event: { type: "goal.updated", properties: {
+  sessionID: "g1", goal: { status: "active", objective: "ship the goal feature" },
+} } });
+await waitFor(() => received.some((l) => l === goalLine("Goal: ship the goal feature")), 5000, "goal attach paints the row line");
+await hooks.event({ event: { type: "message.updated", properties: {
+  info: { id: "mg1", sessionID: "g1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "text", messageID: "mg1", sessionID: "g1", text: "do the goal work" },
+} } });
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "g1", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "goal turn paints running");
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "g1", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 500));
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`active goal must hold the per-turn toast: ${JSON.stringify(received)}`);
+}
+await hooks.event({ event: { type: "goal.updated", properties: {
+  sessionID: "g1", goal: { status: "paused", objective: "ship the goal feature", pausedBy: "agent", mode: "mini" },
+} } });
+await waitFor(() => received.some((l) => l === goalLine("Goal parked (watch armed)")), 5000, "agent park paints the parked line");
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`parking must not toast: ${JSON.stringify(received)}`);
+}
+received.length = 0;
+await hooks.event({ event: { type: "goal.updated", properties: {
+  sessionID: "g1", goal: { status: "complete", objective: "ship the goal feature" },
+} } });
+await waitFor(() => received.some((l) => l === goalClear), 5000, "completion clears the goal line");
+await waitFor(
+  () => received.filter((l) => l.includes("Goal complete") && l.includes("c=turn-complete")).length === 1,
+  5000,
+  "completion delivers exactly one goal toast"
+);
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.filter((l) => l.includes("c=turn-complete")).length !== 1) {
+  throw new Error(`held turn debt double-toasted after goal completion: ${JSON.stringify(received)}`);
+}
+await hooks.event({ event: { type: "goal.updated", properties: { sessionID: "g1", goal: null } } });
+await new Promise((resolve) => setTimeout(resolve, 200));
+received.length = 0;
+
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
 received.length = 0;
