@@ -110,9 +110,20 @@ enum SidebarWorkspaceRenderItem {
         groupsById: [UUID: WorkspaceGroup],
         remoteHostKeyByWorkspaceId: [UUID: String] = [:],
         collapsedRemoteHostKeys: Set<String> = [],
-        agentInboxItems: [SidebarAgentInboxItemRef] = []
+        agentInboxItems: [SidebarAgentInboxItemRef] = [],
+        visibleWorkspaceIds: Set<UUID>? = nil
     ) -> [SidebarWorkspaceRenderItem] {
         guard !tabs.isEmpty else { return [] }
+        // Search filtering: when a visible-id set is supplied, only member
+        // workspaces render as rows. Section and group headers surface
+        // lazily with their first surviving child so empty containers
+        // disappear, collapse state is ignored so a match inside a
+        // collapsed machine or group is always shown, and the inbox and
+        // reauthenticate chrome stay untouched.
+        let filtering = visibleWorkspaceIds != nil
+        func survives(_ workspaceId: UUID) -> Bool {
+            visibleWorkspaceIds?.contains(workspaceId) ?? true
+        }
         var items: [SidebarWorkspaceRenderItem] = []
         items.reserveCapacity(tabs.count + groupsById.count + agentInboxItems.count + 1)
         // The agent inbox leads the sidebar (t3code-style) and exists only
@@ -142,12 +153,31 @@ enum SidebarWorkspaceRenderItem {
         let hasMachineSections = tabs.contains { remoteHostKeyByWorkspaceId[$0.id] != nil }
         // One-press reauth for every machine in the window, pinned above the
         // first section (after the inbox: pending decisions outrank chrome).
+        // Derived from the UNFILTERED tabs: the ritual stays one click away
+        // while a search narrows the list.
         if let firstRemote = tabs.first(where: { remoteHostKeyByWorkspaceId[$0.id] != nil }) {
             items.append(.reauthenticate(firstWorkspaceId: firstRemote.id))
         }
         var currentSectionKey: String? = nil
         var nextRunIndexBySectionKey: [String: Int] = [:]
         var skipChildrenInSection = false
+        // While filtering, headers buffer here until a surviving child row
+        // proves their container non-empty.
+        var pendingSectionHeader: SidebarWorkspaceRenderItem? = nil
+        var pendingGroupHeader: (groupId: UUID, item: SidebarWorkspaceRenderItem, isCollapsed: Bool)? = nil
+        func flushPendingSectionHeader() {
+            guard let header = pendingSectionHeader else { return }
+            items.append(header)
+            pendingSectionHeader = nil
+        }
+        func flushPendingGroupHeader() {
+            guard let pending = pendingGroupHeader else { return }
+            flushPendingSectionHeader()
+            items.append(pending.item)
+            emittedHeaders.insert(pending.groupId)
+            collapsedByGroupId[pending.groupId] = pending.isCollapsed
+            pendingGroupHeader = nil
+        }
         for tab in tabs {
             let hostKey = remoteHostKeyByWorkspaceId[tab.id]
             let sectionKey = hostKey ?? localKey
@@ -157,20 +187,27 @@ enum SidebarWorkspaceRenderItem {
                 currentSectionKey = sectionKey
                 let runIndex = nextRunIndexBySectionKey[sectionKey, default: 0]
                 nextRunIndexBySectionKey[sectionKey] = runIndex + 1
-                if let hostKey {
-                    items.append(.remoteHostSection(
+                let header: SidebarWorkspaceRenderItem = if let hostKey {
+                    .remoteHostSection(
                         hostKey: hostKey,
                         firstWorkspaceId: tab.id,
                         runIndex: runIndex
-                    ))
+                    )
                 } else {
-                    items.append(.localMacSection(
+                    .localMacSection(
                         firstWorkspaceId: tab.id,
                         runIndex: runIndex
-                    ))
+                    )
                 }
-                // Every run of a section honors the one collapse decision.
-                skipChildrenInSection = collapsedRemoteHostKeys.contains(sectionKey)
+                if filtering {
+                    pendingSectionHeader = header
+                } else {
+                    items.append(header)
+                }
+                // Every run of a section honors the one collapse decision;
+                // an active search overrides collapse so matches show.
+                skipChildrenInSection = !filtering
+                    && collapsedRemoteHostKeys.contains(sectionKey)
             }
             // Remote tmux mirrors render under per-machine sections; a mirror
             // workspace never belongs to a workspace group, so host sectioning
@@ -178,7 +215,8 @@ enum SidebarWorkspaceRenderItem {
             if hostKey != nil {
                 lastEmittedGroupId = nil
                 skipChildrenUntilNextGroup = false
-                if !skipChildrenInSection {
+                if !skipChildrenInSection, survives(tab.id) {
+                    flushPendingSectionHeader()
                     items.append(.workspace(workspaceId: tab.id))
                 }
                 continue
@@ -195,29 +233,88 @@ enum SidebarWorkspaceRenderItem {
             if groupId != lastEmittedGroupId {
                 lastEmittedGroupId = groupId
                 skipChildrenUntilNextGroup = false
+                pendingGroupHeader = nil
                 if let groupId, let group = groupsById[groupId] {
                     if !emittedHeaders.contains(groupId) {
-                        items.append(.groupHeader(
+                        let header = SidebarWorkspaceRenderItem.groupHeader(
                             groupId: group.id,
                             anchorWorkspaceId: group.anchorWorkspaceId
-                        ))
-                        emittedHeaders.insert(groupId)
-                        collapsedByGroupId[groupId] = group.isCollapsed
+                        )
+                        if filtering {
+                            pendingGroupHeader = (group.id, header, group.isCollapsed)
+                        } else {
+                            items.append(header)
+                            emittedHeaders.insert(groupId)
+                            collapsedByGroupId[groupId] = group.isCollapsed
+                        }
                     }
                     // If legacy reorder paths ever leave a group's members in
                     // two runs, keep honoring the same collapse decision.
-                    skipChildrenUntilNextGroup = collapsedByGroupId[groupId] ?? false
+                    skipChildrenUntilNextGroup = !filtering
+                        && (collapsedByGroupId[groupId] ?? false)
                 }
             }
             // Anchor workspaces are represented exclusively by the group header.
             if let groupId, let group = groupsById[groupId], group.anchorWorkspaceId == tab.id {
+                // A matching anchor keeps its group header visible even when
+                // no other member matches.
+                if filtering, survives(tab.id) {
+                    flushPendingGroupHeader()
+                }
                 continue
             }
             if groupId == nil || !skipChildrenUntilNextGroup {
-                items.append(.workspace(workspaceId: tab.id))
+                if survives(tab.id) {
+                    flushPendingSectionHeader()
+                    if groupId != nil {
+                        flushPendingGroupHeader()
+                    }
+                    items.append(.workspace(workspaceId: tab.id))
+                }
             }
         }
         return items
+    }
+
+    /// Resolves a sidebar search query to the set of workspace ids that stay
+    /// visible, or `nil` when the query is empty (no filtering). Matching is
+    /// case- and diacritic-insensitive on the workspace title (the tmux
+    /// session name for remote mirrors); a machine-label match admits every
+    /// session of that machine so a hostname query shows the whole section.
+    /// The selected workspace always survives: keyboard cycling and CLI
+    /// selection must never land on a hidden row.
+    static func visibleWorkspaceIds(
+        matching query: String,
+        tabs: [Workspace],
+        remoteHostKeyByWorkspaceId: [UUID: String],
+        remoteHostLabelByHostKey: [String: String],
+        alwaysVisibleWorkspaceId: UUID? = nil
+    ) -> Set<UUID>? {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let matchingHostKeys = Set(
+            remoteHostLabelByHostKey
+                .filter { hostKey, label in
+                    label.localizedStandardContains(trimmed)
+                        || hostKey.localizedStandardContains(trimmed)
+                }
+                .map(\.key)
+        )
+        var visible = Set<UUID>()
+        for tab in tabs {
+            if tab.title.localizedStandardContains(trimmed) {
+                visible.insert(tab.id)
+                continue
+            }
+            if let hostKey = remoteHostKeyByWorkspaceId[tab.id],
+               matchingHostKeys.contains(hostKey) {
+                visible.insert(tab.id)
+            }
+        }
+        if let alwaysVisibleWorkspaceId, tabs.contains(where: { $0.id == alwaysVisibleWorkspaceId }) {
+            visible.insert(alwaysVisibleWorkspaceId)
+        }
+        return visible
     }
 
     /// Workspace ids represented by ordinary rows, in their rendered order.

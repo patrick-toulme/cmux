@@ -8,6 +8,12 @@ import SwiftUI
 /// Main-actor owner of the default sidebar table lifecycle and its AppKit interactions.
 @MainActor
 final class SidebarWorkspaceTableController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    /// Top content inset of the workspace list. The pinned search bar above
+    /// the scroll view owns the titlebar clearance, so the list itself only
+    /// keeps the row breathing padding.
+    static let listTopContentInset =
+        SidebarWorkspaceListMetrics.rowVerticalPadding
+
     private struct DeferredRowClick {
         let rowId: SidebarWorkspaceRenderItemID
         let modifiers: NSEvent.ModifierFlags
@@ -120,8 +126,11 @@ final class SidebarWorkspaceTableController: NSObject, NSTableViewDataSource, NS
         scrollView.contentView.drawsBackground = false
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollView.contentInsets = NSEdgeInsets(
-            top: SidebarWorkspaceScrollInsets.workspaceList.top
-                + SidebarWorkspaceListMetrics.rowVerticalPadding,
+            // The pinned sidebar search bar (real chrome above this scroll
+            // view) owns the titlebar clearance the old
+            // `workspaceList.top` inset used to reserve; only the row
+            // breathing padding remains inside the list.
+            top: Self.listTopContentInset,
             left: 0,
             bottom: SidebarWorkspaceScrollInsets.workspaceList.bottom
                 + SidebarWorkspaceListMetrics.rowVerticalPadding,
@@ -1754,9 +1763,7 @@ final class SidebarWorkspaceTableController: NSObject, NSTableViewDataSource, NS
                 to: container
             ).minY - 1
         } else {
-            y = container.bounds.height
-                - SidebarWorkspaceScrollInsets.workspaceList.top
-                - SidebarWorkspaceListMetrics.rowVerticalPadding
+            y = container.bounds.height - Self.listTopContentInset
         }
         let leadingIndent: CGFloat = {
             guard appKitDropIndicatorIncludesRowTargets,

@@ -11386,12 +11386,23 @@ struct VerticalTabsSidebar: View, Equatable {
             remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
             showsAttentionStates: tabItemSettings.details.showAgentActivity
         )
+        // Sidebar search: a non-empty query narrows workspace rows to title
+        // and machine-label matches (the selected workspace always stays).
+        let sidebarSearchQuery = isPresented ? tabManager.sidebarWorkspaceSearchQuery : ""
+        let sidebarSearchVisibleIds = SidebarWorkspaceRenderItem.visibleWorkspaceIds(
+            matching: sidebarSearchQuery,
+            tabs: tabs,
+            remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
+            remoteHostLabelByHostKey: remoteHostLabelByHostKey,
+            alwaysVisibleWorkspaceId: isPresented ? tabManager.selectedTabId : nil
+        )
         let workspaceRenderItems = SidebarWorkspaceRenderItem.renderItems(
             tabs: tabs,
             groupsById: workspaceGroupById,
             remoteHostKeyByWorkspaceId: remoteHostKeyByWorkspaceId,
             collapsedRemoteHostKeys: collapsedRemoteHostKeys,
-            agentInboxItems: agentInboxItems
+            agentInboxItems: agentInboxItems,
+            visibleWorkspaceIds: sidebarSearchVisibleIds
         )
         let numberedWorkspaceIndexById = SidebarWorkspaceRenderItem.numberedWorkspaceIndexById(
             from: workspaceRenderItems
@@ -11577,25 +11588,58 @@ struct VerticalTabsSidebar: View, Equatable {
     private func workspaceScrollArea(renderContext: WorkspaceListRenderContext) -> some View {
         // The AppKit NSTableView sidebar is opt-in while it soaks; default stays
         // on the SwiftUI list. The flag key is declared only in FeatureFlags.swift.
-        Group {
-            if featureFlags.isAppKitSidebarListEnabled {
-                AnyView(
-                    appKitWorkspaceScrollArea(renderContext: renderContext)
-                        // Push the flag value into the portal from its single
-                        // evaluation site (feature-flag lint one-file rule).
-                        .onAppear { WindowTerminalPortal.usesCoalescedAnchorFailsafe = true }
-                )
-            } else {
-                AnyView(
-                    SidebarUnreadSnapshotReader(source: sidebarUnread) { unreadSnapshot in
-                        legacyWorkspaceScrollArea(
-                            renderContext: renderContext,
-                            unreadSnapshot: unreadSnapshot
-                        )
+        VStack(spacing: 0) {
+            // The search bar is pinned chrome above the scrolling list,
+            // shared by both backends. The window drag strip and titlebar
+            // controls are hoisted onto this wrapper so they keep covering
+            // the window's top edge instead of the (now lower) list top.
+            if isPresented {
+                SidebarWorkspaceSearchBar(
+                    query: Binding(
+                        get: { tabManager.sidebarWorkspaceSearchQuery },
+                        set: { tabManager.setSidebarWorkspaceSearchQuery($0) }
+                    ),
+                    onDismiss: {
+                        tabManager.setSidebarWorkspaceSearchQuery("")
+                        tabManager.focusSelectedWorkspacePanel()
                     }
-                    .onAppear { WindowTerminalPortal.usesCoalescedAnchorFailsafe = false }
                 )
+                .padding(.top, sidebarTitlebarInteractionHeight + 2)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 2)
             }
+            Group {
+                if featureFlags.isAppKitSidebarListEnabled {
+                    AnyView(
+                        appKitWorkspaceScrollArea(renderContext: renderContext)
+                            // Push the flag value into the portal from its single
+                            // evaluation site (feature-flag lint one-file rule).
+                            .onAppear { WindowTerminalPortal.usesCoalescedAnchorFailsafe = true }
+                    )
+                } else {
+                    AnyView(
+                        SidebarUnreadSnapshotReader(source: sidebarUnread) { unreadSnapshot in
+                            legacyWorkspaceScrollArea(
+                                renderContext: renderContext,
+                                unreadSnapshot: unreadSnapshot
+                            )
+                        }
+                        .onAppear { WindowTerminalPortal.usesCoalescedAnchorFailsafe = false }
+                    )
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if isPresented {
+                // The sidebar top strip remains draggable and handles
+                // double-clicks with the standard titlebar action.
+                WindowDragHandleView()
+                    .frame(height: sidebarTitlebarInteractionHeight)
+                    .background(TitlebarDoubleClickMonitorView())
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if isPresented { minimalModeSidebarTitlebarControlsOverlay() }
         }
         // Workspace publisher observations and the snapshot refresh feed BOTH
         // list implementations, so they live on the shared parent. They
@@ -11711,16 +11755,6 @@ struct VerticalTabsSidebar: View, Equatable {
                     bottomHeight: sidebarBottomScrimHeight
                 )
             )
-            .overlay(alignment: .top) {
-                // The sidebar top strip remains draggable and handles
-                // double-clicks with the standard titlebar action.
-                WindowDragHandleView()
-                    .frame(height: sidebarTitlebarInteractionHeight)
-                    .background(TitlebarDoubleClickMonitorView())
-            }
-            .overlay(alignment: .topLeading) {
-                minimalModeSidebarTitlebarControlsOverlay()
-            }
             .overlay(alignment: .top) {
                 workspaceReorderDropOverlay(
                     renderContext: renderContext,
@@ -11904,22 +11938,13 @@ struct VerticalTabsSidebar: View, Equatable {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .mask(
                 SidebarWorkspaceScrollEdgeFadeMask(
-                    topHeight: sidebarTopScrimHeight,
+                    // The pinned search bar owns the old titlebar clearance;
+                    // rows now start near the table's top edge, so only a
+                    // slim fade remains (the tall scrim dimmed the first row).
+                    topHeight: SidebarWorkspaceListMetrics.rowVerticalPadding * 2,
                     bottomHeight: sidebarBottomScrimHeight
                 )
             )
-            .overlay(alignment: .top) {
-                if isPresented {
-                    // The sidebar top strip remains draggable and handles
-                    // double-clicks with the standard titlebar action.
-                    WindowDragHandleView()
-                        .frame(height: sidebarTitlebarInteractionHeight)
-                        .background(TitlebarDoubleClickMonitorView())
-                }
-            }
-            .overlay(alignment: .topLeading) {
-                if isPresented { minimalModeSidebarTitlebarControlsOverlay() }
-            }
             .background(Color.clear)
             .onChange(of: selectedWorkspaceId) { _, _ in
                 guard isPresented else { return }
@@ -17717,6 +17742,61 @@ private struct ExtensionSidebarBrowserStackDropDelegate: DropDelegate {
         ExtensionSidebarBrowserStackDropPlanner(orderedRows: orderedRows).preferredSectionId(
             targetWorkspaceId: targetWorkspaceId,
             indicator: indicator
+        )
+    }
+}
+
+/// Pinned search field above the workspace list: filters rows by title
+/// (the tmux session name for remote mirrors) or machine label. Chrome, not
+/// a render item, so it never scrolls away; shared by both sidebar list
+/// backends. Escape and the clear button empty the query and hand focus
+/// back to the selected workspace's terminal.
+private struct SidebarWorkspaceSearchBar: View {
+    @Binding var query: String
+    let onDismiss: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField(
+                String(localized: "sidebar.search.placeholder", defaultValue: "Search sessions"),
+                text: $query
+            )
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+            .focused($isFocused)
+            .onExitCommand {
+                isFocused = false
+                onDismiss()
+            }
+            .accessibilityLabel(String(
+                localized: "sidebar.search.a11y",
+                defaultValue: "Search workspaces by session name"
+            ))
+            if !query.isEmpty {
+                Button {
+                    isFocused = false
+                    onDismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(
+                    localized: "sidebar.search.clear",
+                    defaultValue: "Clear search"
+                ))
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
         )
     }
 }

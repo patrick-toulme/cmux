@@ -333,6 +333,147 @@ struct RemoteTmuxHostSectionRenderTests {
         #expect(!harness.manager.isRemoteTmuxHostCollapsed(hostKey: "hash-xxl"))
     }
 
+    // MARK: - Sidebar search filtering
+
+    @Test func searchFilterShowsOnlyMatchingSessionsAndTheirSections() throws {
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let alpha = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        alpha.title = "scan_xla"
+        let beta = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        beta.title = "kimi_k3"
+        let gamma = harness.addMirror(hostKey: "hash-xxl2", label: "xxl2")
+        gamma.title = "allreduce"
+
+        let visible = SidebarWorkspaceRenderItem.visibleWorkspaceIds(
+            matching: "scan",
+            tabs: harness.manager.tabs,
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            remoteHostLabelByHostKey: ["hash-xxl": "xxl", "hash-xxl2": "xxl2"]
+        )
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            collapsedRemoteHostKeys: [],
+            visibleWorkspaceIds: visible
+        )
+
+        // Sections without matches vanish entirely, including the Local Mac
+        // header for the non-matching local workspace; the reauthenticate
+        // chrome stays.
+        #expect(items.map { $0.id } == [
+            .reauthenticate(),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
+            .workspace(alpha.id),
+        ])
+        #expect(SidebarWorkspaceRenderItem.numberedWorkspaceIds(from: items) == [alpha.id])
+    }
+
+    @Test func searchFilterIgnoresCollapseAndKeepsTheSelectedWorkspace() throws {
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let alpha = harness.addMirror(hostKey: "hash-xxl", label: "xxl")
+        alpha.title = "scan_xla"
+        let beta = harness.addMirror(hostKey: "hash-xxl2", label: "xxl2")
+        beta.title = "kiloblox"
+        harness.manager.selectWorkspace(beta)
+        harness.manager.setRemoteTmuxHostCollapsed(hostKey: "hash-xxl", isCollapsed: true)
+
+        let visible = SidebarWorkspaceRenderItem.visibleWorkspaceIds(
+            matching: "scan",
+            tabs: harness.manager.tabs,
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            remoteHostLabelByHostKey: ["hash-xxl": "xxl", "hash-xxl2": "xxl2"],
+            alwaysVisibleWorkspaceId: beta.id
+        )
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: [:],
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            collapsedRemoteHostKeys: harness.manager.collapsedRemoteTmuxHostKeys,
+            visibleWorkspaceIds: visible
+        )
+
+        // The match inside the COLLAPSED machine renders anyway (search
+        // overrides collapse), and the selected workspace never hides.
+        #expect(items.map { $0.id } == [
+            .reauthenticate(),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl")),
+            .workspace(alpha.id),
+            .remoteHostSection(SidebarRemoteHostSectionIdentity.uuid(forHostKey: "hash-xxl2")),
+            .workspace(beta.id),
+        ])
+    }
+
+    @Test func hostLabelQueryAdmitsTheWholeMachine() throws {
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let alpha = harness.addMirror(hostKey: "hash-xxl", label: "cloudtop")
+        alpha.title = "scan_xla"
+        let beta = harness.addMirror(hostKey: "hash-xxl", label: "cloudtop")
+        beta.title = "kimi_k3"
+        let gamma = harness.addMirror(hostKey: "hash-xxl2", label: "xxl2")
+        gamma.title = "allreduce"
+
+        let visible = try #require(SidebarWorkspaceRenderItem.visibleWorkspaceIds(
+            matching: "cloudtop",
+            tabs: harness.manager.tabs,
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            remoteHostLabelByHostKey: ["hash-xxl": "cloudtop", "hash-xxl2": "xxl2"]
+        ))
+
+        // Every session of the matched machine survives; the other machine
+        // and the local workspace do not.
+        #expect(visible == Set([alpha.id, beta.id]))
+
+        // An empty or whitespace query means "no filtering at all".
+        #expect(SidebarWorkspaceRenderItem.visibleWorkspaceIds(
+            matching: "   ",
+            tabs: harness.manager.tabs,
+            remoteHostKeyByWorkspaceId: harness.hostKeyByWorkspaceId(),
+            remoteHostLabelByHostKey: [:]
+        ) == nil)
+    }
+
+    @Test func searchFilterKeepsGroupHeadersForMatchingMembers() throws {
+        let harness = try SectionHarness()
+        defer { harness.tearDown() }
+        let member = harness.manager.addTab(select: true)
+        member.title = "grouped_scan"
+        let other = harness.manager.addTab(select: true)
+        other.title = "unrelated"
+        let groupId = try #require(harness.manager.createWorkspaceGroup(
+            name: "Bugs",
+            childWorkspaceIds: [member.id, other.id]
+        ))
+        let groupsById = Dictionary(
+            uniqueKeysWithValues: harness.manager.workspaceGroups.map { ($0.id, $0) }
+        )
+        let group = try #require(groupsById[groupId])
+
+        let visible = SidebarWorkspaceRenderItem.visibleWorkspaceIds(
+            matching: "grouped_scan",
+            tabs: harness.manager.tabs,
+            remoteHostKeyByWorkspaceId: [:],
+            remoteHostLabelByHostKey: [:]
+        )
+        let items = SidebarWorkspaceRenderItem.renderItems(
+            tabs: harness.manager.tabs,
+            groupsById: groupsById,
+            visibleWorkspaceIds: visible
+        )
+
+        // The matching member keeps its group header for context; the
+        // non-matching sibling and ungrouped workspaces disappear. The
+        // anchor is represented by the header, so it contributes no row.
+        var expected: [SidebarWorkspaceRenderItemID] = [.group(group.id)]
+        if group.anchorWorkspaceId != member.id {
+            expected.append(.workspace(member.id))
+        }
+        #expect(items.map { $0.id } == expected)
+    }
+
     // MARK: - Harness
 
     @MainActor

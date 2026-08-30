@@ -2072,6 +2072,18 @@ class TabManager: ObservableObject {
         ) ?? [])
     }
 
+    /// Live sidebar search query filtering workspace rows by title (the
+    /// tmux session name for remote mirrors) or machine label. Published so
+    /// the sidebar's render-item projection rebuilds per keystroke;
+    /// transient by design (never persisted), and per window like the
+    /// sidebar it filters.
+    @Published private(set) var sidebarWorkspaceSearchQuery: String = ""
+
+    func setSidebarWorkspaceSearchQuery(_ query: String) {
+        guard sidebarWorkspaceSearchQuery != query else { return }
+        sidebarWorkspaceSearchQuery = query
+    }
+
     func isRemoteTmuxHostCollapsed(hostKey: String) -> Bool {
         collapsedRemoteTmuxHostKeys.contains(hostKey)
     }
