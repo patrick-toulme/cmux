@@ -415,6 +415,72 @@ if (received.some((l) => l.includes("c=turn-complete"))) {
   throw new Error(`watch-opened work minted a turn-complete: ${JSON.stringify(received)}`);
 }
 
+// Scenario 3g: the live activity ticker. Tool parts paint a throttled
+// "what is it doing" status line on the sidebar row; bursts coalesce to
+// the newest text at the interval boundary; identical text never
+// re-sends; the settled idle clears the line; and a parked blocking
+// decision clears it so the needs-input line stands alone.
+received.length = 0;
+const activityLine = (text) =>
+  `set_status opencode.activity ${text} --priority=-1 --tab=W1 --panel=S1`;
+const activityClearLine = "clear_status opencode.activity --tab=W1";
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", messageID: "mt1", tool: "bash", state: { status: "running", input: { command: "git status" } } },
+} } });
+await waitFor(() => received.some((l) => l === activityLine("bash: git status")), 5000, "first activity paints immediately");
+// A burst inside the throttle window coalesces to the LATEST text; the
+// intermediate tool never reaches the wire.
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", messageID: "mt2", tool: "read", state: { status: "running", input: { filePath: "/tmp/a.txt" } } },
+} } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", messageID: "mt3", tool: "edit", state: { status: "running", input: { filePath: "/tmp/b.txt" } } },
+} } });
+await waitFor(() => received.some((l) => l === activityLine("edit: /tmp/b.txt")), 5000, "trailing flush lands the newest activity");
+if (received.some((l) => l === activityLine("read: /tmp/a.txt"))) {
+  throw new Error(`throttle window leaked an intermediate activity send: ${JSON.stringify(received)}`);
+}
+// Identical text never re-sends once the window passes.
+received.length = 0;
+await new Promise((resolve) => setTimeout(resolve, 250));
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", messageID: "mt4", tool: "edit", state: { status: "running", input: { filePath: "/tmp/b.txt" } } },
+} } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.some((l) => l.startsWith("set_status opencode.activity"))) {
+  throw new Error(`identical activity text re-sent: ${JSON.stringify(received)}`);
+}
+// Completed tool states carry no activity.
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", messageID: "mt5", tool: "bash", state: { status: "completed", input: { command: "ls" } } },
+} } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.some((l) => l.includes("bash: ls"))) {
+  throw new Error(`completed tool state painted activity: ${JSON.stringify(received)}`);
+}
+// The settled idle clears the activity line alongside the lifecycle write.
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === activityClearLine), 5000, "settled idle clears the activity line");
+// A parked blocking decision clears the repainted activity line.
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", messageID: "mt6", tool: "bash", state: { status: "running", input: { command: "make deploy" } } },
+} } });
+await waitFor(() => received.some((l) => l === activityLine("bash: make deploy")), 5000, "activity repaints on the next turn");
+received.length = 0;
+const pendingAsk3g = hooks.event({ event: { type: "question.asked", properties: {
+  id: "q-3g", sessionID: "s1",
+  questions: [{ question: "Ship it?", options: [{ label: "Yes" }] }],
+} } });
+await waitFor(() => received.some((l) => l === activityClearLine), 5000, "parked decision clears the activity line");
+await hooks.event({ event: { type: "question.replied", properties: { sessionID: "s1", requestID: "q-3g" } } });
+await pendingAsk3g;
+// Settle s1 idle so scenario 4's quiet window stays quiet.
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
 received.length = 0;
@@ -471,6 +537,9 @@ def main() -> int:
         # Short idle grace so the debounced lifecycle writes land inside the
         # scenario windows instead of stretching the run by 2.5s per settle.
         env["CMUX_FEED_IDLE_GRACE_MS"] = "120"
+        # Tight activity-ticker window so the throttle/trailing-flush
+        # scenario runs in milliseconds instead of seconds.
+        env["CMUX_FEED_ACTIVITY_INTERVAL_MS"] = "200"
         # Same for the turn-complete settle (fires after the idle grace).
         env["CMUX_FEED_TURN_SETTLE_MS"] = "200"
         env["CMUX_FEED_DEBUG"] = "1"

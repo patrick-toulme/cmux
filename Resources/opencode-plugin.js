@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v6
+// cmux-feed-plugin-marker v7
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -79,6 +79,20 @@ const IDLE_LIFECYCLE_GRACE_MS =
 const TURN_SETTLE_GRACE_MS =
   Number(process.env.CMUX_FEED_TURN_SETTLE_MS || "") || 5_000;
 
+// Live activity ticker: while the agent works, the sidebar row shows what
+// it is doing right now (the running tool and its target), refreshed at a
+// calm cadence instead of only toasting at turn end. Sends are throttled
+// to this interval with a trailing flush, so bursts collapse to the latest
+// text and the row never strobes. Env override exists for tests.
+const ACTIVITY_STATUS_INTERVAL_MS =
+  Number(process.env.CMUX_FEED_ACTIVITY_INTERVAL_MS || "") || 3_000;
+// The sidebar status slot the ticker writes. Deliberately NOT the bare
+// agent key: non-allowlisted keys render as plain metadata text without
+// requiring a local agent PID binding (remote agents have none), and the
+// feed's needs-input entry (priority 0) outranks it while both are shown.
+const ACTIVITY_STATUS_KEY = "opencode.activity";
+const ACTIVITY_TEXT_MAX = 80;
+
 // Opt-in stderr tracing (CMUX_FEED_DEBUG=1) for diagnosing the plugin on a
 // remote machine without a debugger: connection lifecycle, recovery timer,
 // and resolve outcomes. Zero cost when unset.
@@ -134,6 +148,11 @@ export const CMUXFeed = async (ctx) => {
   let lastLifecycleSent = null;
   // Pending delayed idle write (see updateAggregateLifecycle's grace).
   let idleGraceTimer = null;
+  // Live activity ticker state (see sendActivityStatus).
+  let lastActivitySentText = null;
+  let lastActivitySentAt = 0;
+  let pendingActivityText = null;
+  let activityFlushTimer = null;
 
   // Identity is mutable: tmux-first with process env fallback, refreshed
   // after a socket drop so a new cmux instance's pins are picked up live.
@@ -799,6 +818,7 @@ export const CMUXFeed = async (ctx) => {
 
   const sendRemoteLifecycle = (state) => {
     if (!isRemote()) return;
+    if (state === "idle") clearActivityStatus();
     if (state === "running" && idleGraceTimer) {
       // A parked idle write must never land on top of a fresher running
       // one (the timer's own busy re-check covers tracked sessions, but
@@ -818,6 +838,84 @@ export const CMUXFeed = async (ctx) => {
     }
     writeLine(
       `set_agent_lifecycle opencode ${state} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+    );
+  };
+
+  // One-line "what is the agent doing right now" for the sidebar row.
+  // Derived from tool parts (concrete: the tool and its target); the pane
+  // shares one slot across every session in this process, so the newest
+  // running tool wins. The wire value must never smuggle a flag token.
+  const activityTextFromPart = (part) => {
+    if (!part || part.type !== "tool") return null;
+    const state = isObject(part.state) ? part.state : {};
+    if (state.status !== "running" && state.status !== "pending") return null;
+    const toolName = firstString(part.tool) || "tool";
+    const input = isObject(state.input) ? state.input : {};
+    const detail = firstString(
+      state.title,
+      input.description,
+      input.command,
+      input.filePath,
+      input.path,
+      input.pattern,
+      input.url,
+      input.prompt
+    );
+    const raw = detail ? `${toolName}: ${detail}` : toolName;
+    const normalized = normalizeText(raw, ACTIVITY_TEXT_MAX);
+    if (!normalized) return null;
+    return normalized.replace(/--/g, "-");
+  };
+
+  const writeActivityStatus = (text) => {
+    if (!isRemote() || !remoteTarget) return;
+    lastActivitySentText = text;
+    lastActivitySentAt = Date.now();
+    writeLine(
+      `set_status ${ACTIVITY_STATUS_KEY} ${text} --priority=-1 ` +
+        `--tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+    );
+  };
+
+  // Throttled with a trailing flush: the first update in a quiet window
+  // lands immediately, later ones coalesce to the newest text at the
+  // interval boundary. Identical text never re-sends (the app-side write
+  // dedupe would drop it anyway; skipping saves the socket line).
+  const noteActivity = (text) => {
+    if (!text || !isRemote()) return;
+    pendingActivityText = text;
+    if (activityFlushTimer) return;
+    const sinceLastSend = Date.now() - lastActivitySentAt;
+    if (sinceLastSend >= ACTIVITY_STATUS_INTERVAL_MS) {
+      if (pendingActivityText !== lastActivitySentText) {
+        writeActivityStatus(pendingActivityText);
+      }
+      return;
+    }
+    activityFlushTimer = setTimeout(() => {
+      activityFlushTimer = null;
+      if (pendingActivityText && pendingActivityText !== lastActivitySentText) {
+        writeActivityStatus(pendingActivityText);
+      }
+    }, ACTIVITY_STATUS_INTERVAL_MS - sinceLastSend);
+    if (typeof activityFlushTimer.unref === "function") activityFlushTimer.unref();
+  };
+
+  // Drops the row's activity line. Runs when the pane settles idle and
+  // when a blocking decision parks (the needs-input line takes over); a
+  // no-op while nothing was ever sent.
+  const clearActivityStatus = () => {
+    if (activityFlushTimer) {
+      clearTimeout(activityFlushTimer);
+      activityFlushTimer = null;
+    }
+    pendingActivityText = null;
+    if (lastActivitySentText === null) return;
+    lastActivitySentText = null;
+    lastActivitySentAt = 0;
+    if (!isRemote() || !remoteTarget) return;
+    writeLine(
+      `clear_status ${ACTIVITY_STATUS_KEY} --tab=${remoteTarget.workspaceId}`
     );
   };
 
@@ -1046,6 +1144,9 @@ export const CMUXFeed = async (ctx) => {
         event.surface_id = target.surfaceId;
       }
     }
+    // The row's needs-input line takes over while the decision parks; a
+    // stale "running tool" line under it would read as still working.
+    clearActivityStatus();
     const reply = new Promise((resolve) => {
       blockingPending.set(requestId, resolve);
       setTimeout(() => {
@@ -1115,6 +1216,10 @@ export const CMUXFeed = async (ctx) => {
     event: async ({ event }) => {
       await ensureIdentity();
       if (isRemote()) await resolveRemoteTarget();
+      if (event.type === "message.part.updated") {
+        const activity = activityTextFromPart(event.properties?.part);
+        if (activity) noteActivity(activity);
+      }
       const tracked = trackMessage(event);
       if (tracked) {
         if (tracked.hook_event_name === "UserPromptSubmit") {
