@@ -919,3 +919,312 @@ struct PiFeedDockOwnershipTests {
         return resultBox.value!
     }
 }
+
+/// Regression coverage for stranded needs-input overlays: field dogfood
+/// showed `cmux.feed.attention:opencode = needsInput` stuck on a mirror
+/// workspace with zero pending decisions, surviving indefinitely after the
+/// user answered the question in the agent's own UI.
+@Suite("Feed attention reconciliation", .serialized)
+struct FeedAttentionReconcileTests {
+    private static var attentionStatusKey: String {
+        FeedCoordinator.attentionStatusKey(forSource: "opencode")
+    }
+
+    /// The observed field state: a needs-input lifecycle entry and status
+    /// entry with NO overlay ledger entry and NO parked waiter. The agent's
+    /// `feed.conclude` (sent when the user answers in the agent's own UI)
+    /// must sweep it even though no waiter matches the request id.
+    @MainActor
+    @Test("External conclude sweeps a stranded needs-input overlay")
+    func externalConcludeSweepsStrandedOverlay() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
+            let panel = try workspace.seedPiFeedPanel()
+            workspace.setAgentLifecycle(
+                key: Self.attentionStatusKey,
+                panelId: panel.id,
+                lifecycle: .needsInput
+            )
+            workspace.statusEntries[Self.attentionStatusKey] = SidebarStatusEntry(
+                key: Self.attentionStatusKey,
+                value: FeedCoordinator.needsInputStatusValue,
+                icon: "bell.fill",
+                color: "#4C8DFF",
+                timestamp: Date()
+            )
+
+            FeedCoordinator.shared.concludeExternally(requestId: "que_never_tracked")
+
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey] == nil
+            )
+            #expect(workspace.statusEntries[Self.attentionStatusKey] == nil)
+        }
+    }
+
+    /// A live overlay backed by a parked waiter must survive reconciliation;
+    /// the same overlay must clear once the decision concludes externally.
+    @MainActor
+    @Test("Reconcile spares a waiter-backed overlay until its decision ends")
+    func reconcileSparesWaiterBackedOverlay() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
+            let panel = try workspace.seedPiFeedPanel()
+            let requestId = "que_waiter_backed"
+            let workspaceIdString = workspace.id.uuidString
+            let panelIdString = panel.id.uuidString
+            let ingested = expectIngested(requestId: requestId)
+            defer { FeedCoordinatorTestHooks.afterBlockingEventIngested = nil }
+
+            let park = Task.detached {
+                FeedCoordinator.shared.ingestBlocking(
+                    event: WorkstreamEvent(
+                        sessionId: "opencode-ses_waiter_backed",
+                        hookEventName: .askUserQuestion,
+                        source: "opencode",
+                        workspaceId: workspaceIdString,
+                        surfaceId: panelIdString,
+                        requestId: requestId
+                    ),
+                    waitTimeout: 5
+                )
+            }
+            await ingested.value
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey]
+                    == .needsInput
+            )
+
+            FeedCoordinator.shared.reconcileOrphanedAttentionOverlays()
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey]
+                    == .needsInput,
+                "a parked decision's overlay must survive the reconciler"
+            )
+
+            FeedCoordinator.shared.concludeExternally(requestId: requestId)
+            let result = await park.value
+            guard case .timedOut = result else {
+                Issue.record("expected the externally concluded park to exit via the timeout arm, got \(result)")
+                return
+            }
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey] == nil
+            )
+            #expect(workspace.statusEntries[Self.attentionStatusKey] == nil)
+        }
+    }
+
+    /// Two pushes reusing one request id, where the OLDER park times out
+    /// while the newer one still waits. The older exit must not evict the
+    /// newer waiter: pre-fix, the keyed removal took the newer registration
+    /// with it, so the external conclude found no waiter and the newer park
+    /// sat unreachable until its own wait-timeout expiry (a needs-input
+    /// stuck for minutes after the user already answered), and the overlay
+    /// ledger lost a conclude.
+    @MainActor
+    @Test("An expired duplicate park does not evict the newer waiter")
+    func expiredDuplicateParkDoesNotEvictNewerWaiter() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
+            let panel = try workspace.seedPiFeedPanel()
+            let requestId = "que_duplicate_push"
+            let workspaceIdString = workspace.id.uuidString
+            let panelIdString = panel.id.uuidString
+            let makeEvent = { @Sendable (session: String) in
+                WorkstreamEvent(
+                    sessionId: session,
+                    hookEventName: .askUserQuestion,
+                    source: "opencode",
+                    workspaceId: workspaceIdString,
+                    surfaceId: panelIdString,
+                    requestId: requestId
+                )
+            }
+
+            let firstIngested = expectIngested(requestId: requestId)
+            let olderPark = Task.detached {
+                FeedCoordinator.shared.ingestBlocking(
+                    event: makeEvent("opencode-ses_dup_a"),
+                    waitTimeout: 1.0
+                )
+            }
+            await firstIngested.value
+
+            let secondIngested = expectIngested(requestId: requestId)
+            defer { FeedCoordinatorTestHooks.afterBlockingEventIngested = nil }
+            let newerPark = Task.detached {
+                FeedCoordinator.shared.ingestBlocking(
+                    event: makeEvent("opencode-ses_dup_b"),
+                    waitTimeout: 8
+                )
+            }
+            await secondIngested.value
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey]
+                    == .needsInput
+            )
+
+            // Let the OLDER park run out while the newer one still waits.
+            _ = await olderPark.value
+
+            // The in-agent answer arrives: the newer waiter must still be
+            // registered, so the conclude settles it promptly instead of
+            // leaving it parked to wait-timeout expiry.
+            let concludedAt = ContinuousClock.now
+            FeedCoordinator.shared.concludeExternally(requestId: requestId)
+            let result = await newerPark.value
+            let settleSeconds = Double(
+                ContinuousClock.now.duration(to: concludedAt).components.seconds.magnitude
+            )
+            guard case .timedOut = result else {
+                Issue.record("expected the concluded park to exit via the timeout arm, got \(result)")
+                return
+            }
+            #expect(
+                settleSeconds < 3,
+                "the newer park must settle on the external conclude, not its own expiry"
+            )
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey] == nil,
+                "both parks exited; the needs-input overlay must be fully concluded"
+            )
+            #expect(workspace.statusEntries[Self.attentionStatusKey] == nil)
+        }
+    }
+
+    /// A new blocking decision must sweep strands left on other panels
+    /// before surfacing its own overlay.
+    @MainActor
+    @Test("Surfacing a new decision sweeps stale strands first")
+    func surfacingSweepsStaleStrands() async throws {
+        try await withAppContext { _, manager, workspace, _ in
+            FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
+            let strandedPanel = try workspace.seedPiFeedPanel()
+            let livePanel = try workspace.seedPiFeedPanel()
+            workspace.setAgentLifecycle(
+                key: Self.attentionStatusKey,
+                panelId: strandedPanel.id,
+                lifecycle: .needsInput
+            )
+
+            let target = try #require(
+                FeedCoordinator.shared.surfaceBlockingDecisionAttention(
+                    event: WorkstreamEvent(
+                        sessionId: "opencode-ses_sweeps_on_surface",
+                        hookEventName: .askUserQuestion,
+                        source: "opencode",
+                        workspaceId: workspace.id.uuidString,
+                        surfaceId: livePanel.id.uuidString,
+                        requestId: "que_sweeps_on_surface"
+                    ),
+                    resolved: (workspace.id, livePanel.id),
+                    tabManager: manager
+                )
+            )
+            defer { FeedCoordinator.shared.concludeBlockingDecisionAttention(target) }
+
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[strandedPanel.id]?[Self.attentionStatusKey]
+                    == nil,
+                "the stale strand must be swept when a fresh decision surfaces"
+            )
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[livePanel.id]?[Self.attentionStatusKey]
+                    == .needsInput
+            )
+        }
+    }
+
+    /// An unbound blocking frame (no workspace/surface ids) from a session
+    /// the agent-chat registry has seen bound frames for must still surface
+    /// attention on that session's sticky workspace.
+    @MainActor
+    @Test("Sticky registry binding attributes an unbound blocking frame")
+    func stickyRegistryBindingAttributesUnboundFrame() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
+            let panel = try workspace.seedPiFeedPanel()
+            let service = AgentChatTranscriptService()
+            let previousService = TerminalController.shared.agentChatTranscriptService
+            TerminalController.shared.agentChatTranscriptService = service
+            defer { TerminalController.shared.agentChatTranscriptService = previousService }
+
+            // A bound telemetry frame teaches the registry the binding.
+            service.noteHookEvent(WorkstreamEvent(
+                sessionId: "opencode-ses_sticky_bind",
+                hookEventName: .userPromptSubmit,
+                source: "opencode",
+                workspaceId: workspace.id.uuidString,
+                surfaceId: panel.id.uuidString
+            ))
+
+            let requestId = "que_sticky_unbound"
+            let ingested = expectIngested(requestId: requestId)
+            defer { FeedCoordinatorTestHooks.afterBlockingEventIngested = nil }
+            let park = Task.detached { @Sendable in
+                FeedCoordinator.shared.ingestBlocking(
+                    event: WorkstreamEvent(
+                        sessionId: "opencode-ses_sticky_bind",
+                        hookEventName: .askUserQuestion,
+                        source: "opencode",
+                        requestId: requestId
+                    ),
+                    waitTimeout: 5
+                )
+            }
+            await ingested.value
+
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey]
+                    == .needsInput,
+                "the sticky session binding must attribute the unbound frame"
+            )
+
+            FeedCoordinator.shared.concludeExternally(requestId: requestId)
+            _ = await park.value
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?[Self.attentionStatusKey] == nil
+            )
+        }
+    }
+
+    /// Awaits the blocking ingest registration for `requestId` via the
+    /// DEBUG test hook, without disturbing production surfacing.
+    @MainActor
+    private func expectIngested(requestId: String) -> Task<Void, Never> {
+        let ingestSignal = AsyncStream<Void>.makeStream()
+        FeedCoordinatorTestHooks.afterBlockingEventIngested = { _, ingestedRequestId in
+            guard ingestedRequestId == requestId else { return }
+            ingestSignal.continuation.yield()
+            ingestSignal.continuation.finish()
+        }
+        return Task {
+            for await _ in ingestSignal.stream { break }
+        }
+    }
+
+    @MainActor
+    private func withAppContext(
+        _ body: @MainActor (AppDelegate, TabManager, Workspace, UUID) async throws -> Void
+    ) async throws {
+        try await AppContextSerialGate.withExclusiveAppContext {
+            let previousAppDelegate = AppDelegate.shared
+            let appDelegate = AppDelegate()
+            let manager = TabManager(autoWelcomeIfNeeded: false)
+            AppDelegate.shared = appDelegate
+            appDelegate.tabManager = manager
+            appDelegate.didAttemptStartupSessionRestore = true
+            let windowID = appDelegate.registerMainWindowContextForTesting(tabManager: manager)
+            let workspace = manager.addWorkspace(select: true)
+            defer {
+                appDelegate.unregisterMainWindowContextForTesting(windowId: windowID)
+                manager.tabs.forEach { $0.teardownAllPanels() }
+                appDelegate.tabManager = nil
+                AppDelegate.shared = previousAppDelegate
+            }
+
+            try await body(appDelegate, manager, workspace, windowID)
+        }
+    }
+}

@@ -296,9 +296,18 @@ final class FeedCoordinator: @unchecked Sendable {
                     let liveSurfaceId = acceptedEvent.surfaceId.flatMap {
                         UUID(uuidString: $0.trimmingCharacters(in: .whitespacesAndNewlines))
                     }
+                    // Third binding fallback: the agent-chat registry keeps a
+                    // sticky session -> (workspace, surface) binding from every
+                    // earlier BOUND frame of the same session. A remote agent's
+                    // blocking push can arrive unbound when its plugin lost the
+                    // socket moments earlier (resolve raced the reconnect); the
+                    // question is real either way, and skipping attention left
+                    // it invisible in the sidebar.
                     let attentionTarget = liveOwnerId.map {
                         (ownerId: $0, surfaceId: liveSurfaceId)
                     } ?? resolvedAttentionTarget
+                        ?? TerminalController.shared.agentChatTranscriptService?
+                            .stickyAttentionBinding(for: acceptedEvent)
                     let attentionTabManager = attentionTarget.flatMap {
                         AppDelegate.shared?.tabManagerFor(tabId: $0.ownerId)
                             ?? AppDelegate.shared?.tabManagerFor(windowId: $0.ownerId)
@@ -309,16 +318,23 @@ final class FeedCoordinator: @unchecked Sendable {
                         tabManager: attentionTabManager
                     ) {
                         var shouldConcludeImmediately = false
+                        let overlayState = FeedCoordinator.shared.pendingAttentionStates[target]
                         FeedCoordinator.shared.waiterLock.lock()
                         if let registeredWaiter = FeedCoordinator.shared.waiters[requestId],
                            registeredWaiter.decision == nil {
                             registeredWaiter.attentionTarget = target
+                            // Pin the generation: this waiter's exit may only
+                            // debit the overlay it actually lit.
+                            registeredWaiter.attentionOverlayState = overlayState
                         } else {
                             // A reply raced attention publication. Its reply path
                             // could not observe this target, so balance it here.
                             shouldConcludeImmediately = true
                         }
                         FeedCoordinator.shared.waiterLock.unlock()
+                        // Mark the overlay waiter-backed so the reconciler may
+                        // reap it once no live waiter references it.
+                        FeedCoordinator.shared.markAttentionOverlayWaiterBacked(target)
                         if shouldConcludeImmediately {
                             FeedCoordinator.shared.concludeBlockingDecisionAttention(target)
                         }
@@ -335,10 +351,8 @@ final class FeedCoordinator: @unchecked Sendable {
             }
         }
         guard let acceptance else {
-            waiterLock.lock()
-            let attentionTarget = waiters.removeValue(forKey: requestId)?.attentionTarget
-            waiterLock.unlock()
-            concludeAttentionOnMain(attentionTarget)
+            let exited = removeWaiterIfCurrent(waiter, requestId: requestId)
+            concludeAttentionOnMain(exited.attentionTarget, expecting: exited.overlayState)
             cancelNotification(requestId: requestId)
             return IngestBlockingOutcome(result: .unavailable, authoritativeEvent: nil)
         }
@@ -348,14 +362,10 @@ final class FeedCoordinator: @unchecked Sendable {
         case .accepted(let event, let itemId):
             accepted = (event, itemId)
         case .notFound:
-            waiterLock.lock()
-            waiters.removeValue(forKey: requestId)
-            waiterLock.unlock()
+            _ = removeWaiterIfCurrent(waiter, requestId: requestId)
             return IngestBlockingOutcome(result: .notFound, authoritativeEvent: nil)
         case .unavailable:
-            waiterLock.lock()
-            waiters.removeValue(forKey: requestId)
-            waiterLock.unlock()
+            _ = removeWaiterIfCurrent(waiter, requestId: requestId)
             return IngestBlockingOutcome(result: .unavailable, authoritativeEvent: nil)
         }
         // If this is a blocking actionable event and the app window isn't
@@ -367,35 +377,67 @@ final class FeedCoordinator: @unchecked Sendable {
         let deadline: DispatchTime = .now() + max(remainingDecisionTimeout, 0)
         let waitResult = semaphore.wait(timeout: deadline)
 
-        waiterLock.lock()
-        let w = waiters.removeValue(forKey: requestId)
-        waiterLock.unlock()
+        // Exit strictly through THIS call's own waiter object. A second push
+        // reusing the same request id overwrites the registry slot, and a
+        // keyed removeValue here would evict the NEWER waiter while this
+        // exit reads state from the older one: the newer decision path then
+        // finds no waiter, its attention conclude never runs, and the
+        // needs-input overlay strands with no pending decision left.
+        let exited = removeWaiterIfCurrent(waiter, requestId: requestId)
 
         switch waitResult {
         case .success:
-            if let decision = w?.decision {
+            if let decision = exited.decision {
                 // `deliverReply` concludes the attention overlay on resolve.
                 return IngestBlockingOutcome(
                     result: .resolved(itemId: accepted.itemId, decision: decision),
                     authoritativeEvent: accepted.event
                 )
             }
-            cancelNotification(requestId: requestId)
-            concludeAttentionOnMain(w?.attentionTarget)
+            if exited.wasCurrent {
+                cancelNotification(requestId: requestId)
+            }
+            concludeAttentionOnMain(exited.attentionTarget, expecting: exited.overlayState)
             expireTimedOutItem(accepted.itemId)
             return IngestBlockingOutcome(
                 result: .timedOut(itemId: accepted.itemId),
                 authoritativeEvent: accepted.event
             )
         case .timedOut:
-            cancelNotification(requestId: requestId)
-            concludeAttentionOnMain(w?.attentionTarget)
+            if exited.wasCurrent {
+                cancelNotification(requestId: requestId)
+            }
+            concludeAttentionOnMain(exited.attentionTarget, expecting: exited.overlayState)
             expireTimedOutItem(accepted.itemId)
             return IngestBlockingOutcome(
                 result: .timedOut(itemId: accepted.itemId),
                 authoritativeEvent: accepted.event
             )
         }
+    }
+
+    /// Removes `waiter` from the registry only while it is still the
+    /// registered entry for `requestId`, and returns its final decision and
+    /// attention binding read under the same lock hold. The identity check
+    /// keeps one exiting park from evicting a newer waiter that reused the
+    /// same request id, and a replaced waiter reports `wasCurrent == false`
+    /// so its exit does not cancel the newer decision's banner.
+    private func removeWaiterIfCurrent(
+        _ waiter: PendingWaiter,
+        requestId: String
+    ) -> (
+        decision: WorkstreamDecision?,
+        attentionTarget: FeedAttentionTarget?,
+        overlayState: AttentionOverlayState?,
+        wasCurrent: Bool
+    ) {
+        waiterLock.lock()
+        defer { waiterLock.unlock() }
+        let wasCurrent = waiters[requestId] === waiter
+        if wasCurrent {
+            waiters.removeValue(forKey: requestId)
+        }
+        return (waiter.decision, waiter.attentionTarget, waiter.attentionOverlayState, wasCurrent)
     }
 
     private func enqueueZeroWaitAcceptance(
@@ -461,12 +503,18 @@ final class FeedCoordinator: @unchecked Sendable {
     }
 
     /// Concludes an attention overlay (if any) on the main actor, hopping if
-    /// called from the socket worker thread.
-    private func concludeAttentionOnMain(_ target: FeedAttentionTarget?) {
+    /// called from the socket worker thread. `expecting` pins the overlay
+    /// generation this caller helped light: a stale exit (its overlay was
+    /// already reaped and the slot re-created by a newer decision) must not
+    /// debit the new generation's refcount.
+    private func concludeAttentionOnMain(
+        _ target: FeedAttentionTarget?,
+        expecting expected: AttentionOverlayState? = nil
+    ) {
         guard let target else { return }
-        let conclude: @Sendable () -> Void = { [target] in
+        let conclude: @Sendable () -> Void = { [target, expected] in
             MainActor.assumeIsolated {
-                FeedCoordinator.shared.concludeBlockingDecisionAttention(target)
+                FeedCoordinator.shared.concludeBlockingDecisionAttention(target, expecting: expected)
             }
         }
         if Thread.isMainThread {
@@ -494,6 +542,26 @@ final class FeedCoordinator: @unchecked Sendable {
         waiterLock.unlock()
         if !hasUndecidedWaiter {
             cancelNotification(requestId: requestId)
+            // No waiter is left to conclude an overlay, yet the agent just
+            // reported this decision resolved: the exact moment a stranded
+            // needs-input overlay becomes user-visible damage. Sweep now so
+            // an orphan clears when the user answers, not at app restart.
+            scheduleAttentionReconcileOnMain()
+        }
+    }
+
+    /// Runs the orphaned-overlay reconciler on the main actor, hopping if
+    /// called from the socket worker thread.
+    private func scheduleAttentionReconcileOnMain() {
+        let reconcile: @Sendable () -> Void = {
+            MainActor.assumeIsolated {
+                FeedCoordinator.shared.reconcileOrphanedAttentionOverlays()
+            }
+        }
+        if Thread.isMainThread {
+            reconcile()
+        } else {
+            DispatchQueue.main.async(execute: reconcile)
         }
     }
 
@@ -502,6 +570,7 @@ final class FeedCoordinator: @unchecked Sendable {
     func deliverReply(requestId: String, decision: WorkstreamDecision) {
         waiterLock.lock()
         let attentionTarget = waiters[requestId]?.attentionTarget
+        let attentionOverlayState = waiters[requestId]?.attentionOverlayState
         if let waiter = waiters[requestId] {
             waiter.decision = decision
             waiter.semaphore.signal()
@@ -511,7 +580,14 @@ final class FeedCoordinator: @unchecked Sendable {
         // The user decided: conclude the needs-input overlay so the agent's
         // running/idle state shows through (refcounted so an overlapping
         // decision on the same panel keeps it lit until it too concludes).
-        concludeAttentionOnMain(attentionTarget)
+        // A reply with no surfaced target still sweeps: this is a decision
+        // boundary, and an unattributed reply is exactly when a stale
+        // overlay would otherwise linger unnoticed.
+        if attentionTarget != nil {
+            concludeAttentionOnMain(attentionTarget, expecting: attentionOverlayState)
+        } else {
+            scheduleAttentionReconcileOnMain()
+        }
 
         let resolve: @Sendable () -> Void = { [requestId, decision] in
             MainActor.assumeIsolated {
@@ -620,7 +696,7 @@ extension FeedCoordinator {
     /// Keeping this transient overlay separate from the agent's own slot makes
     /// concurrent hook updates and overlapping Feed decisions independent.
     static func attentionStatusKey(forSource source: String) -> String {
-        "cmux.feed.attention:\(lifecycleStatusKey(forSource: source))"
+        "\(attentionStatusKeyPrefix)\(lifecycleStatusKey(forSource: source))"
     }
 
     /// The localized "Needs input" sidebar status the overlay sets.
@@ -664,6 +740,10 @@ extension FeedCoordinator {
         tabManager: TabManager?
     ) -> FeedAttentionTarget? {
         guard Self.isBlockingDecisionEvent(event.hookEventName) else { return nil }
+
+        // Sweep strands before adding the new overlay: a fresh question on a
+        // workspace with a stale needs-input entry must not stack on top of it.
+        reconcileOrphanedAttentionOverlays()
 
         #if DEBUG
         if let observer = FeedCoordinatorTestHooks.attentionSurfaceObserver {
@@ -783,11 +863,41 @@ extension FeedCoordinator {
     /// running/idle/needs-input state.
     @MainActor
     func concludeBlockingDecisionAttention(_ target: FeedAttentionTarget) {
+        concludeBlockingDecisionAttention(target, expecting: nil)
+    }
+
+    /// Refcount-decrementing conclude with an optional generation pin: when
+    /// `expected` is set and the ledger's current state object for `target`
+    /// differs, this conclude belongs to an overlay that was already
+    /// finished (and possibly re-created by a newer decision), so it no-ops.
+    @MainActor
+    fileprivate func concludeBlockingDecisionAttention(
+        _ target: FeedAttentionTarget,
+        expecting expected: AttentionOverlayState?
+    ) {
         guard let attentionState = pendingAttentionStates[target] else { return }
+        if let expected, attentionState !== expected { return }
         if attentionState.count > 1 {
             attentionState.count -= 1
             return
         }
+        finishAttentionOverlay(target: target, state: attentionState)
+        // The overlay ledger just moved; sweep for strands so a needs-input
+        // entry orphaned by any earlier imbalance heals on the next decision
+        // boundary instead of sticking until app restart.
+        reconcileOrphanedAttentionOverlays()
+    }
+
+    /// Fully clears one overlay: removes its ledger entry, clears the
+    /// Feed-owned lifecycle slot, and clears the status entry unless another
+    /// pending decision in the same workspace still shares it. This is the
+    /// terminal half of ``concludeBlockingDecisionAttention(_:)``; the
+    /// reconciler calls it directly for overlays with no live waiter left.
+    @MainActor
+    private func finishAttentionOverlay(
+        target: FeedAttentionTarget,
+        state attentionState: AttentionOverlayState
+    ) {
         pendingAttentionStates.removeValue(forKey: target)
         NotificationCenter.default.post(
             name: WorkspaceActivitySortCoordinator.attentionInputsDidChange,
@@ -797,15 +907,29 @@ extension FeedCoordinator {
 
         // Lifecycle is per-panel, so clearing this Feed-owned slot is safe even
         // if another panel or the agent's own slot still needs input.
+        let didClear: Bool
         if let panelId = target.panelId {
-            owner.clearAgentLifecycle(key: target.statusKey, panelId: panelId)
+            didClear = owner.clearAgentLifecycle(key: target.statusKey, panelId: panelId)
         } else {
             // Workspace-scoped registration wrote the needs-input slot under
             // the then-focused panel (setAgentLifecycle's fallback). Clear the
             // Feed-owned key across every panel, or the slot strands and the
             // sidebar shows "needs input" forever after the decision resolves.
-            owner.clearAgentLifecycle(key: target.statusKey, panelId: nil)
+            didClear = owner.clearAgentLifecycle(key: target.statusKey, panelId: nil)
         }
+        #if DEBUG
+        if !didClear, target.panelId != nil {
+            // Forensics for a strand class: the overlay's entry was not where
+            // the target said (panel closed, entry moved). The reconciler's
+            // sweep below is what actually heals it.
+            cmuxDebugLog(
+                "feed.attention.conclude.missedClear owner=\(owner.id.uuidString.prefix(5)) "
+                + "panel=\(target.panelId?.uuidString.prefix(5) ?? "nil") key=\(target.statusKey)"
+            )
+        }
+        #else
+        _ = didClear
+        #endif
 
         // Workspace status is shared across panels (keyed only by statusKey),
         // so preserve it while another panel in that workspace is pending.
@@ -828,6 +952,103 @@ extension FeedCoordinator {
         }
         if !sharedWorkspaceStatusStillPending {
             owner.clearStatusEntry(key: target.statusKey, panelId: target.panelId)
+        }
+    }
+
+    /// Marks the overlay for `target` as backed by a parked waiter, making it
+    /// eligible for the reconciler's no-live-waiter cleanup.
+    @MainActor
+    func markAttentionOverlayWaiterBacked(_ target: FeedAttentionTarget) {
+        pendingAttentionStates[target]?.expectsWaiterBacking = true
+    }
+
+    /// The reserved status/lifecycle key namespace the Feed attention overlay
+    /// writes under (see ``attentionStatusKey(forSource:)``).
+    static let attentionStatusKeyPrefix = "cmux.feed.attention:"
+
+    static func isAttentionStatusKey(_ key: String) -> Bool {
+        key.hasPrefix(attentionStatusKeyPrefix)
+    }
+
+    /// Self-healing pass over the needs-input overlay state. Two phases:
+    ///
+    /// 1. Any overlay in the ledger with NO live undecided waiter bound to it
+    ///    is force-finished. Every legitimate overlay is backed by a parked
+    ///    `feed.push` waiter; once that waiter is gone, nothing else can ever
+    ///    conclude the overlay.
+    /// 2. Any `cmux.feed.attention:*` lifecycle/status entry on a live
+    ///    workspace that the (post-phase-1) ledger does not account for is
+    ///    cleared. This heals entries stranded by ledger imbalances observed
+    ///    in the field (needs-input stuck with zero pending decisions), no
+    ///    matter which path orphaned them.
+    ///
+    /// Runs on decision boundaries (conclude, reply, external conclude, new
+    /// blocking ingest), so a strand heals the next time the user or agent
+    /// touches any blocking decision, and costs nothing in steady state.
+    ///
+    /// - Parameters:
+    ///   - workspaceOverride: test seam; live enumeration when nil.
+    @MainActor
+    func reconcileOrphanedAttentionOverlays(workspaces workspaceOverride: [Workspace]? = nil) {
+        waiterLock.lock()
+        let liveTargets = Set(waiters.values.compactMap { waiter in
+            waiter.decision == nil ? waiter.attentionTarget : nil
+        })
+        waiterLock.unlock()
+
+        for (target, state) in pendingAttentionStates
+        where state.expectsWaiterBacking && !liveTargets.contains(target) {
+            #if DEBUG
+            cmuxDebugLog(
+                "feed.attention.reconcile.finishUnbacked key=\(target.statusKey) "
+                + "panel=\(target.panelId?.uuidString.prefix(5) ?? "nil")"
+            )
+            #endif
+            finishAttentionOverlay(target: target, state: state)
+        }
+
+        // Ledger entries that survived phase 1 legitimately account for their
+        // lifecycle/status slots; everything else under the reserved prefix is
+        // a strand.
+        var backedPanelKeys = Set<FeedAttentionTarget>()
+        var backedOwnerKeys: [UUID: Set<String>] = [:]
+        for (target, state) in pendingAttentionStates {
+            switch target {
+            case .panel:
+                backedPanelKeys.insert(target)
+                let owner = liveAttentionOwner(for: target, fallback: state.fallbackOwner)
+                backedOwnerKeys[owner.id, default: []].insert(target.statusKey)
+            case .workspace(let ownerId, let statusKey), .dock(let ownerId, let statusKey):
+                backedOwnerKeys[ownerId, default: []].insert(statusKey)
+            }
+        }
+
+        let workspaces = workspaceOverride ?? AppDelegate.shared?.allLiveWorkspaces() ?? []
+        for workspace in workspaces {
+            let ownerBackedKeys = backedOwnerKeys[workspace.id] ?? []
+            for (panelId, states) in workspace.agentLifecycleStatesByPanelId {
+                for key in states.keys where Self.isAttentionStatusKey(key) {
+                    guard !ownerBackedKeys.contains(key),
+                          !backedPanelKeys.contains(.panel(id: panelId, statusKey: key)) else {
+                        continue
+                    }
+                    #if DEBUG
+                    cmuxDebugLog(
+                        "feed.attention.reconcile.sweep workspace=\(workspace.id.uuidString.prefix(5)) "
+                        + "panel=\(panelId.uuidString.prefix(5)) key=\(key)"
+                    )
+                    #endif
+                    workspace.clearAgentLifecycle(key: key, panelId: panelId)
+                }
+            }
+            for key in workspace.statusEntries.keys where Self.isAttentionStatusKey(key) {
+                let lifecycleStillPresent = workspace.agentLifecycleStatesByPanelId.values.contains {
+                    $0[key] != nil
+                }
+                if !lifecycleStillPresent, !ownerBackedKeys.contains(key) {
+                    workspace.statusEntries.removeValue(forKey: key)
+                }
+            }
         }
     }
 
@@ -977,9 +1198,17 @@ extension FeedCoordinator {
 }
 
 @MainActor
-private final class AttentionOverlayState {
+/// Mutated only on the main actor; waiters hold a reference across threads
+/// purely for identity comparison at conclude time, hence `@unchecked`.
+private final class AttentionOverlayState: @unchecked Sendable {
     var count: Int
     var fallbackOwner: ControlSidebarPanelOwner
+    /// True once a parked `feed.push` waiter bound itself to this overlay.
+    /// Only such overlays are eligible for the reconciler's no-live-waiter
+    /// force-finish: overlays surfaced through the direct API (no waiter
+    /// involved, e.g. window-activation attention in tests) are concluded
+    /// manually by their caller and must survive reconciliation.
+    var expectsWaiterBacking = false
 
     init(owner: ControlSidebarPanelOwner) {
         self.count = 0
@@ -996,6 +1225,9 @@ private final class PendingWaiter: @unchecked Sendable {
     /// needs-input overlay is cleared exactly once. Guarded by
     /// `FeedCoordinator.waiterLock`.
     var attentionTarget: FeedAttentionTarget?
+    /// The overlay generation `attentionTarget` refers to, so an exit whose
+    /// overlay was already reaped and re-created cannot debit the newer one.
+    var attentionOverlayState: AttentionOverlayState?
 
     init(semaphore: DispatchSemaphore) {
         self.semaphore = semaphore

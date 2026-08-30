@@ -5906,6 +5906,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return nil
     }
 
+    /// Every live workspace across every main window, deduplicated by
+    /// identity (a workspace mirrored into two windows is one workspace).
+    func allLiveWorkspaces() -> [Workspace] {
+        var seen = Set<UUID>()
+        var result: [Workspace] = []
+        for ctx in mainWindowContexts.values {
+            for ws in ctx.tabManager.tabs where seen.insert(ws.id).inserted {
+                result.append(ws)
+            }
+        }
+        for route in recoverableMainWindowRoutes() {
+            guard let manager = route.tabManager else { continue }
+            for ws in manager.tabs where seen.insert(ws.id).inserted {
+                result.append(ws)
+            }
+        }
+        return result
+    }
+
     /// Resolve the workspace that currently owns a panel/surface ID.
     /// Prefer the provided workspace when available, then fall back to global lookup.
     func workspaceContainingPanel(

@@ -79,6 +79,25 @@ final class AgentChatSessionRegistry {
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
+    /// Sticky `(workspace, surface)` binding for the session behind a hook
+    /// event, remembered from that session's earlier BOUND frames
+    /// (`noteHookEvent` only overwrites the binding when a frame carries
+    /// ids). A remote agent's blocking push can arrive unbound when its
+    /// plugin raced a socket reconnect; this lookup lets the Feed attention
+    /// path still attribute the decision to the pane the session lives in.
+    /// Pure lookup: no record mutation, no canonicalization side effects.
+    func stickyAttentionBinding(
+        for event: WorkstreamEvent
+    ) -> (ownerId: UUID, surfaceId: UUID?)? {
+        let hookSessionID = Self.normalizedSessionID(event.sessionId, source: event.source)
+        guard let record = records[hookSessionID],
+              let workspaceIDString = record.workspaceID,
+              let workspaceId = UUID(uuidString: workspaceIDString) else {
+            return nil
+        }
+        return (workspaceId, record.surfaceID.flatMap { UUID(uuidString: $0) })
+    }
+
     /// Reconciles the session's exit watcher with its current pid. Called from
     /// every record-store path, so a watcher exists exactly while a session has
     /// a live pid and is cancelled when the pid changes, clears, or the session

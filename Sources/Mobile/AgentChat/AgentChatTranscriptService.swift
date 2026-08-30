@@ -297,6 +297,14 @@ final class AgentChatTranscriptService {
     /// Ingests one hook event (called from the socket dispatch path).
     ///
     /// - Parameter event: The hook event.
+    /// Passthrough to ``AgentChatSessionRegistry/stickyAttentionBinding(for:)``
+    /// for the Feed attention fallback.
+    func stickyAttentionBinding(
+        for event: WorkstreamEvent
+    ) -> (ownerId: UUID, surfaceId: UUID?)? {
+        registry.stickyAttentionBinding(for: event)
+    }
+
     func noteHookEvent(_ event: WorkstreamEvent) {
         let record = registry.noteHookEvent(event)
         // A session (re)starting or receiving a prompt is the bounded
