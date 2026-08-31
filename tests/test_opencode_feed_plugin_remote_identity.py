@@ -605,6 +605,70 @@ await hooks.event({ event: { type: "goal.updated", properties: { sessionID: "g1"
 await new Promise((resolve) => setTimeout(resolve, 200));
 received.length = 0;
 
+// Scenario 3k: origin-tagged engines. external:true deliveries are
+// authoritative provenance: sibling traffic drops wholesale (no running
+// paint, no telemetry or blocking push, no activity, no goal line); the
+// first tagged delivery flips the plugin into tagged mode where UNTAGGED
+// events confirm ownership instantly (no first-delta wait); and a worker
+// child process is adopted through its confirmed parent so its tagged
+// busy/idle still drives the pane.
+received.length = 0;
+await hooks.event({ event: { type: "session.created", external: true, properties: {
+  info: { id: "x1", directory: "/tmp/x" },
+} } });
+await hooks.event({ event: { type: "session.status", external: true, properties: { sessionID: "x1", status: { type: "busy" } } } });
+await hooks.event({ event: { type: "message.updated", external: true, properties: {
+  info: { id: "mx1", sessionID: "x1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", external: true, properties: {
+  part: { type: "text", messageID: "mx1", sessionID: "x1", text: "sibling tagged prompt" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", external: true, properties: {
+  part: { type: "tool", sessionID: "x1", messageID: "mx2", tool: "bash", state: { status: "running", input: { command: "tagged sibling job" } } },
+} } });
+await hooks.event({ event: { type: "question.asked", external: true, properties: {
+  id: "q-x1", sessionID: "x1",
+  questions: [{ question: "Sibling?", options: [{ label: "Yes" }] }],
+} } });
+await hooks.event({ event: { type: "goal.updated", external: true, properties: {
+  sessionID: "x1", goal: { status: "active", objective: "sibling goal" },
+} } });
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.some((l) => l === runningLine)) {
+  throw new Error(`tagged sibling busy painted this pane running: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.startsWith("v2:feed.push"))) {
+  throw new Error(`tagged sibling leaked telemetry or a blocking push: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.includes("tagged sibling job"))) {
+  throw new Error(`tagged sibling tool painted activity: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.includes("opencode.goal"))) {
+  throw new Error(`tagged sibling goal painted the goal line: ${JSON.stringify(received)}`);
+}
+
+// Untagged events now confirm instantly: a fresh session paints running
+// straight from its busy edge, no streaming delta needed.
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s11", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "untagged busy confirms instantly in tagged mode");
+
+// Worker child process: adopted through its confirmed parent; its tagged
+// busy holds the pane running after the lead settles, its tagged idle
+// releases it.
+await hooks.event({ event: { type: "session.created", external: true, properties: {
+  info: { id: "w11", parentID: "s11", directory: "/tmp/x" },
+} } });
+await hooks.event({ event: { type: "session.status", external: true, properties: { sessionID: "w11", status: { type: "busy" } } } });
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s11", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.some((l) => l === idleLine)) {
+  throw new Error(`adopted worker busy must hold the pane running: ${JSON.stringify(received)}`);
+}
+await hooks.event({ event: { type: "session.status", external: true, properties: { sessionID: "w11", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "adopted worker idle settles the pane");
+received.length = 0;
+
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
 received.length = 0;

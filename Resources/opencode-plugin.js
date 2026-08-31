@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v9
+// cmux-feed-plugin-marker v10
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -147,6 +147,16 @@ export const CMUXFeed = async (ctx) => {
   // Message ids whose typed text already opened a turn (streaming
   // re-delivers a growing part; one prompt = one UserPromptSubmit).
   const promptedMessageIds = new Set();
+  // Newer engines stamp `external: true` on every bus delivery republished
+  // from the cross-process event log (a same-folder sibling process, a
+  // worker child process, a worktree-isolated instance). Once one tagged
+  // delivery is seen, provenance is authoritative: untagged events are
+  // definitionally OURS (instant ownership, no first-token wait) and
+  // tagged events are foreign unless the session was already adopted.
+  // Engines without the marker fall back to the local-only-event-type
+  // heuristics (deltas, idle edges, blocking asks).
+  let engineTagsOrigin = false;
+
   // The last lifecycle state actually written, so aggregate updates only
   // write edges. Reset on every reconnect (a fresh cmux must be repainted).
   let lastLifecycleSent = null;
@@ -1371,9 +1381,43 @@ export const CMUXFeed = async (ctx) => {
     event: async ({ event }) => {
       await ensureIdentity();
       if (isRemote()) await resolveRemoteTarget();
-      if (event.type === "message.part.delta") {
+      // Session id across the event shapes this plugin consumes. Order
+      // matters: message.updated carries info.sessionID (info.id is the
+      // MESSAGE id) while session.* carry the session as info.id.
+      const eventSessionId = () => firstString(
+        event.properties?.sessionID,
+        event.properties?.info?.sessionID,
+        event.properties?.info?.id,
+        event.properties?.part?.sessionID
+      );
+      const external = event.external === true;
+      if (external && !engineTagsOrigin) engineTagsOrigin = true;
+      if (!external && engineTagsOrigin) {
+        // Tagged engine and no tag on this delivery: published by this
+        // process, so the session is ours by definition.
+        const sid = eventSessionId();
+        if (sid) confirmSessionLocal(sid);
+      }
+      if (external) {
+        // Foreign delivery. Process it only for sessions this pane
+        // already owns (a worker child process adopted through its
+        // confirmed parent), for the adoption edge itself, or for
+        // deletion cleanup. Everything else is a sibling pane's
+        // traffic: acting on it painted every same-folder pane as
+        // running and surfaced questions on the wrong pane.
+        const sid = eventSessionId();
+        const confirmed = sid ? sessions.get(sid)?.confirmedLocal === true : false;
+        const parentId = firstString(event.properties?.info?.parentID);
+        const adoption = event.type === "session.created"
+          && parentId
+          && sessions.get(parentId)?.confirmedLocal === true;
+        const cleanup = event.type === "session.deleted";
+        if (!confirmed && !adoption && !cleanup) return;
+      }
+      if (event.type === "message.part.delta" && !external) {
         // Streaming deltas exist only in the process that runs the
-        // session: the cheapest and earliest ownership proof.
+        // session: the cheapest and earliest ownership proof (and the
+        // fallback proof for engines without origin tagging).
         const deltaSid = firstString(event.properties?.sessionID);
         if (deltaSid) confirmSessionLocal(deltaSid);
       }
