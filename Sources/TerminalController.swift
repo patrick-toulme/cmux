@@ -1681,6 +1681,24 @@ class TerminalController {
         holdsPreauthorizationSlot initialSlotHeld: Bool = false
     ) {
         defer { close(socket) }
+        // Agent-state leasing: one connection == one thread == one token for
+        // the connection's whole life. `--lease=1` paints register against
+        // this token; when the connection ends, whatever it still owns is
+        // swept so a dead painter cannot strand lifecycle dots or status
+        // lines (the sweep is the ground-truth cleanup, not a timer).
+        let leaseToken = SocketConnectionAgentLeaseToken()
+        SocketConnectionAgentLeaseToken.installOnCurrentThread(leaseToken)
+        defer {
+            SocketConnectionAgentLeaseToken.removeFromCurrentThread()
+            let expired = RemoteAgentStateLeaseRegistry.shared.connectionClosed(leaseToken)
+            if !expired.isEmpty {
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        Self.sweepExpiredAgentStateLeases(expired)
+                    }
+                }
+            }
+        }
         let pid = peerPid ?? transport.peerProcessID(of: socket)
         let peerHasSameUID = transport.peerHasSameUID(socket)
         let preauthorizationLimiter = socketClientPreauthorizationLimiter

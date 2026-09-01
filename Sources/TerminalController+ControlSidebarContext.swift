@@ -2,12 +2,118 @@ import CmuxControlSocket
 import Foundation
 import CmuxSidebar
 
+/// Identity of one control-socket connection for agent-state leasing.
+///
+/// `handleClient` installs a token in its connection thread's dictionary for
+/// the connection's whole lifetime (one connection == one thread), so the
+/// nonisolated lease registration called mid-command can attribute the paint
+/// to the connection without threading identity through the coordinator.
+final class SocketConnectionAgentLeaseToken: @unchecked Sendable {
+    private static let threadKey = "cmux.socket.agentLeaseToken"
+
+    static func installOnCurrentThread(_ token: SocketConnectionAgentLeaseToken) {
+        Thread.current.threadDictionary[threadKey] = token
+    }
+
+    static func removeFromCurrentThread() {
+        Thread.current.threadDictionary.removeObject(forKey: threadKey)
+    }
+
+    static func current() -> SocketConnectionAgentLeaseToken? {
+        Thread.current.threadDictionary[threadKey] as? SocketConnectionAgentLeaseToken
+    }
+}
+
+/// Ownership ledger for `--lease=1` agent-state paints: slot -> the last
+/// connection that painted it. When a connection closes, every slot it still
+/// owns is swept (cleared) on the main actor; a slot repainted by a newer
+/// connection is that connection's to keep. Connection liveness is the
+/// ground truth here: a painter that dies without its idle edge (killed
+/// agent, rebooted host, torn-down forward) can no longer strand a running
+/// dot or a stale status line.
+final class RemoteAgentStateLeaseRegistry: @unchecked Sendable {
+    static let shared = RemoteAgentStateLeaseRegistry()
+
+    private let lock = NSLock()
+    private var ownerBySlot: [ControlAgentStateLease: ObjectIdentifier] = [:]
+    private var slotsByOwner: [ObjectIdentifier: Set<ControlAgentStateLease>] = [:]
+
+    /// Records `owner` as the current painter of `slot` (stealing it from any
+    /// earlier connection, which then has nothing left to sweep for it).
+    func register(_ slot: ControlAgentStateLease, owner: SocketConnectionAgentLeaseToken) {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = ObjectIdentifier(owner)
+        if let previous = ownerBySlot[slot], previous != id {
+            slotsByOwner[previous]?.remove(slot)
+        }
+        ownerBySlot[slot] = id
+        slotsByOwner[id, default: []].insert(slot)
+    }
+
+    /// Ends `owner`'s leases and returns the slots it still owned (the ones
+    /// the caller must clear). Slots stolen by newer connections are not
+    /// returned.
+    func connectionClosed(_ owner: SocketConnectionAgentLeaseToken) -> [ControlAgentStateLease] {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = ObjectIdentifier(owner)
+        guard let slots = slotsByOwner.removeValue(forKey: id) else { return [] }
+        var expired: [ControlAgentStateLease] = []
+        for slot in slots where ownerBySlot[slot] == id {
+            ownerBySlot.removeValue(forKey: slot)
+            expired.append(slot)
+        }
+        return expired
+    }
+}
+
 /// The live-app half of the v1 sidebar metadata commands (`set_status` /
 /// `report_meta` / `report_meta_block` / agent PID + lifecycle / `log` /
 /// `set_progress` and their clears + listings): the exact mutation/read bodies
 /// the former `TerminalController` v1 handlers ran, minus the parsing and
 /// reply formatting that moved into `ControlCommandCoordinator`.
 extension TerminalController: ControlSidebarContext {
+
+    nonisolated func controlSidebarRegisterAgentStateLease(_ lease: ControlAgentStateLease) {
+        guard let token = SocketConnectionAgentLeaseToken.current() else { return }
+        RemoteAgentStateLeaseRegistry.shared.register(lease, owner: token)
+    }
+
+    /// Clears every slot an expired connection still owned. Lifecycle slots
+    /// drop their painted state (running dots included) and status slots drop
+    /// their entries; workspaces gone by sweep time are skipped.
+    @MainActor
+    static func sweepExpiredAgentStateLeases(
+        _ slots: [ControlAgentStateLease],
+        workspaces workspaceOverride: [Workspace]? = nil
+    ) {
+        guard !slots.isEmpty else { return }
+        let live = workspaceOverride ?? AppDelegate.shared?.allLiveWorkspaces() ?? []
+        var workspacesById: [UUID: Workspace] = [:]
+        for workspace in live {
+            workspacesById[workspace.id] = workspace
+        }
+        for slot in slots {
+            switch slot {
+            case .lifecycle(let tabId, let panelId, let key):
+                guard let id = UUID(uuidString: tabId), let workspace = workspacesById[id] else { continue }
+                workspace.clearAgentLifecycle(
+                    key: key,
+                    panelId: panelId.flatMap { UUID(uuidString: $0) }
+                )
+                cmuxDebugLog(
+                    "agentState.lease.sweep lifecycle ws=\(id.uuidString.prefix(5)) key=\(key)"
+                )
+            case .status(let tabId, let key):
+                guard let id = UUID(uuidString: tabId), let workspace = workspacesById[id] else { continue }
+                workspace.statusEntries.removeValue(forKey: key)
+                cmuxDebugLog(
+                    "agentState.lease.sweep status ws=\(id.uuidString.prefix(5)) key=\(key)"
+                )
+            }
+        }
+    }
     // MARK: - Availability
 
     func controlSidebarTabManagerAvailable() -> Bool {

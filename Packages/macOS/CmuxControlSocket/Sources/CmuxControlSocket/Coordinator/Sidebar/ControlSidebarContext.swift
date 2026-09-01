@@ -1,5 +1,24 @@
 public import Foundation
 
+/// A remote-painted agent-state slot leased to the socket connection that
+/// painted it (`set_agent_lifecycle`/`set_status` with `--lease=1`).
+///
+/// Remote agent integrations paint lifecycle dots and status lines over the
+/// control socket. Without a lease those paints are latches: a painter that
+/// dies mid-state (agent process killed, host rebooted, socket torn down
+/// before the idle edge) leaves its last paint on the row forever. A leased
+/// slot is cleared by the app the moment the painting connection closes,
+/// unless a newer connection has painted (stolen) the slot since; connection
+/// liveness is ground truth, no timers involved.
+///
+/// Identifiers stay in wire form (the `--tab`/`--panel` UUID strings): the
+/// lease is only honored for writes that target an explicit tab, and
+/// resolution back to live workspaces happens at sweep time.
+public enum ControlAgentStateLease: Sendable, Hashable {
+    case lifecycle(tabId: String, panelId: String?, key: String)
+    case status(tabId: String, key: String)
+}
+
 /// The sidebar-domain slice of the control-command seam (a constituent of the
 /// ``ControlCommandContext`` umbrella): live app reach for the v1 sidebar
 /// metadata commands (`set_status` … `sidebar_state`), the v1 bonsplit pane
@@ -96,6 +115,14 @@ public protocol ControlSidebarContext: AnyObject {
         lifecycleRawValue: String,
         panelID: UUID?
     )
+
+    /// Registers a `--lease=1` agent-state paint against the calling socket
+    /// connection so the app can clear the slot when that connection closes
+    /// (see ``ControlAgentStateLease``). Called on the connection thread
+    /// right after the paint is scheduled; conformers resolve the calling
+    /// connection themselves. Defaulted to a no-op for conformers without
+    /// lease support.
+    nonisolated func controlSidebarRegisterAgentStateLease(_ lease: ControlAgentStateLease)
 
     /// Workspace-scoped manual loading toggle for `workspace_loading`. `on`
     /// marks the manual loader `key` running on the workspace; `off` clears it
@@ -332,4 +359,10 @@ public protocol ControlSidebarContext: AnyObject {
     /// Snapshots panel health rows (`surface_health`), or `nil` when the tab
     /// can't resolve.
     func controlSidebarSurfaceHealth(tabArg: String) -> [ControlSidebarSurfaceHealthRow]?
+}
+
+/// Default no-op so existing conformers (test fakes, alternate hosts)
+/// compile unchanged; only the app's socket host implements leasing.
+extension ControlSidebarContext {
+    public nonisolated func controlSidebarRegisterAgentStateLease(_ lease: ControlAgentStateLease) {}
 }

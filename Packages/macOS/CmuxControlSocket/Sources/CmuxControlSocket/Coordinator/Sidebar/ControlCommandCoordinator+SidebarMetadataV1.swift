@@ -92,6 +92,15 @@ extension ControlCommandCoordinator {
             panelID: panelResolution.panelId,
             pid: pidValue
         )
+        // `--lease=1`: tie this entry to the calling connection's lifetime
+        // (see sidebarSetAgentLifecycle); explicit --tab required.
+        if parsed.options["lease"] != nil,
+           let leaseTabId = sidebarNormalizedOptionValue(parsed.options["tab"]) {
+            context?.controlSidebarRegisterAgentStateLease(.status(
+                tabId: leaseTabId,
+                key: key
+            ))
+        }
         return "OK"
     }
 
@@ -385,6 +394,18 @@ extension ControlCommandCoordinator {
             lifecycleRawValue: lifecycleRawValue,
             panelID: panelResolution.panelId
         )
+        // `--lease=1`: tie this paint to the calling connection's lifetime so
+        // a painter that dies without its idle edge cannot strand the state.
+        // Honored only with an explicit --tab (the lease sweep resolves the
+        // wire id back to a workspace).
+        if parsed.options["lease"] != nil,
+           let leaseTabId = sidebarNormalizedOptionValue(parsed.options["tab"]) {
+            context?.controlSidebarRegisterAgentStateLease(.lifecycle(
+                tabId: leaseTabId,
+                panelId: sidebarNormalizedOptionValue(parsed.options["panel"]),
+                key: key
+            ))
+        }
         return "OK"
     }
 

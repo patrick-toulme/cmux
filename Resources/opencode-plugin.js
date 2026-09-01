@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v10
+// cmux-feed-plugin-marker v11
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -730,7 +730,7 @@ export const CMUXFeed = async (ctx) => {
       && [...sessions.values()].some((state) => state.confirmedLocal && state.isBusy)
     ) {
       writeLine(
-        `set_agent_lifecycle opencode running --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+        `set_agent_lifecycle opencode running --lease=1 --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
       );
     }
   }, KEEPALIVE_INTERVAL_MS);
@@ -861,22 +861,38 @@ export const CMUXFeed = async (ctx) => {
     if (busy) {
       lastLifecycleSent = "running";
       writeLine(
-        `set_agent_lifecycle opencode running --tab=${target.workspaceId} --panel=${target.surfaceId}`
+        `set_agent_lifecycle opencode running --lease=1 --tab=${target.workspaceId} --panel=${target.surfaceId}`
       );
     } else {
-      // A fresh cmux instance knows nothing about this pane; the next
-      // aggregate edge must write even if it matches the pre-drop state.
-      lastLifecycleSent = null;
+      // Paint the idle truth NOW. Waiting for "the next aggregate edge"
+      // stranded a stale running dot forever when the turn ENDED during
+      // the disconnect: a finished goal session gets no future edge, so
+      // the pre-drop running paint survived until the user typed again.
+      lastLifecycleSent = "idle";
+      writeLine(
+        `set_agent_lifecycle opencode idle --lease=1 --tab=${target.workspaceId} --panel=${target.surfaceId}`
+      );
+      // The activity line painted before the drop is equally stale, and
+      // the ledger cannot be trusted across the gap (an idle during the
+      // downtime already nulled it while its clear line was lost).
+      clearActivityStatus(true);
     }
     // A fresh cmux instance also needs the goal line repainted.
     repaintGoalLine();
-    // Recovery is already seconds late, so owed completions of settled
-    // (idle) sessions fire without re-waiting the settle grace. A send
-    // that fails again keeps the debt for the next recovery.
-    for (const [sid, state] of sessions) {
-      if (state.completionOwed && !state.isBusy && !state.parentId) {
-        sendRemoteTurnCompleteNotification(sid);
-      }
+    // Recovery is already seconds late, so an owed completion of a settled
+    // (idle) session fires without re-waiting the settle grace. Only the
+    // NEWEST owed lead session toasts: debts can pile up across sessions
+    // during a long disconnect, and a reconnect must summarize, not
+    // machine-gun stale toasts (observed: six at once). Older debts are
+    // settled silently.
+    const owed = [...sessions.entries()]
+      .filter(([, state]) => state.completionOwed && !state.isBusy && !state.parentId)
+      .sort((a, b) => b[1].lastEventAt - a[1].lastEventAt);
+    for (const [, state] of owed.slice(1)) {
+      state.completionOwed = false;
+    }
+    if (owed.length > 0) {
+      sendRemoteTurnCompleteNotification(owed[0][0]);
     }
     for (const [requestId, queuedAt] of [...pendingConcludes]) {
       pendingConcludes.delete(requestId);
@@ -919,13 +935,13 @@ export const CMUXFeed = async (ctx) => {
       void resolveRemoteTarget().then((target) => {
         if (!target) return;
         writeLine(
-          `set_agent_lifecycle opencode ${state} --tab=${target.workspaceId} --panel=${target.surfaceId}`
+          `set_agent_lifecycle opencode ${state} --lease=1 --tab=${target.workspaceId} --panel=${target.surfaceId}`
         );
       });
       return;
     }
     writeLine(
-      `set_agent_lifecycle opencode ${state} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+      `set_agent_lifecycle opencode ${state} --lease=1 --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
     );
   };
 
@@ -960,7 +976,7 @@ export const CMUXFeed = async (ctx) => {
     lastActivitySentText = text;
     lastActivitySentAt = Date.now();
     writeLine(
-      `set_status ${ACTIVITY_STATUS_KEY} ${text} --priority=-1 ` +
+      `set_status ${ACTIVITY_STATUS_KEY} ${text} --priority=-1 --lease=1 ` +
         `--tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
     );
   };
@@ -991,14 +1007,17 @@ export const CMUXFeed = async (ctx) => {
 
   // Drops the row's activity line. Runs when the pane settles idle and
   // when a blocking decision parks (the needs-input line takes over); a
-  // no-op while nothing was ever sent.
-  const clearActivityStatus = () => {
+  // no-op while nothing was ever sent. `force` writes the clear even when
+  // the ledger says nothing is painted: an idle during a disconnect nulls
+  // the ledger while its clear line dies with the socket, so recovery
+  // must clear against the app's state, not this process's memory of it.
+  const clearActivityStatus = (force = false) => {
     if (activityFlushTimer) {
       clearTimeout(activityFlushTimer);
       activityFlushTimer = null;
     }
     pendingActivityText = null;
-    if (lastActivitySentText === null) return;
+    if (!force && lastActivitySentText === null) return;
     lastActivitySentText = null;
     lastActivitySentAt = 0;
     if (!isRemote() || !remoteTarget) return;
@@ -1039,7 +1058,7 @@ export const CMUXFeed = async (ctx) => {
     lastGoalLineText = text;
     if (text) {
       writeLine(
-        `set_status ${GOAL_STATUS_KEY} ${text} --priority=-2 ` +
+        `set_status ${GOAL_STATUS_KEY} ${text} --priority=-2 --lease=1 ` +
           `--tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
       );
     } else {

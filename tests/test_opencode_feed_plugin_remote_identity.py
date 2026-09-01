@@ -141,7 +141,7 @@ const waitFor = async (predicate, ms, label) => {
   }
   throw new Error(`timeout: ${label}; received=${JSON.stringify(received)}`);
 };
-const runningLine = "set_agent_lifecycle opencode running --tab=W1 --panel=S1";
+const runningLine = "set_agent_lifecycle opencode running --lease=1 --tab=W1 --panel=S1";
 
 const mod = await import(pluginPath);
 if (typeof mod.CMUXFeed !== "function") throw new Error("missing CMUXFeed export");
@@ -290,7 +290,7 @@ await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-99"), 8000, "
 // Both live factories (hooks: s1 busy, hooksStale: s3 busy) repaint running
 // after the restart; drain those before scenario 4 asserts on quiet, then
 // idle both sessions so no straggler resolve can repaint into scenario 4's
-// window (afterResolveRecovered only paints while some session is busy).
+// window (recovery repaints the truth either way; idles land right after).
 await waitFor(() => received.filter((l) => l === runningLine).length >= 2, 8000, "recovery repaints drained");
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "idle" } } } });
 await hooksStale.event({ event: { type: "session.status", properties: { sessionID: "s3", status: { type: "idle" } } } });
@@ -306,7 +306,7 @@ await new Promise((resolve) => setTimeout(resolve, 300));
 // busy bounce inside the grace window writes no idle line at all (the
 // blue/green strobe a goal loop produced at every iteration boundary).
 received.length = 0;
-const idleLine = "set_agent_lifecycle opencode idle --tab=W1 --panel=S1";
+const idleLine = "set_agent_lifecycle opencode idle --lease=1 --tab=W1 --panel=S1";
 await hooks.event({ event: { type: "message.updated", properties: {
   info: { id: "m50", sessionID: "s1", role: "user" },
 } } });
@@ -429,7 +429,7 @@ if (received.some((l) => l.includes("c=turn-complete"))) {
 // decision clears it so the needs-input line stands alone.
 received.length = 0;
 const activityLine = (text) =>
-  `set_status opencode.activity ${text} --priority=-1 --tab=W1 --panel=S1`;
+  `set_status opencode.activity ${text} --priority=-1 --lease=1 --tab=W1 --panel=S1`;
 const activityClearLine = "clear_status opencode.activity --tab=W1";
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
 await hooks.event({ event: { type: "message.part.updated", properties: {
@@ -560,7 +560,7 @@ received.length = 0;
 // line without a toast; completion clears the line, delivers exactly ONE
 // goal toast, and settles the held turn debt.
 received.length = 0;
-const goalLine = (text) => `set_status opencode.goal ${text} --priority=-2 --tab=W1 --panel=S1`;
+const goalLine = (text) => `set_status opencode.goal ${text} --priority=-2 --lease=1 --tab=W1 --panel=S1`;
 const goalClear = "clear_status opencode.goal --tab=W1";
 await hooks.event({ event: { type: "goal.updated", properties: {
   sessionID: "g1", goal: { status: "active", objective: "ship the goal feature" },
@@ -667,6 +667,58 @@ if (received.some((l) => l === idleLine)) {
 }
 await hooks.event({ event: { type: "session.status", external: true, properties: { sessionID: "w11", status: { type: "idle" } } } });
 await waitFor(() => received.some((l) => l === idleLine), 5000, "adopted worker idle settles the pane");
+received.length = 0;
+
+// Scenario 3l: recovery repaints the truth in BOTH directions. A turn that
+// ENDS while cmux is down previously left the pre-drop "running" paint
+// stranded forever (a finished goal session gets no future edge: the
+// noop_ds shape); recovery must paint idle, clear the stale activity
+// line, and summarize owed completions with exactly ONE toast (the
+// newest) instead of machine-gunning stale ones.
+received.length = 0;
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s12", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "s12 painted running");
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", sessionID: "s12", messageID: "mrec1", tool: "bash", state: { status: "running", input: { command: "long build" } } },
+} } });
+await waitFor(() => received.some((l) => l.includes("bash: long build")), 5000, "activity painted before drop");
+await stopServer();
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s12", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+received.length = 0;
+await startServer();
+await waitFor(() => received.some((l) => l === idleLine), 8000, "recovery paints the idle truth");
+if (received.some((l) => l === runningLine)) {
+  throw new Error(`recovery painted running for a settled pane: ${JSON.stringify(received)}`);
+}
+await waitFor(() => received.some((l) => l === activityClearLine), 8000, "recovery clears the stale activity line");
+
+// Two typed turns finish while cmux is down: reconnect summarizes with
+// ONE toast (the newest); older debts settle silently.
+await stopServer();
+for (const n of [1, 2]) {
+  const sid = `s13${n}`;
+  await hooks.event({ event: { type: "message.updated", properties: {
+    info: { id: `m13${n}`, sessionID: sid, role: "user" },
+  } } });
+  await hooks.event({ event: { type: "message.part.updated", properties: {
+    part: { type: "text", messageID: `m13${n}`, sessionID: sid, text: `turn ${n} prompt` },
+  } } });
+  await hooks.event({ event: { type: "session.status", properties: { sessionID: sid, status: { type: "busy" } } } });
+  await hooks.event({ event: { type: "session.status", properties: { sessionID: sid, status: { type: "idle" } } } });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+}
+received.length = 0;
+await startServer();
+await waitFor(() => received.filter((l) => l.includes("c=turn-complete")).length >= 1, 8000, "recovery flushes an owed toast");
+await new Promise((resolve) => setTimeout(resolve, 500));
+const recoveredToasts = received.filter((l) => l.includes("c=turn-complete"));
+if (recoveredToasts.length !== 1) {
+  throw new Error(`recovery must flush exactly one owed toast: ${JSON.stringify(recoveredToasts)}`);
+}
+if (!recoveredToasts[0].includes("turn 2 prompt")) {
+  throw new Error(`the newest debt must win the recovery toast: ${recoveredToasts[0]}`);
+}
 received.length = 0;
 
 // Scenario 4: not in tmux and no env: local mode, events complete, and no

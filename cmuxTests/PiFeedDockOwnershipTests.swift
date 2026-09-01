@@ -1,5 +1,6 @@
 import CMUXAgentLaunch
 import Combine
+import CmuxControlSocket
 import CmuxSidebar
 import Foundation
 import Testing
@@ -1201,6 +1202,132 @@ struct FeedAttentionReconcileTests {
         }
         return Task {
             for await _ in ingestSignal.stream { break }
+        }
+    }
+
+    @MainActor
+    private func withAppContext(
+        _ body: @MainActor (AppDelegate, TabManager, Workspace, UUID) async throws -> Void
+    ) async throws {
+        try await AppContextSerialGate.withExclusiveAppContext {
+            let previousAppDelegate = AppDelegate.shared
+            let appDelegate = AppDelegate()
+            let manager = TabManager(autoWelcomeIfNeeded: false)
+            AppDelegate.shared = appDelegate
+            appDelegate.tabManager = manager
+            appDelegate.didAttemptStartupSessionRestore = true
+            let windowID = appDelegate.registerMainWindowContextForTesting(tabManager: manager)
+            let workspace = manager.addWorkspace(select: true)
+            defer {
+                appDelegate.unregisterMainWindowContextForTesting(windowId: windowID)
+                manager.tabs.forEach { $0.teardownAllPanels() }
+                appDelegate.tabManager = nil
+                AppDelegate.shared = previousAppDelegate
+            }
+
+            try await body(appDelegate, manager, workspace, windowID)
+        }
+    }
+}
+
+/// Connection-leased remote agent state: `--lease=1` paints are owned by the
+/// socket connection that made them, and the app clears whatever a closing
+/// connection still owns. Ground truth is connection liveness, so a painter
+/// that dies without its idle edge (killed agent, rebooted host) cannot
+/// strand a running dot or a stale status line.
+@Suite("Remote agent state leases", .serialized)
+struct RemoteAgentStateLeaseTests {
+    @MainActor
+    @Test("Closing a connection sweeps the slots it still owns")
+    func closeSweepsOwnedSlots() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            let panel = try workspace.seedPiFeedPanel()
+            workspace.setAgentLifecycle(key: "opencode", panelId: panel.id, lifecycle: .running)
+            workspace.statusEntries["opencode.activity"] = SidebarStatusEntry(
+                key: "opencode.activity",
+                value: "bash: long build",
+                icon: nil,
+                color: nil,
+                timestamp: Date()
+            )
+
+            let registry = RemoteAgentStateLeaseRegistry()
+            let token = SocketConnectionAgentLeaseToken()
+            registry.register(
+                .lifecycle(
+                    tabId: workspace.id.uuidString,
+                    panelId: panel.id.uuidString,
+                    key: "opencode"
+                ),
+                owner: token
+            )
+            registry.register(
+                .status(tabId: workspace.id.uuidString, key: "opencode.activity"),
+                owner: token
+            )
+
+            let expired = registry.connectionClosed(token)
+            #expect(expired.count == 2)
+            TerminalController.sweepExpiredAgentStateLeases(expired, workspaces: [workspace])
+
+            #expect(workspace.agentLifecycleStatesByPanelId[panel.id]?["opencode"] == nil)
+            #expect(workspace.statusEntries["opencode.activity"] == nil)
+            // A second close returns nothing: leases end exactly once.
+            #expect(registry.connectionClosed(token).isEmpty)
+        }
+    }
+
+    @MainActor
+    @Test("A newer connection's paint survives the old connection's close")
+    func newerPaintSurvivesOldClose() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            let panel = try workspace.seedPiFeedPanel()
+            workspace.setAgentLifecycle(key: "opencode", panelId: panel.id, lifecycle: .running)
+
+            let registry = RemoteAgentStateLeaseRegistry()
+            let older = SocketConnectionAgentLeaseToken()
+            let newer = SocketConnectionAgentLeaseToken()
+            let slot = ControlAgentStateLease.lifecycle(
+                tabId: workspace.id.uuidString,
+                panelId: panel.id.uuidString,
+                key: "opencode"
+            )
+            registry.register(slot, owner: older)
+            // Reconnect repaint: the newer connection steals the slot.
+            registry.register(slot, owner: newer)
+
+            let expired = registry.connectionClosed(older)
+            #expect(expired.isEmpty, "a stolen slot is the newer connection's to keep")
+            TerminalController.sweepExpiredAgentStateLeases(expired, workspaces: [workspace])
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?["opencode"] == .running,
+                "the live painter's state must survive the dead connection's sweep"
+            )
+
+            let newerExpired = registry.connectionClosed(newer)
+            #expect(newerExpired == [slot])
+            TerminalController.sweepExpiredAgentStateLeases(newerExpired, workspaces: [workspace])
+            #expect(workspace.agentLifecycleStatesByPanelId[panel.id]?["opencode"] == nil)
+        }
+    }
+
+    @MainActor
+    @Test("Sweeping slots for unknown workspaces is a no-op")
+    func sweepSkipsUnknownWorkspaces() async throws {
+        try await withAppContext { _, _, workspace, _ in
+            let panel = try workspace.seedPiFeedPanel()
+            workspace.setAgentLifecycle(key: "opencode", panelId: panel.id, lifecycle: .running)
+            TerminalController.sweepExpiredAgentStateLeases(
+                [
+                    .lifecycle(tabId: UUID().uuidString, panelId: nil, key: "opencode"),
+                    .status(tabId: "not-a-uuid", key: "opencode.activity"),
+                ],
+                workspaces: [workspace]
+            )
+            #expect(
+                workspace.agentLifecycleStatesByPanelId[panel.id]?["opencode"] == .running,
+                "unrelated slots must not disturb live workspaces"
+            )
         }
     }
 
