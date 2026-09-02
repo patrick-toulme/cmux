@@ -146,7 +146,17 @@ extension TerminalController: ControlSidebarContext {
             + "conn=\(SocketConnectionAgentLeaseToken.current().map { String(describing: ObjectIdentifier($0)).suffix(6) } ?? "none")"
         )
         #endif
-        controlSidebarSchedulePanelOwnedMutation(target: target, panelID: panelID) { _, owner in
+        // Remote tmux mirror panes are valid status targets too: the agent
+        // plugin publishes its activity and goal lines with the same mirror
+        // pane id it uses for lifecycle. Without this the strict `panels`
+        // check dropped every such write on the floor (dot painted, text
+        // never did), and the only activity text that ever reached a mirror
+        // row was misrouted through the selected-workspace fallback.
+        controlSidebarSchedulePanelOwnedMutation(
+            target: target,
+            panelID: panelID,
+            includeRemoteTmuxPanes: true
+        ) { _, owner in
             guard Self.shouldReplaceStatusEntry(
                 current: owner.statusEntry(key: key, panelId: panelID),
                 key: key,
@@ -184,7 +194,13 @@ extension TerminalController: ControlSidebarContext {
         key: String,
         panelID: UUID?
     ) {
-        controlSidebarSchedulePanelOwnedMutation(target: target, panelID: panelID) { _, owner in
+        // Same reach as the upsert: the plugin's end-of-turn clear names the
+        // mirror pane too, and a dropped clear leaves stale text on the row.
+        controlSidebarSchedulePanelOwnedMutation(
+            target: target,
+            panelID: panelID,
+            includeRemoteTmuxPanes: true
+        ) { _, owner in
             owner.clearStatusEntry(key: key, panelId: panelID)
             owner.clearAgentPID(key: key, panelId: panelID, clearStatus: false)
         }
