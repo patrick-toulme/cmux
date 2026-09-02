@@ -25,6 +25,10 @@ import Testing
 ///   window close, app quit, batch close-all routed through the window
 ///   path, non-interactive socket closes, the raw `closeWorkspace` teardown,
 ///   and the context menu's explicit "Detach (Keep Session Running)".
+/// - No lifecycle path issues `ssh -O exit`: the host's authenticated
+///   ControlMaster keeps serving so the next attach (or the next cmux launch)
+///   rides it without re-authenticating (no security-key touch). The fake ssh
+///   logs every argv element, so each detach test asserts the exit is absent.
 ///
 /// The seam that used to translate a window close into "kill on commit" is
 /// `TabManager.markRemoteTmuxKillOnWindowCloseIfNeeded`, which set the window
@@ -55,8 +59,8 @@ import Testing
 
     /// The v2 socket close path must detach a live last-workspace mirror without
     /// issuing the destructive `tmux kill-session` used by an explicit remote
-    /// disconnect. The fake SSH executable records every argv element and treats
-    /// the local ControlMaster exit as success, so this exercises the production
+    /// disconnect, and without exiting the host's ControlMaster. The fake SSH
+    /// executable records every argv element, so this exercises the production
     /// close route without opening a network connection.
     @Test func socketCloseOfLiveLastMirrorDetachesWithoutKillingSession() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -132,8 +136,9 @@ import Testing
         )
 
         #expect(resolution == .resolved(windowID: harness.windowId))
-        let log = try await waitForSSHArgument("exit", at: logURL)
+        let log = try await settledSSHLog(at: logURL)
         #expect(!log.contains("kill-session"), Comment(rawValue: log))
+        #expect(!log.contains("ARG=exit"), Comment(rawValue: log))
         #expect(controller.sessionMirror(host: host, sessionName: "dev") == nil)
         #expect(connection.exited)
     }
@@ -192,7 +197,8 @@ import Testing
 
         controller.detach(host: host, sessionName: "dev")
 
-        _ = try await waitForSSHArgument("exit", at: logURL)
+        let log = try await settledSSHLog(at: logURL)
+        #expect(!log.contains("ARG=exit"), Comment(rawValue: log))
         #expect(controller.sessionMirror(host: host, sessionName: "dev") == nil)
         #expect(connection.exited)
         #expect(didCloseOwningWindow)
@@ -277,11 +283,69 @@ import Testing
 
         harness.manager.closeWorkspace(mirrorWorkspace, recordHistory: false)
 
-        let log = try await waitForSSHArgument("exit", at: logURL)
+        let log = try await settledSSHLog(at: logURL)
         #expect(!log.contains("kill-session"), Comment(rawValue: log))
+        #expect(!log.contains("ARG=exit"), Comment(rawValue: log))
         #expect(harness.manager.tabs.map(\.id) == [harness.workspace.id])
         #expect(controller.sessionMirror(host: host, sessionName: "dev") == nil)
         #expect(connection.exited)
+    }
+
+    /// App quit (`detachAll`) stops the local control clients and nothing
+    /// else: no `kill-session`, and no `ssh -O exit` for any host, whether the
+    /// host is known through a mirror connection or only through a transport.
+    /// Relaunching cmux must find every authenticated master still serving,
+    /// or each dogfood relaunch costs the whole fleet a security-key touch.
+    @Test func appQuitLeavesEveryControlMasterServing() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("remote-tmux-quit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let logURL = root.appendingPathComponent("ssh.log")
+        let sshURL = root.appendingPathComponent("ssh")
+        try writeExecutable(
+            at: sshURL,
+            contents: """
+            #!/bin/sh
+            for arg in "$@"; do
+              printf 'ARG=%s\\n' "$arg" >> "${CMUX_PR7264_SSH_LOG:?}"
+            done
+            exit 0
+            """
+        )
+        let previousSSH = environmentValue(for: sshOverrideKey)
+        let previousLog = environmentValue(for: sshLogKey)
+        setenv(sshOverrideKey, sshURL.path, 1)
+        setenv(sshLogKey, logURL.path, 1)
+        defer {
+            restoreEnvironment(sshOverrideKey, previousValue: previousSSH)
+            restoreEnvironment(sshLogKey, previousValue: previousLog)
+        }
+
+        let harness = try Harness()
+        defer { harness.tearDown() }
+        let controller = harness.controller
+        let mirroredHost = RemoteTmuxHost(destination: "quit-mirror-\(UUID().uuidString)@example.test")
+        let transportOnlyHost = RemoteTmuxHost(destination: "quit-transport-\(UUID().uuidString)@example.test")
+        let connection = RemoteTmuxControlConnection(host: mirroredHost, sessionName: "dev")
+        controller.cacheConnection(connection)
+        #expect(try controller.mirrorSession(host: mirroredHost, sessionName: "dev", into: harness.manager))
+        _ = controller.transportRegistry.transport(for: transportOnlyHost)
+        defer {
+            if controller.sessionMirror(host: mirroredHost, sessionName: "dev") != nil {
+                controller.detach(host: mirroredHost, sessionName: "dev")
+            }
+        }
+
+        controller.detachAll()
+
+        #expect(connection.exited)
+        #expect(!controller.transportRegistry.contains(connectionHash: transportOnlyHost.connectionHash))
+        let log = try await settledSSHLog(at: logURL)
+        #expect(!log.contains("ARG=exit"), Comment(rawValue: log))
+        #expect(!log.contains("kill-session"), Comment(rawValue: log))
+        #expect(!log.contains(mirroredHost.destination), Comment(rawValue: log))
+        #expect(!log.contains(transportOnlyHost.destination), Comment(rawValue: log))
     }
 
     @Test func windowCreationFailureUsesLocalErrorMessage() {
@@ -525,8 +589,9 @@ import Testing
         // no live connection: no dialog, no kill — detach.
         #expect(harness.manager.closeWorkspaceFromTabCloseButton(mirrorWorkspace))
 
-        let log = try await waitForSSHArgument("exit", at: logURL)
+        let log = try await settledSSHLog(at: logURL)
         #expect(!log.contains("kill-session"), Comment(rawValue: log))
+        #expect(!log.contains("ARG=exit"), Comment(rawValue: log))
         #expect(harness.manager.tabs.map(\.id) == [harness.workspace.id])
         #expect(controller.sessionMirror(host: host, sessionName: "dev") == nil)
         #expect(connection.exited)
@@ -549,17 +614,13 @@ import Testing
         }
     }
 
-    private func waitForSSHArgument(_ argument: String, at logURL: URL) async throws -> String {
-        for _ in 0..<200 {
-            let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-            if log.split(separator: "\n").contains(Substring("ARG=\(argument)")) {
-                return log
-            }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let log = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
-        Issue.record("Timed out waiting for fake SSH argument '\(argument)': \(log)")
-        return log
+    /// The fake ssh's argv log once any fire-and-forget spawn the teardown could
+    /// have launched has had time to run. The assertions on it are negative
+    /// (no `kill-session`, no `-O exit`), so there is no event to wait for;
+    /// half a second is ample for a local process spawn even on a loaded CI box.
+    private func settledSSHLog(at logURL: URL) async throws -> String {
+        try await Task.sleep(for: .milliseconds(500))
+        return (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
     }
 
     @MainActor

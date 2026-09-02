@@ -36,14 +36,18 @@ actor RemoteTmuxSSHTransport {
 
     /// A healthy corp open, relay and agent included, completes in 2-10s
     /// (measured; 12s under heavy agent contention). A BatchMode connect
-    /// still authenticating after this long is waiting on something
-    /// BatchMode cannot provide (a security key touch, a prompt) or on a
-    /// wedged agent, and the server's own login grace would only let it hang
-    /// for another ~90s before closing it. Killing it here and reporting
+    /// still authenticating is waiting on a human or on a wedged agent. The
+    /// human case is the one to size for: a security key agent shows its own
+    /// on-screen touch prompt while the BatchMode ssh waits, and holds the
+    /// request for roughly two minutes before refusing it, so a user who
+    /// notices the prompt within that window authenticates the whole fleet
+    /// with one touch and no terminal detour. The budget therefore stays
+    /// under the agent's hold (and under sshd's default 120s login grace)
+    /// but leaves most of it for the touch. Past it the opener is killed and
     /// ``RemoteTmuxError/authenticationStalled(destination:seconds:)`` hands
-    /// the machine to the interactive terminal while the attach is still
-    /// live instead of surfacing an opaque timeout later.
-    static let defaultOpenerStallTimeout: Duration = .seconds(30)
+    /// the machine to the interactive terminal; the open gate parks every
+    /// other machine at the same time (see ``RemoteTmuxMasterOpenGate``).
+    static let defaultOpenerStallTimeout: Duration = .seconds(90)
 
     /// In-flight shared-master warmup, if any. ``ensureMasterReady()`` funnels every
     /// concurrent caller through this single task so the master is opened at most
@@ -474,6 +478,17 @@ actor RemoteTmuxSSHTransport {
             // have brought THIS master up; never authenticate a second time
             // for a master that is already serving.
             if waited, try await self.observedMasterRunning() { return nil }
+            // An earlier open stalled on authentication and nothing has
+            // proven the agent responsive since: opening now would only
+            // cancel the touch prompt that open raised and raise another.
+            // Refuse up front, exactly as if this open had stalled, so the
+            // machine takes the same interactive route with no new prompt.
+            if await self.openGate.isParked {
+                throw RemoteTmuxError.authenticationStalled(
+                    destination: self.host.destination,
+                    seconds: Self.wholeSeconds(self.openerStallTimeout)
+                )
+            }
             return try await self.executeOpenerOrStall(openerCommand)
         }
         guard let opened else { return true }
@@ -482,6 +497,13 @@ actor RemoteTmuxSSHTransport {
             throw RemoteTmuxError.commandFailed(exitCode: opened.exitCode, stderr: opened.stderr)
         }
         return false
+    }
+
+    /// `duration` rounded up to whole seconds (at least 1) for the stall error.
+    private static func wholeSeconds(_ duration: Duration) -> Int {
+        let seconds = Int((Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1e18).rounded(.up))
+        return max(seconds, 1)
     }
 
     /// Spawns the opener and races it against ``openerStallTimeout``. On a
@@ -493,7 +515,7 @@ actor RemoteTmuxSSHTransport {
     private func executeOpenerOrStall(_ command: [String]) async throws -> RemoteTmuxCommandResult {
         let budget = openerStallTimeout
         let destination = host.destination
-        return try await withThrowingTaskGroup(of: RemoteTmuxCommandResult?.self) { group in
+        let result: RemoteTmuxCommandResult? = try await withThrowingTaskGroup(of: RemoteTmuxCommandResult?.self) { group in
             group.addTask { try await self.execute(command, role: .opener) }
             group.addTask {
                 try await Task.sleep(for: budget)
@@ -503,13 +525,19 @@ actor RemoteTmuxSSHTransport {
             guard let first = try await group.next() else {
                 throw RemoteTmuxError.unreachable(destination)
             }
-            guard let result = first else {
-                let seconds = Int((Double(budget.components.seconds)
-                    + Double(budget.components.attoseconds) / 1e18).rounded(.up))
-                throw RemoteTmuxError.authenticationStalled(destination: destination, seconds: max(seconds, 1))
-            }
-            return result
+            return first
         }
+        guard let result else {
+            // Park the fleet before reporting: the sibling opens queued in
+            // the gate must not each raise (and cancel) a fresh touch prompt.
+            await openGate.noteOpenerStalled()
+            throw RemoteTmuxError.authenticationStalled(destination: destination, seconds: Self.wholeSeconds(budget))
+        }
+        if result.succeeded {
+            // A completed BatchMode authentication is the proof that clears a park.
+            await openGate.noteAuthenticationSucceeded()
+        }
+        return result
     }
 
     /// ``masterIsRunning()`` plus generation bookkeeping: the ONLY way the
@@ -518,7 +546,13 @@ actor RemoteTmuxSSHTransport {
     /// counted exactly once.
     private func observedMasterRunning() async throws -> Bool {
         let alive = try await masterIsRunning()
+        let wasAlive = lastObservedMasterAlive
         noteMasterAliveObservation(alive)
+        // A dead-to-serving edge means someone authenticated this endpoint
+        // out of band (the interactive terminal after a park, most likely):
+        // the agent is answering again, so the fleet may open through the
+        // gate once more.
+        if alive, !wasAlive { await openGate.noteAuthenticationSucceeded() }
         return alive
     }
 
@@ -588,7 +622,11 @@ actor RemoteTmuxSSHTransport {
         }
     }
 
-    /// Tears down the shared SSH master (e.g. when the user removes a host).
+    /// Tears down the shared SSH master. The ONLY `ssh -O exit` cmux issues:
+    /// an explicit host disconnect, or the reauth flows replacing a master
+    /// whose tunnel is dead. Ordinary lifecycle (quit, window close, detach,
+    /// last-mirror close) leaves masters serving so re-attaching never
+    /// re-authenticates (see `RemoteTmuxController.detachAll`).
     func shutdownMaster() async {
         _ = try? await Self.runProcess(
             executable: sshExecutablePath,
@@ -598,27 +636,6 @@ actor RemoteTmuxSSHTransport {
         // confirmation is a new generation (its replacement master carries
         // none of this one's forward registrations).
         noteMasterAliveObservation(false)
-    }
-
-    /// Fire-and-forget `ssh -O exit` to close the host's shared SSH ControlMaster.
-    ///
-    /// `nonisolated` and non-`async` so it can run from the synchronous app-quit /
-    /// window-close paths where awaiting an actor isn't possible. `-O exit` hits the
-    /// LOCAL control socket (fast, no network round-trip) and the spawned process
-    /// runs independently of cmux, so the master is torn down even as the app exits
-    /// — instead of lingering for `ControlPersist` after the user closes the app or
-    /// the mirror window. Best-effort: a missing/dead socket just fails fast.
-    nonisolated static func spawnControlMasterExit(
-        host: RemoteTmuxHost,
-        sshExecutablePath: String = RemoteTmuxHost.defaultSSHExecutablePath()
-    ) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: sshExecutablePath)
-        process.arguments = ["-O", "exit", "-o", "ControlPath=\(host.controlSocketPath)", "--", host.destination]
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()  // fire-and-forget — do not wait
     }
 
     /// Kills each `(transport, sessionTarget)` via `tmux kill-session`. Races the kill

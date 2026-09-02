@@ -186,13 +186,21 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     }
 
     /// `ControlPersist` value that keeps an opened master alive indefinitely
-    /// (OpenSSH treats `0` as "persist forever"). Masters are torn down
-    /// explicitly with `ssh -O exit` on every teardown path (last-mirror close,
-    /// window close, detach, app quit), so an indefinite persist means the one
-    /// authenticated connection per machine survives idle gaps and long
-    /// reconnect outages instead of expiring and demanding a fresh
-    /// authentication (a security-key touch) minutes later.
+    /// (OpenSSH treats `0` as "persist forever"). The one authenticated
+    /// connection per machine outlives idle gaps, long reconnect outages,
+    /// window closes, detaches and cmux itself quitting: the master is a
+    /// detached process on its own control socket, so the next launch finds
+    /// it with `ssh -O check` and re-attaches with no fresh authentication
+    /// (no security-key touch). Only an explicit host disconnect or a reauth
+    /// of a dead master issues `ssh -O exit`.
     static let masterControlPersistIndefinitely = 0
+
+    /// Seconds between `ServerAliveInterval` keepalives on every cmux ssh spawn.
+    static let serverAliveIntervalSeconds = 20
+
+    /// Unanswered keepalives (`ServerAliveCountMax`) before ssh declares the
+    /// transport dead: 6 x 20s = 2 minutes of tolerance for network blips.
+    static let serverAliveCountMax = 6
 
     /// Stable stderr marker a mux-only invocation emits when it finds no live
     /// master and its severed direct-connection fallback fails fast (see
@@ -262,12 +270,17 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
                 "-o", "ProxyCommand=\(Self.muxOnlyProxyCommand)",
             ]
         }
+        // Keepalives every 20s keep relay tunnels warm; a dead transport is
+        // declared only after 2 minutes without a reply (6 misses). A shorter
+        // window turned Wi-Fi roams and VPN renegotiations into master deaths,
+        // and every master death is a reconnect that may need a security-key
+        // touch, so the tolerance errs toward surviving the blip.
         args += [
             "-o", "ControlPath=\(controlSocketPath)",
             "-o", "ControlPersist=\(controlPersistSeconds)",
             "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=20",
-            "-o", "ServerAliveCountMax=3",
+            "-o", "ServerAliveInterval=\(Self.serverAliveIntervalSeconds)",
+            "-o", "ServerAliveCountMax=\(Self.serverAliveCountMax)",
         ]
         if batchMode {
             args.append(contentsOf: ["-o", "BatchMode=yes"])

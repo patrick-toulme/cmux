@@ -88,10 +88,10 @@ extension RemoteTmuxController {
                 isLive: { appDelegate.tabManagerFor(windowId: $0) != nil }
             ), let existingWindowManager = appDelegate.tabManagerFor(windowId: existingWindowId) else {
                 // A valid target can close while SSH discovery is in flight. A new
-                // host has no mirror owner to clean up the transport in that race.
+                // host has no mirror owner to clean up the transport in that race
+                // (the master stays up for the retry; see `detachAll`).
                 if initialExistingMirrorWindowID == nil {
                     transportRegistry.remove(connectionHash: host.connectionHash)
-                    RemoteTmuxSSHTransport.spawnControlMasterExit(host: host)
                 }
                 throw RemoteTmuxError.unreachable("app not ready")
             }
@@ -161,9 +161,9 @@ extension RemoteTmuxController {
         }
     }
 
-    /// After an attach that mirrored nothing: live mirrors in other windows
-    /// still share this host's ControlMaster, so tear the transport down only
-    /// when nothing live remains on the connection.
+    /// After an attach that mirrored nothing: drop the transport handle when
+    /// nothing live remains on the connection. The authenticated master keeps
+    /// serving either way, so the user's retry never re-authenticates.
     func cleanUpTransportAfterFailedMirror(host: RemoteTmuxHost) {
         let hasLiveMirror = sessionMirrors.values.contains { mirror in
             mirror.host.connectionHash == host.connectionHash
@@ -171,7 +171,6 @@ extension RemoteTmuxController {
         }
         guard !hasLiveMirror else { return }
         transportRegistry.remove(connectionHash: host.connectionHash)
-        RemoteTmuxSSHTransport.spawnControlMasterExit(host: host)
     }
 
     func existingMirrorManager(for host: RemoteTmuxHost) -> TabManager? {

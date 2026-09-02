@@ -10,8 +10,12 @@ CARGO_RUNNER="${ROOT}/scripts/run-diff-sidecar-cargo.sh"
 TOOLCHAIN="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/{print $2; exit}' "${CRATE_DIR}/rust-toolchain.toml")"
 
 # Xcode build phases do not inherit a login-shell PATH. Prefer rustup's
-# conventional bin directory, then the standard Homebrew prefixes.
-export PATH="${CARGO_HOME:-${HOME}/.cargo}/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+# conventional bin directory, then the standard Homebrew prefixes. A Homebrew
+# rustup keeps its rustc/cargo proxies in its own keg bin (only `rustup`
+# itself is linked into the prefix), and cargo resolves `rustc` through
+# those proxies on PATH, so include them or the build dies with
+# "could not execute process `rustc -vV`".
+export PATH="${CARGO_HOME:-${HOME}/.cargo}/bin:/opt/homebrew/opt/rustup/bin:/usr/local/opt/rustup/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 if ! command -v rustup >/dev/null 2>&1; then
   echo "error: rustup is required to build ${BINARY_NAME}; run ./scripts/setup.sh after installing Rust from https://rustup.rs" >&2

@@ -6,9 +6,9 @@ import Foundation
 ///
 /// Factored out of the controller so the get-or-create lifecycle and the scattered
 /// dictionary bookkeeping live behind a small `@MainActor` surface. It only manages
-/// the transport handles; it deliberately does NOT own the `ssh -O exit`
-/// (``RemoteTmuxSSHTransport/spawnControlMasterExit(host:)``) teardown, which the
-/// controller sequences around its own `await` gaps.
+/// the transport handles: dropping a handle never touches the host's master, which
+/// keeps serving for the next attach (see `RemoteTmuxController.detachAll`); only
+/// ``disconnectMaster(host:)`` exits one.
 @MainActor
 final class RemoteTmuxTransportRegistry {
     private var transports: [String: RemoteTmuxSSHTransport] = [:]

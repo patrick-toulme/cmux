@@ -451,6 +451,150 @@ import Testing
         #expect(await transport.masterGeneration == 0)
     }
 
+    @Test func aStallParksTheFleetSoQueuedMachinesRaiseNoNewPrompt() async throws {
+        // One machine's open stalls (the user did not touch the key). Every
+        // machine queued behind it must then be refused up front as stalled
+        // WITHOUT spawning its own opener: each opener is one more sign
+        // request, which cancels the standing touch prompt and raises a
+        // fresh one (the rolling "touch your security key" storm).
+        let fleet = try FleetFakeSSH(openDuration: 0)
+        defer { fleet.cleanUp() }
+        let gate = RemoteTmuxMasterOpenGate(limit: 1)
+        let stuck = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-stuck"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate,
+            openerStallTimeout: .milliseconds(300)
+        )
+        let queued = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-queued"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate,
+            openerStallTimeout: .milliseconds(300)
+        )
+        fleet.holdOpen(for: "user@host-stuck")
+
+        let stuckOutcome = Task { () -> RemoteTmuxError? in
+            do { _ = try await stuck.ensureMasterReady(); return nil } catch let error as RemoteTmuxError { return error }
+        }
+        #expect(await waitUntil { fleet.openStarted(for: "user@host-stuck") })
+        let queuedOutcome = Task { () -> RemoteTmuxError? in
+            do { _ = try await queued.ensureMasterReady(); return nil } catch let error as RemoteTmuxError { return error }
+        }
+        #expect(await waitUntil { await gate.waitingCount == 1 })
+
+        #expect(await stuckOutcome.value == .authenticationStalled(destination: "user@host-stuck", seconds: 1))
+        #expect(await queuedOutcome.value == .authenticationStalled(destination: "user@host-queued", seconds: 1))
+        #expect(await gate.isParked)
+        // Only the stalled machine ever authenticated; the queued one was
+        // refused before it could raise a prompt.
+        #expect(fleet.openCount(for: "user@host-stuck") == 1)
+        #expect(fleet.openCount(for: "user@host-queued") == 0)
+
+        // While parked, a brand-new machine is refused the same way.
+        let late = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-late"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+        var lateError: RemoteTmuxError?
+        do { _ = try await late.ensureMasterReady() } catch let error as RemoteTmuxError { lateError = error }
+        #expect(lateError == .authenticationStalled(destination: "user@host-late", seconds: 90))
+        #expect(fleet.openCount(for: "user@host-late") == 0)
+    }
+
+    @Test func aMasterServedOutOfBandClearsTheParkAndOpensResume() async throws {
+        // The user re-authenticates in the terminal (one touch): the first
+        // machine's master comes up out of band. Observing that dead-to-serving
+        // edge is the proof the agent answers again, so the fleet may open
+        // through the gate once more, no terminal round trip per machine.
+        let fleet = try FleetFakeSSH(openDuration: 0)
+        defer { fleet.cleanUp() }
+        let gate = RemoteTmuxMasterOpenGate(limit: 2)
+        await gate.noteOpenerStalled()
+        #expect(await gate.isParked)
+
+        let authenticated = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-authed"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+        fleet.bringMasterUp(for: "user@host-authed")
+        #expect(try await authenticated.ensureMasterReady())
+        #expect(await !gate.isParked)
+
+        let next = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-next"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+        #expect(try await next.ensureMasterReady())
+        #expect(fleet.openCount(for: "user@host-next") == 1)
+    }
+
+    @Test func aSiblingOpenCompletingAfterAStallClearsThePark() async throws {
+        // Two opens in flight: A stalls (parks the fleet) while B is still
+        // authenticating. B then completes, which proves the agent answers,
+        // so the park must lift and the next machine opens normally instead
+        // of being sent to the terminal for nothing.
+        let fleet = try FleetFakeSSH(openDuration: 0)
+        defer { fleet.cleanUp() }
+        let gate = RemoteTmuxMasterOpenGate(limit: 2)
+        let a = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-a"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate,
+            openerStallTimeout: .milliseconds(300)
+        )
+        let b = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-b"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+        fleet.holdOpen(for: "user@host-a")
+        fleet.holdOpen(for: "user@host-b")
+        let aOutcome = Task { () -> RemoteTmuxError? in
+            do { _ = try await a.ensureMasterReady(); return nil } catch let error as RemoteTmuxError { return error }
+        }
+        let readyB = Task { try await b.ensureMasterReady() }
+        #expect(await waitUntil { fleet.openStarted(for: "user@host-a") && fleet.openStarted(for: "user@host-b") })
+
+        #expect(await aOutcome.value == .authenticationStalled(destination: "user@host-a", seconds: 1))
+        #expect(await gate.isParked)
+        fleet.releaseOpen(for: "user@host-b")
+        #expect(try await readyB.value)
+        #expect(await !gate.isParked)
+
+        let c = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-c"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+        #expect(try await c.ensureMasterReady())
+        #expect(fleet.openCount(for: "user@host-c") == 1)
+    }
+
+    @Test func parkExpiresOnItsOwnAsABackstop() async throws {
+        let gate = RemoteTmuxMasterOpenGate(limit: 1, parkDuration: .milliseconds(80))
+        await gate.noteOpenerStalled()
+        #expect(await gate.isParked)
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(await !gate.isParked)
+        // Success and stall are idempotent signals either way.
+        await gate.noteAuthenticationSucceeded()
+        #expect(await !gate.isParked)
+    }
+
+    @Test func openerStallBudgetLeavesTimeForOneTouch() {
+        // A security key agent holds a sign request ~120s (and sshd's default
+        // LoginGraceTime is 120s). The budget must stay under both so the kill
+        // is ours, not theirs, while leaving well over a minute for the user
+        // to notice the prompt and touch once for the whole fleet.
+        let budget = RemoteTmuxSSHTransport.defaultOpenerStallTimeout
+        #expect(budget >= .seconds(60))
+        #expect(budget < .seconds(120))
+    }
+
     @Test func stallMessageNamesTheMachineAndTheRecovery() {
         let message = RemoteTmuxError.authenticationStalled(destination: "user@host", seconds: 30).message
         #expect(message.contains("user@host"))

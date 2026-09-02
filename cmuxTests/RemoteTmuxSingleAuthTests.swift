@@ -48,6 +48,22 @@ import Testing
         #expect(!args.contains(where: { $0.hasPrefix("ProxyJump=") }))
     }
 
+    @Test func keepalivesToleratePassingNetworkBlips() {
+        // Every master death is a reconnect, and on a security key fleet a
+        // reconnect can cost a touch. Keep the relay warm every 20s, but do
+        // not declare the transport dead for a Wi-Fi roam or VPN renegotiation
+        // shorter than two minutes.
+        let host = RemoteTmuxHost(destination: "user@host")
+        for role in [RemoteTmuxControlMasterRole.opener, .client] {
+            let args = host.sshControlArguments(controlPersistSeconds: 0, batchMode: true, role: role)
+            #expect(consecutive(args, "-o", "ServerAliveInterval=20"))
+            #expect(consecutive(args, "-o", "ServerAliveCountMax=6"))
+        }
+        #expect(RemoteTmuxHost.serverAliveIntervalSeconds * RemoteTmuxHost.serverAliveCountMax >= 120)
+        let controlMode = host.controlModeArguments(sessionName: "dev", createIfMissing: false)
+        #expect(consecutive(controlMode, "-o", "ServerAliveCountMax=6"))
+    }
+
     @Test func controlModeClientIsMuxOnly() {
         // The long-lived `tmux -CC` stream (one per mirrored session) must never
         // self-authenticate: on reconnect, N of these re-spawn concurrently.

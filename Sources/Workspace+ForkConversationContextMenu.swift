@@ -199,9 +199,10 @@ extension Workspace {
                 identityFile: host.identityFile,
                 // An interactive terminal ssh with visible prompts: allowed to
                 // open (and authenticate) the shared master, like the
-                // `cmux ssh-tmux` terminal ssh.
+                // `cmux ssh-tmux` terminal ssh. A master it creates persists
+                // like every other, so the authentication is never repeated.
                 sshOptions: host.sshControlArguments(
-                    controlPersistSeconds: 180,
+                    controlPersistSeconds: RemoteTmuxHost.masterControlPersistIndefinitely,
                     batchMode: false,
                     role: .opener
                 )

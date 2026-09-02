@@ -12,10 +12,8 @@ import Testing
 
 /// Regression tests for remote-tmux mirror lifecycle and focus-neutral topology
 /// mutations. Detach coverage uses cached, unstarted control connections so no
-/// ssh/tmux ever attaches anywhere. The last-mirror teardown does fire-and-forget
-/// the production `ssh -O exit` at cmux's own (nonexistent here) ControlPath
-/// socket — a local-only no-op that exits immediately; a test seam to suppress
-/// it is exactly the production test-scaffolding cmux policy forbids.
+/// ssh/tmux ever attaches anywhere, and the last-mirror teardown spawns nothing
+/// either: the host's ControlMaster is deliberately left serving.
 @MainActor
 @Suite(.serialized)
 struct RemoteTmuxMirrorLifecycleTests {
@@ -351,9 +349,8 @@ struct RemoteTmuxMirrorLifecycleTests {
         controller.cleanUpTransportAfterFailedMirror(host: host)
         #expect(controller.transportRegistry.contains(connectionHash: host.connectionHash))
 
-        // With no live mirror left, the failed attach owns the transport and
-        // must clean it up (the `ssh -O exit` fired here targets cmux's own
-        // nonexistent ControlPath socket — a local no-op, per suite policy).
+        // With no live mirror left, the failed attach owns the transport
+        // handle and drops it (the master itself is left serving).
         controller.detach(host: host, sessionName: "dev")
         _ = controller.transportRegistry.transport(for: host)
         controller.cleanUpTransportAfterFailedMirror(host: host)
