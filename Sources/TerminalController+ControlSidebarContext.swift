@@ -135,6 +135,17 @@ extension TerminalController: ControlSidebarContext {
         pid: Int32?
     ) {
         let appFormat = SidebarMetadataFormat(rawValue: format.rawValue) ?? .plain
+        #if DEBUG
+        // Mirror of the lifecycle write log: a `target=selected` here for an
+        // agent-owned key means the client's --tab never parsed (the misroute
+        // class that leaked one machine's activity text onto other rows).
+        cmuxDebugLog(
+            "agentState.write status key=\(key) len=\(value.count) prio=\(priority) "
+            + "target=\(Self.controlSidebarTargetDescription(target)) "
+            + "panel=\(panelID?.uuidString.prefix(5) ?? "nil") "
+            + "conn=\(SocketConnectionAgentLeaseToken.current().map { String(describing: ObjectIdentifier($0)).suffix(6) } ?? "none")"
+        )
+        #endif
         controlSidebarSchedulePanelOwnedMutation(target: target, panelID: panelID) { _, owner in
             guard Self.shouldReplaceStatusEntry(
                 current: owner.statusEntry(key: key, panelId: panelID),
@@ -252,6 +263,17 @@ extension TerminalController: ControlSidebarContext {
             // Unreachable: the coordinator only forwards a value this app produced.
             return
         }
+        #if DEBUG
+        // Every remote-painted lifecycle write is forensics-grade: when a row
+        // shows the wrong dot, this line says what arrived, from which socket
+        // connection (lease token), and where it was aimed.
+        cmuxDebugLog(
+            "agentState.write lifecycle key=\(key) state=\(lifecycleRawValue) "
+            + "target=\(Self.controlSidebarTargetDescription(target)) "
+            + "panel=\(panelID?.uuidString.prefix(5) ?? "nil") "
+            + "conn=\(SocketConnectionAgentLeaseToken.current().map { String(describing: ObjectIdentifier($0)).suffix(6) } ?? "none")"
+        )
+        #endif
         // Remote tmux mirror panes are valid lifecycle targets: agents on a
         // mirrored machine self-report over the forwarded control socket.
         controlSidebarSchedulePanelOwnedMutation(
@@ -260,6 +282,14 @@ extension TerminalController: ControlSidebarContext {
             includeRemoteTmuxPanes: true
         ) { _, owner in
             owner.setAgentLifecycle(key: key, panelId: panelID, lifecycle: lifecycle)
+        }
+    }
+
+    private nonisolated static func controlSidebarTargetDescription(_ target: ControlSidebarTabTarget) -> String {
+        switch target {
+        case .selected: return "selected"
+        case .workspace(let id): return "ws:\(id.uuidString.prefix(5))"
+        case .index(let index): return "index:\(index)"
         }
     }
 

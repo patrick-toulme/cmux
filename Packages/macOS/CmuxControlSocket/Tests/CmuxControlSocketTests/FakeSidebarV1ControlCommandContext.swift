@@ -21,6 +21,33 @@ final class FakeSidebarV1ControlCommandContext: ControlCommandContext {
         scope: ControlSidebarPanelScope,
         stateRawValue: String
     )?
+    nonisolated(unsafe) var statusUpsertCall: (
+        target: ControlSidebarTabTarget,
+        key: String,
+        value: String,
+        priority: Int,
+        panelID: UUID?
+    )?
+    nonisolated(unsafe) var registeredLeases: [ControlAgentStateLease] = []
+
+    nonisolated func controlSidebarScheduleStatusUpsert(
+        target: ControlSidebarTabTarget,
+        key: String,
+        value: String,
+        icon: String?,
+        color: String?,
+        url: URL?,
+        priority: Int,
+        format: ControlSidebarMetadataFormat,
+        panelID: UUID?,
+        pid: Int32?
+    ) {
+        statusUpsertCall = (target, key, value, priority, panelID)
+    }
+
+    nonisolated func controlSidebarRegisterAgentStateLease(_ lease: ControlAgentStateLease) {
+        registeredLeases.append(lease)
+    }
 
     nonisolated func controlSurfaceParseShellActivityState(
         _ rawState: String

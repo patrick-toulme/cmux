@@ -951,6 +951,9 @@ final class RemoteTmuxControlConnection {
             applySessionNameChange(sessionId: id, name: renameName, event: "session-renamed", refetchWindows: false)
         case .sessionsChanged:
             record("sessions-changed")
+            // A session created on the host after attach is invisible until
+            // someone re-lists: let the controller re-discover and mirror it.
+            observers.notifySessionsChanged()
         case .clientDetached:
             record("client-detached")
             replayRecordedSizeClaims()

@@ -25,6 +25,50 @@ struct ControlCommandCoordinatorSidebarV1Tests {
         #expect(context.agentPIDClearCall?.requireOwnedKey == true)
     }
 
+    /// Field regression: agent activity text carrying a bare apostrophe
+    /// (`bash: find p0's layer range`) opened a quote that never closed, the
+    /// tokenizer swallowed every later option into the value, and the write
+    /// (now without `--tab`) landed on whatever workspace was selected.
+    @Test func statusUpsertWithUnbalancedQuoteKeepsOptionsAndTarget() {
+        let context = FakeSidebarV1ControlCommandContext()
+        let coordinator = ControlCommandCoordinator(context: context)
+        let workspaceID = UUID()
+        let panelID = UUID()
+
+        let response = coordinator.handleSidebarV1(
+            command: "set_status",
+            args: "opencode.activity bash: Find p0's layer range, stage counts --priority=-1 --lease=1 "
+                + "--tab=\(workspaceID.uuidString) --panel=\(panelID.uuidString)"
+        )
+
+        #expect(response == "OK")
+        #expect(context.statusUpsertCall?.target == .workspace(workspaceID))
+        #expect(context.statusUpsertCall?.key == "opencode.activity")
+        #expect(context.statusUpsertCall?.value == "bash: Find p0's layer range, stage counts")
+        #expect(context.statusUpsertCall?.priority == -1)
+        #expect(context.statusUpsertCall?.panelID == panelID)
+        #expect(context.registeredLeases == [.status(tabId: workspaceID.uuidString, key: "opencode.activity")])
+    }
+
+    /// Balanced quoting keeps working exactly as before (a quoted value may
+    /// carry spaces, the other quote mark, and escaped quotes).
+    @Test func statusUpsertHonorsBalancedQuotes() {
+        let context = FakeSidebarV1ControlCommandContext()
+        let coordinator = ControlCommandCoordinator(context: context)
+        let workspaceID = UUID()
+
+        let response = coordinator.handleSidebarV1(
+            command: "set_status",
+            args: "opencode.activity \"bash: echo it's a \\\"quoted\\\" thing\" --priority=-1 "
+                + "--tab=\(workspaceID.uuidString)"
+        )
+
+        #expect(response == "OK")
+        #expect(context.statusUpsertCall?.target == .workspace(workspaceID))
+        #expect(context.statusUpsertCall?.value == "bash: echo it's a \"quoted\" thing")
+        #expect(context.statusUpsertCall?.priority == -1)
+    }
+
     @Test func statusClearForwardsPanelScope() {
         let context = FakeSidebarV1ControlCommandContext()
         let coordinator = ControlCommandCoordinator(context: context)

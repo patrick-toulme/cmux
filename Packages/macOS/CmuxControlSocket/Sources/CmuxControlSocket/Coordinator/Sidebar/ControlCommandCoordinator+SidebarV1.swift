@@ -138,7 +138,22 @@ extension ControlCommandCoordinator {
     nonisolated func sidebarTokenizeArgs(_ args: String) -> [String] {
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
+        let quoted = sidebarTokenizeArgs(trimmed, honoringQuotes: true)
+        if quoted.terminated { return quoted.tokens }
+        // An unbalanced quote means the client sent free text with a bare
+        // apostrophe or quote mark (`bash: find p0's layer`), not a quoted
+        // token. Honoring it would swallow every later `--key=value` option
+        // into the value, and a swallowed `--tab` silently rehomed the write
+        // onto whatever workspace happened to be selected: agent activity
+        // text from one machine landed on unrelated rows across the fleet.
+        // Re-read the line with quote marks as literal characters instead.
+        return sidebarTokenizeArgs(trimmed, honoringQuotes: false).tokens
+    }
 
+    private nonisolated func sidebarTokenizeArgs(
+        _ trimmed: String,
+        honoringQuotes: Bool
+    ) -> (tokens: [String], terminated: Bool) {
         var tokens: [String] = []
         var current = ""
         var inQuote = false
@@ -184,7 +199,7 @@ extension ControlCommandCoordinator {
                 continue
             }
 
-            if char == "'" || char == "\"" {
+            if honoringQuotes, char == "'" || char == "\"" {
                 inQuote = true
                 quoteChar = char
                 cursor = trimmed.index(after: cursor)
@@ -207,7 +222,7 @@ extension ControlCommandCoordinator {
         if !current.isEmpty {
             tokens.append(current)
         }
-        return tokens
+        return (tokens, !inQuote)
     }
 
     /// Splits args into positionals and `--key[=value]` options, honoring a

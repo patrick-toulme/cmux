@@ -57,6 +57,11 @@ final class RemoteTmuxController {
     /// ``scheduleAgentBridgeRefresh(host:force:)``).
     private var agentBridgeSchedule = RemoteTmuxAgentBridgeSchedule()
 
+    /// Pending per-host session re-discovery (see ``noteRemoteSessionsChanged(host:)``).
+    /// One debounced task per endpoint: every control client of a host receives
+    /// the same `%sessions-changed`, and a session creation emits several.
+    private var sessionDiscoveryTasks: [String: Task<Void, Never>] = [:]
+
     init() {}
 
     /// Synchronous read of the `remoteTmux` beta flag for AppKit/socket paths
@@ -455,11 +460,62 @@ final class RemoteTmuxController {
                     newName: newName
                 )
             },
+            onSessionsChanged: { [weak self, weak connection] in
+                guard let self, let connection else { return }
+                self.noteRemoteSessionsChanged(host: connection.host)
+            },
             onReconnectAuthRequired: { [weak self, weak connection] in
                 guard let self, let connection else { return }
                 self.noteReconnectAuthRequired(host: connection.host)
             }
         )
+    }
+
+    /// `%sessions-changed` from any of a host's control clients: the server's
+    /// session set moved. A session created on the machine after attach (a new
+    /// `tmux new-session` from a shell, a script, another operator) used to stay
+    /// invisible until the user reran `cmux ssh-tmux`; re-list the host and
+    /// mirror whatever is new into the window that already hosts the machine.
+    /// Debounced per endpoint; existing mirrors dedupe by stable session id, so
+    /// a spurious notification is a cheap `list-sessions` and nothing else.
+    func noteRemoteSessionsChanged(host: RemoteTmuxHost) {
+        let hash = host.connectionHash
+        sessionDiscoveryTasks[hash]?.cancel()
+        sessionDiscoveryTasks[hash] = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled, let self else { return }
+            await self.discoverAndMirrorNewSessions(host: host)
+            self.sessionDiscoveryTasks[hash] = nil
+        }
+    }
+
+    private func discoverAndMirrorNewSessions(host: RemoteTmuxHost) async {
+        // Only while the machine is live in some window; a detached host must
+        // not resurrect through a stray notification.
+        guard let manager = existingMirrorManager(for: host) else { return }
+        let sessions: [RemoteTmuxSession]
+        do {
+            sessions = try await transport(for: host).discoverMirrorSessions(createIfEmpty: false)
+        } catch {
+            #if DEBUG
+            cmuxDebugLog("remote.sessions.rediscover.failed host=\(host.destination) error=\(error)")
+            #endif
+            return
+        }
+        guard !Task.isCancelled, !sessions.isEmpty else { return }
+        let before = Set(sessionMirrors.values.compactMap(\.mirroredWorkspaceId))
+        let after = Set(mirrorDiscoveredSessions(host: host, sessions: sessions, into: manager))
+        let added = after.subtracting(before)
+        #if DEBUG
+        cmuxDebugLog(
+            "remote.sessions.rediscover host=\(host.destination) listed=\(sessions.count) added=\(added.count)"
+        )
+        #endif
+        if !added.isEmpty {
+            // New mirrors need the bridge env/plugin exactly like an attach
+            // (best-effort, off the notification path).
+            scheduleAgentBridgeRefresh(host: host, force: false)
+        }
     }
 
     @discardableResult
@@ -1324,13 +1380,41 @@ final class RemoteTmuxController {
     /// the machine know only their `$TMUX_PANE` and the injected machine
     /// identity, while every socket command addresses local UUIDs.
     func resolveRemotePane(connectionHash: String, paneId: Int) -> (workspaceId: UUID, panelId: UUID)? {
-        for mirror in hostMirrors(connectionHash: connectionHash) {
-            guard let workspace = mirror.mirroredWorkspace,
-                  let windowId = mirror.windowIdByPane[paneId],
-                  let panel = mirror.windowMirrorByWindowId[windowId]?.panelsByPaneId[paneId]
-            else { continue }
-            return (workspace.id, panel.id)
+        let mirrors = hostMirrors(connectionHash: connectionHash)
+        for mirror in mirrors {
+            guard let workspace = mirror.mirroredWorkspace else { continue }
+            if let windowId = mirror.windowIdByPane[paneId],
+               let panel = mirror.windowMirrorByWindowId[windowId]?.panelsByPaneId[paneId] {
+                return (workspace.id, panel.id)
+            }
+            // The window mirrors' own pane -> panel maps are the ground truth
+            // for what the app can address; the pane -> window index above is
+            // a derived cache that can trail a topology rebuild. A remote agent
+            // asking to be attributed to a pane whose panel exists must never
+            // be told the pane is unknown because of that lag.
+            for windowMirror in mirror.windowMirrorByWindowId.values {
+                if let panel = windowMirror.panelsByPaneId[paneId] {
+                    return (workspace.id, panel.id)
+                }
+            }
         }
+        #if DEBUG
+        // A miss leaves the agent's pane blank in the sidebar; record why so
+        // the next field report explains itself.
+        let detail = mirrors.map { mirror -> String in
+            let session = mirror.sessionName
+            let hasWorkspace = mirror.mirroredWorkspace != nil
+            let windowId = mirror.windowIdByPane[paneId].map(String.init) ?? "nil"
+            let panes = mirror.windowMirrorByWindowId.values
+                .flatMap { $0.panelsByPaneId.keys }
+                .sorted()
+            return "\(session){ws=\(hasWorkspace ? 1 : 0) win=\(windowId) panes=\(panes)}"
+        }.joined(separator: " ")
+        cmuxDebugLog(
+            "remote.resolvePane.miss host=\(connectionHash.prefix(6)) pane=%\(paneId) "
+            + "mirrors=\(mirrors.count) \(detail)"
+        )
+        #endif
         return nil
     }
 
