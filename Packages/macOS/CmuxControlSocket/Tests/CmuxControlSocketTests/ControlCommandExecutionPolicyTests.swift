@@ -35,6 +35,13 @@ struct ControlCommandExecutionPolicyTests {
             "debug.sidebar.simulate_drag", "debug.mobile.transport.disconnect",
             "debug.window.screenshot", "mobile.attach_ticket.create",
             "mobile.terminal.set_font", "mobile.task.models.list",
+            // The remote tmux family does SSH round trips; every verb the CLI's
+            // attach pipeline calls must be reachable on the worker, PROBE
+            // included (its omission sent the multi-machine attach down the
+            // sequential interactive path on every run).
+            "remote.tmux.sessions", "remote.tmux.probe", "remote.tmux.mirror",
+            "remote.tmux.attach", "remote.tmux.detach", "remote.tmux.state",
+            "remote.tmux.resolve_pane", "remote.tmux.pane_surfaces",
             // JavaScript-evaluating browser methods block on page JS and must
             // not hold the main actor (see socketWorkerMethods rationale).
             "browser.eval", "browser.wait", "browser.snapshot", "browser.click",
