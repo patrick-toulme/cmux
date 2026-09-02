@@ -9676,10 +9676,22 @@ struct CMUXCLI {
                     // PROBE (concurrent across machines): opens the shared
                     // master via BatchMode when it can, or reports the
                     // interactive argv the terminal must run.
+                    //
+                    // Submitted a beat apart in command order so the app's
+                    // FIFO open gate serves machines in the same order the
+                    // terminal baton below prompts for them: when every open
+                    // is waiting on one security key touch, the first
+                    // machine's open is then the first to stall and escalate,
+                    // its prompt appears after one stall budget instead of
+                    // three, and the touch it gets warms every open behind
+                    // it. The spread is negligible next to a single open.
+                    Thread.sleep(forTimeInterval: Double(index) * 0.05)
+                    // > the app-side 120s probe budget, so the app's own
+                    // result or error always arrives first.
                     let probe = try workerClient.sendV2(
                         method: "remote.tmux.probe",
                         params: baseParams,
-                        responseTimeout: 75
+                        responseTimeout: 150
                     )
                     var authArgv: [String]?
                     if (probe["auth_required"] as? Bool) == true {

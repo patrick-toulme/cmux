@@ -155,7 +155,14 @@ extension TerminalController {
             return v2Error(id: id, code: "invalid_params", message: String(localized: "socket.remoteTmux.hostRequired", defaultValue: "host is required"))
         }
         let agentSocket = Self.remoteTmuxAgentSocket(from: params)
-        return v2VmCall(id: id, timeoutSeconds: 45) {
+        // Budget: a machine may wait through several gate rounds behind other
+        // machines' opens (RemoteTmuxMasterOpenGate.shared.limit at a time),
+        // each of which lasts at most the opener stall budget before it is
+        // killed and escalated. Enough for a dozen machines whose first
+        // opens all wait on one security key touch; a shorter budget turned
+        // the queued machines into opaque timeouts while the escalation was
+        // already telling the user to touch the key.
+        return v2VmCall(id: id, timeoutSeconds: 120) {
             guard let controller = await MainActor.run(body: { AppDelegate.shared?.remoteTmuxController }) else {
                 throw RemoteTmuxError.unreachable("app not ready")
             }
