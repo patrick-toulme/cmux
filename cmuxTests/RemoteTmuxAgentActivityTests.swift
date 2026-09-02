@@ -301,6 +301,54 @@ struct RemoteTmuxAgentActivityMirrorTests {
             paneId: 4
         ) == nil)
     }
+
+    /// The plugin publishes its activity line with the SAME mirror pane id it
+    /// uses for lifecycle (`set_status opencode.activity … --tab=<ws>
+    /// --panel=<pane>`). A mirror pane is not in `panels`, so a status write
+    /// that stopped at the strict panel check was silently dropped: the dot
+    /// painted, the text never did. Live repro: a run whose bash tool ran for
+    /// 20s logged the write but `list_status` stayed empty the whole time.
+    @Test func panelScopedStatusWritesReachTheMirrorWorkspace() throws {
+        let harness = try RemoteTmuxAgentActivityHarness()
+        defer { harness.tearDown() }
+        let panelId = try harness.panelId(forPane: 4)
+        let workspaceId = harness.workspace.id.uuidString
+
+        let upsert = TerminalController.shared.handleSocketLine(
+            "set_status opencode.activity \"bash: sleep 20\" --priority=-1 --lease=1 "
+                + "--tab=\(workspaceId) --panel=\(panelId.uuidString)"
+        )
+        #expect(upsert == "OK")
+        TerminalMutationBus.shared.drainForTesting()
+        #expect(harness.workspace.statusEntries["opencode.activity"]?.value == "bash: sleep 20")
+        #expect(harness.workspace.statusEntries["opencode.activity"]?.priority == -1)
+        let listed = TerminalController.shared.handleSocketLine("list_status --tab=\(workspaceId)")
+        #expect(listed.contains("opencode.activity=bash: sleep 20"), "list_status: \(listed)")
+
+        // The end-of-turn clear names the pane the same way and must land too.
+        let clear = TerminalController.shared.handleSocketLine(
+            "clear_status opencode.activity --tab=\(workspaceId) --panel=\(panelId.uuidString)"
+        )
+        #expect(clear == "OK")
+        TerminalMutationBus.shared.drainForTesting()
+        #expect(harness.workspace.statusEntries["opencode.activity"] == nil)
+    }
+
+    /// Reach widened to mirror panes, not to arbitrary ids: a panel that
+    /// belongs to neither the workspace nor its mirror is still rejected.
+    @Test func statusWritesForUnknownPanelsStayDropped() throws {
+        let harness = try RemoteTmuxAgentActivityHarness()
+        defer { harness.tearDown() }
+        let workspaceId = harness.workspace.id.uuidString
+
+        let upsert = TerminalController.shared.handleSocketLine(
+            "set_status opencode.activity \"stray\" --priority=-1 "
+                + "--tab=\(workspaceId) --panel=\(UUID().uuidString)"
+        )
+        #expect(upsert == "OK")
+        TerminalMutationBus.shared.drainForTesting()
+        #expect(harness.workspace.statusEntries["opencode.activity"] == nil)
+    }
 }
 
 /// Strict-priority resolution for the t3code-style attention phase.
