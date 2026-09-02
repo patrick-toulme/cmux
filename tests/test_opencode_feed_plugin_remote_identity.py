@@ -66,6 +66,9 @@ const conns = new Set();
 // that) and observe whether the parked push survives.
 let parkFeedPush = false;
 const parkedConns = new Set();
+// While set, the fake app answers resolve_pane with resolved:false (a pane
+// the mirror cannot place yet).
+let failResolve = false;
 
 const handleConnection = (conn) => {
   console.error(`[srv] accepted connection at ${Date.now()}`);
@@ -90,7 +93,9 @@ const handleConnection = (conn) => {
         conn.write(JSON.stringify({
           id: msg.id,
           ok: true,
-          result: { resolved: true, workspace_id: "W1", surface_id: "S1" },
+          result: failResolve
+            ? { resolved: false }
+            : { resolved: true, workspace_id: "W1", surface_id: "S1" },
         }) + "\\n");
       } else if (msg && msg.method === "feed.push" && parkFeedPush) {
         const rid = (msg.params && msg.params.event && msg.params.event._opencode_request_id) || "";
@@ -429,7 +434,7 @@ if (received.some((l) => l.includes("c=turn-complete"))) {
 // decision clears it so the needs-input line stands alone.
 received.length = 0;
 const activityLine = (text) =>
-  `set_status opencode.activity ${text} --priority=-1 --lease=1 --tab=W1 --panel=S1`;
+  `set_status opencode.activity "${text}" --priority=-1 --lease=1 --tab=W1 --panel=S1`;
 const activityClearLine = "clear_status opencode.activity --tab=W1";
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
 await hooks.event({ event: { type: "message.part.updated", properties: {
@@ -560,7 +565,7 @@ received.length = 0;
 // line without a toast; completion clears the line, delivers exactly ONE
 // goal toast, and settles the held turn debt.
 received.length = 0;
-const goalLine = (text) => `set_status opencode.goal ${text} --priority=-2 --lease=1 --tab=W1 --panel=S1`;
+const goalLine = (text) => `set_status opencode.goal "${text}" --priority=-2 --lease=1 --tab=W1 --panel=S1`;
 const goalClear = "clear_status opencode.goal --tab=W1";
 await hooks.event({ event: { type: "goal.updated", properties: {
   sessionID: "g1", goal: { status: "active", objective: "ship the goal feature" },
@@ -720,6 +725,95 @@ if (!recoveredToasts[0].includes("turn 2 prompt")) {
   throw new Error(`the newest debt must win the recovery toast: ${recoveredToasts[0]}`);
 }
 received.length = 0;
+await new Promise((resolve) => setTimeout(resolve, 500));
+
+// Scenario 3m: wire quoting. Free text carrying quote marks and backslashes
+// travels as ONE quoted token with the app's escapes, so a bare apostrophe
+// can never swallow the options that route the write (the misroute that
+// leaked one machine's activity text onto every selected row).
+received.length = 0;
+await hooks.event({ event: { type: "message.part.updated", properties: {
+  part: { type: "tool", sessionID: "s12", messageID: "mq1", tool: "bash", state: { status: "running", input: { command: "echo it's a \\"quoted\\" C:\\\\path" } } },
+} } });
+const quotedActivity = 'set_status opencode.activity "bash: echo it\\'s a \\\\"quoted\\\\" C:\\\\\\\\path" --priority=-1 --lease=1 --tab=W1 --panel=S1';
+await waitFor(() => received.some((l) => l === quotedActivity), 5000, "activity text is quoted and escaped on the wire");
+await hooks.event({ event: { type: "session.status", properties: { sessionID: "s12", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 500));
+
+// Scenario 3n: an engine that reports origin on EVERY delivery
+// (external:false on local events) confirms ownership from the first
+// event: a tool-first turn (no streaming delta until the model finally
+// speaks) paints running at its busy edge instead of at its end. A fresh
+// plugin instance models a fresh agent process.
+received.length = 0;
+const hooksTagged = await mod.CMUXFeed({ directory: "/tmp/x" });
+await hooksTagged.event({ event: { type: "session.created", external: false, properties: {
+  info: { id: "t1", directory: "/tmp/x" },
+} } });
+await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: "t1", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "origin-reporting engine paints running at the busy edge, no delta needed");
+if (received.some((l) => l.startsWith("resolve:")) === false) {
+  throw new Error("tagged instance must have resolved its pane");
+}
+await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: "t1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "tagged instance settles idle");
+await new Promise((resolve) => setTimeout(resolve, 500));
+
+// Scenario 3o: an unresolvable pane retries on the recovery timer, not
+// only on the next bus event. An agent deep in a long tool call emits no
+// events, so a mirror that was still building when the agent started must
+// not leave the row blank until the agent happens to speak again.
+received.length = 0;
+failResolve = true;
+const hooksLate = await mod.CMUXFeed({ directory: "/tmp/x" });
+await hooksLate.event({ event: { type: "session.status", external: false, properties: { sessionID: "u1", status: { type: "busy" } } } });
+await waitFor(() => received.filter((l) => l.startsWith("resolve:")).length >= 3, 8000, "initial resolve cycle fails");
+if (received.some((l) => l === runningLine)) {
+  throw new Error(`nothing may paint while the pane is unresolved: ${JSON.stringify(received)}`);
+}
+received.length = 0;
+failResolve = false;
+// No further events: only the timer can rescue this pane.
+await waitFor(() => received.some((l) => l === runningLine), 8000, "timer-driven resolve paints the running truth with no new event");
+await hooksLate.event({ event: { type: "session.status", external: false, properties: { sessionID: "u1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "late-resolved instance settles idle");
+await new Promise((resolve) => setTimeout(resolve, 500));
+
+// Scenario 3p: completion toasts coalesce per pane. Two parentless sessions
+// finishing typed turns inside one window (workflow units, side threads,
+// sessions whose parentage this instance never saw) produce ONE toast; a
+// completion after the window toasts again.
+received.length = 0;
+for (const n of [1, 2]) {
+  const sid = `c1${n}`;
+  await hooksTagged.event({ event: { type: "message.updated", external: false, properties: {
+    info: { id: `mc1${n}`, sessionID: sid, role: "user" },
+  } } });
+  await hooksTagged.event({ event: { type: "message.part.updated", external: false, properties: {
+    part: { type: "text", messageID: `mc1${n}`, sessionID: sid, text: `burst prompt ${n}` },
+  } } });
+  await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: sid, status: { type: "busy" } } } });
+}
+await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: "c11", status: { type: "idle" } } } });
+await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: "c12", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l.includes("c=turn-complete")), 5000, "first completion of the burst toasts");
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.filter((l) => l.includes("c=turn-complete")).length !== 1) {
+  throw new Error(`a completion burst must coalesce to one toast: ${JSON.stringify(received.filter((l) => l.includes("c=turn-complete")))}`);
+}
+await new Promise((resolve) => setTimeout(resolve, 500));
+received.length = 0;
+await hooksTagged.event({ event: { type: "message.updated", external: false, properties: {
+  info: { id: "mc13", sessionID: "c13", role: "user" },
+} } });
+await hooksTagged.event({ event: { type: "message.part.updated", external: false, properties: {
+  part: { type: "text", messageID: "mc13", sessionID: "c13", text: "after the window" },
+} } });
+await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: "c13", status: { type: "busy" } } } });
+await hooksTagged.event({ event: { type: "session.status", external: false, properties: { sessionID: "c13", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l.includes("c=turn-complete") && l.includes("after the window")), 5000, "a completion past the window toasts again");
+await new Promise((resolve) => setTimeout(resolve, 500));
+received.length = 0;
 
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
@@ -782,6 +876,10 @@ def main() -> int:
         env["CMUX_FEED_ACTIVITY_INTERVAL_MS"] = "200"
         # Same for the turn-complete settle (fires after the idle grace).
         env["CMUX_FEED_TURN_SETTLE_MS"] = "200"
+        # Toast burst window: short enough that scenarios stay independent
+        # (each waits past it), long enough for the coalescing scenario to
+        # land two settles inside one window.
+        env["CMUX_FEED_TOAST_COALESCE_MS"] = "400"
         env["CMUX_FEED_DEBUG"] = "1"
         env.pop("CMUX_SOCKET_PATH", None)
         env.pop("CMUX_REMOTE_HOST_KEY", None)

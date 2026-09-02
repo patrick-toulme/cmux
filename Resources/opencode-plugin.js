@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v11
+// cmux-feed-plugin-marker v12
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -91,6 +91,13 @@ const ACTIVITY_STATUS_INTERVAL_MS =
 // requiring a local agent PID binding (remote agents have none), and the
 // feed's needs-input entry (priority 0) outranks it while both are shown.
 const ACTIVITY_STATUS_KEY = "opencode.activity";
+// One pane, one agent UI: several completions settling within this window
+// are background sessions finishing together (workflow units, side threads,
+// sessions whose parentage this instance never saw), never a human
+// finishing N turns at once. The first toast of a burst is the signal; the
+// rest are noise (observed: fifteen toasts in one second on one row).
+const TURN_COMPLETE_COALESCE_MS =
+  Number(process.env.CMUX_FEED_TOAST_COALESCE_MS || "") || 10_000;
 const ACTIVITY_TEXT_MAX = 80;
 // Long-term-goal state for the sidebar row (engine `goal.updated` bus
 // events, emitted by the server on every goal transition). Priority -2
@@ -181,6 +188,9 @@ export const CMUXFeed = async (ctx) => {
   // so a disconnect can re-mark them owed for redelivery.
   const recentTurnCompleteSends = new Map();
   let reconnectRecoveryTimer = null;
+  // Wall clock of the last completion toast that left this pane (see
+  // TURN_COMPLETE_COALESCE_MS).
+  let lastTurnCompleteSentAt = 0;
 
   const ensureIdentity = () => {
     if (!identityPromise) {
@@ -796,6 +806,14 @@ export const CMUXFeed = async (ctx) => {
           );
         }
         remoteResolvePromise = null; // allow a later event to retry
+        // A pane the app cannot place yet (mirror still building, a
+        // workspace mid-rebuild) must not strand a working agent: keep
+        // retrying on the timer while anything is waiting to be painted.
+        // Sessions still unproven count too (their first paint is what
+        // is being held back).
+        if ([...sessions.values()].some((state) => state.isBusy || state.completionOwed)) {
+          armRecoveryTimer();
+        }
         return null;
       })();
     }
@@ -831,7 +849,16 @@ export const CMUXFeed = async (ctx) => {
       "disconnected; recover =", anythingToRecover,
       "timer =", reconnectRecoveryTimer != null
     );
-    if (!anythingToRecover || reconnectRecoveryTimer) return;
+    if (!anythingToRecover) return;
+    armRecoveryTimer();
+  };
+
+  // Retries identity + resolve on a timer until a resolve lands (cleared by
+  // afterResolveRecovered). Shared by the disconnect path and the
+  // unresolved-pane path: an agent deep in a long tool call emits no bus
+  // events, so nothing else would ever drive the lazy retry.
+  const armRecoveryTimer = () => {
+    if (reconnectRecoveryTimer) return;
     reconnectRecoveryTimer = setInterval(() => {
       void (async () => {
         feedDebugLog("recovery tick; resolveInFlight =", remoteResolvePromise != null);
@@ -971,12 +998,19 @@ export const CMUXFeed = async (ctx) => {
     return normalized.replace(/--/g, "-");
   };
 
+  // Free text on the v1 wire must be one quoted token: the app tokenizes
+  // like a shell, so a bare apostrophe in `find p0's layer` opened a quote
+  // that swallowed every later option, and the write (now without --tab)
+  // landed on whatever workspace was selected across the whole fleet.
+  const quoteV1 = (text) =>
+    `"${String(text).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
   const writeActivityStatus = (text) => {
     if (!isRemote() || !remoteTarget) return;
     lastActivitySentText = text;
     lastActivitySentAt = Date.now();
     writeLine(
-      `set_status ${ACTIVITY_STATUS_KEY} ${text} --priority=-1 --lease=1 ` +
+      `set_status ${ACTIVITY_STATUS_KEY} ${quoteV1(text)} --priority=-1 --lease=1 ` +
         `--tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
     );
   };
@@ -1058,7 +1092,7 @@ export const CMUXFeed = async (ctx) => {
     lastGoalLineText = text;
     if (text) {
       writeLine(
-        `set_status ${GOAL_STATUS_KEY} ${text} --priority=-2 --lease=1 ` +
+        `set_status ${GOAL_STATUS_KEY} ${quoteV1(text)} --priority=-2 --lease=1 ` +
           `--tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
       );
     } else {
@@ -1139,10 +1173,20 @@ export const CMUXFeed = async (ctx) => {
     if (state.goal && (state.goal.status === "active" || state.goal.status === "paused")) {
       return;
     }
+    // Burst suppression: a toast already left this pane moments ago, so
+    // this completion is part of the same burst. Settle the debt silently.
+    if (Date.now() - lastTurnCompleteSentAt < TURN_COMPLETE_COALESCE_MS) {
+      state.completionOwed = false;
+      return;
+    }
     const subtitle = sanitizeNotifyField(state.lastUserMessage, 120);
     const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
     const send = (target) => {
       if (!state.completionOwed) return;
+      if (Date.now() - lastTurnCompleteSentAt < TURN_COMPLETE_COALESCE_MS) {
+        state.completionOwed = false;
+        return;
+      }
       recentTurnCompleteSends.set(sid, Date.now());
       const wrote = writeLine(
         `notify_target_async ${target.workspaceId} ${target.surfaceId} ` +
@@ -1150,7 +1194,10 @@ export const CMUXFeed = async (ctx) => {
       );
       // The debt clears only when the line actually left: a write into a
       // dead socket keeps it owed for the recovery flush.
-      if (wrote) state.completionOwed = false;
+      if (wrote) {
+        state.completionOwed = false;
+        lastTurnCompleteSentAt = Date.now();
+      }
     };
     if (!remoteTarget) {
       void resolveRemoteTarget().then((target) => {
@@ -1410,7 +1457,10 @@ export const CMUXFeed = async (ctx) => {
         event.properties?.part?.sessionID
       );
       const external = event.external === true;
-      if (external && !engineTagsOrigin) engineTagsOrigin = true;
+      // Engines that report origin stamp EVERY delivery (false = ours).
+      // Older builds stamped only foreign ones, so a lone session could sit
+      // in heuristic mode forever; a boolean of either value settles it.
+      if (typeof event.external === "boolean" && !engineTagsOrigin) engineTagsOrigin = true;
       if (!external && engineTagsOrigin) {
         // Tagged engine and no tag on this delivery: published by this
         // process, so the session is ours by definition.
@@ -1581,10 +1631,13 @@ export const CMUXFeed = async (ctx) => {
             }
           }
           const deliver = (target) => {
-            writeLine(
+            const wrote = writeLine(
               `notify_target_async ${target.workspaceId} ${target.surfaceId} ` +
                 `OpenCode|${subtitle}|${body}|c=turn-complete;p=0`
             );
+            // The goal edge is THE completion signal; per-turn settles that
+            // follow within the coalesce window are the same event.
+            if (wrote) lastTurnCompleteSentAt = Date.now();
           };
           if (remoteTarget) {
             deliver(remoteTarget);
