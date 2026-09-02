@@ -38,9 +38,9 @@ extension RemoteTmuxController {
             // Attach-time uses the WIDER predicate: direct network failures
             // route to the terminal too, where env-dependent relay configs
             // (Match exec probes, ProxyCommand helpers on terminal-only
-            // PATHs) apply correctly. The reconnect gate stays strict.
-            if case .commandFailed(_, let stderr) = error,
-               RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
+            // PATHs) apply correctly, and so does a stalled BatchMode
+            // authentication. The reconnect gate stays strict.
+            if RemoteTmuxSSHTransport.interactiveAttachRetryWillHelp(error) {
                 // A wake-stale master (process alive, tunnel dead — or the
                 // relay still holding the old tunnel's slot) can swallow the
                 // upcoming interactive connection with a silent

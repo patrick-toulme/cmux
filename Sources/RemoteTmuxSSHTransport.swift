@@ -25,6 +25,26 @@ actor RemoteTmuxSSHTransport {
     private let sshExecutablePath: String
     private let controlPersistSeconds: Int
 
+    /// The bound on concurrent master opens across the app (see
+    /// ``RemoteTmuxMasterOpenGate``); every host's transport shares one.
+    private let openGate: RemoteTmuxMasterOpenGate
+
+    /// How long the BatchMode opener may spend before cmux gives up on
+    /// BatchMode authentication for this open (see
+    /// ``defaultOpenerStallTimeout``).
+    private let openerStallTimeout: Duration
+
+    /// A healthy corp open, relay and agent included, completes in 2-10s
+    /// (measured; 12s under heavy agent contention). A BatchMode connect
+    /// still authenticating after this long is waiting on something
+    /// BatchMode cannot provide (a security key touch, a prompt) or on a
+    /// wedged agent, and the server's own login grace would only let it hang
+    /// for another ~90s before closing it. Killing it here and reporting
+    /// ``RemoteTmuxError/authenticationStalled(destination:seconds:)`` hands
+    /// the machine to the interactive terminal while the attach is still
+    /// live instead of surfacing an opaque timeout later.
+    static let defaultOpenerStallTimeout: Duration = .seconds(30)
+
     /// In-flight shared-master warmup, if any. ``ensureMasterReady()`` funnels every
     /// concurrent caller through this single task so the master is opened at most
     /// once even though the actor is reentrant across awaits (see that method).
@@ -74,14 +94,22 @@ actor RemoteTmuxSSHTransport {
     ///   - host: the remote destination.
     ///   - sshExecutablePath: the local `ssh` binary (overridable for tests).
     ///   - controlPersistSeconds: idle lifetime of the shared master.
+    ///   - openGate: the bound on concurrent opens shared across hosts
+    ///     (overridable for tests).
+    ///   - openerStallTimeout: the BatchMode opener's authentication budget
+    ///     (overridable for tests).
     init(
         host: RemoteTmuxHost,
         sshExecutablePath: String = RemoteTmuxHost.defaultSSHExecutablePath(),
-        controlPersistSeconds: Int = 180
+        controlPersistSeconds: Int = 180,
+        openGate: RemoteTmuxMasterOpenGate = .shared,
+        openerStallTimeout: Duration = RemoteTmuxSSHTransport.defaultOpenerStallTimeout
     ) {
         self.host = host
         self.sshExecutablePath = sshExecutablePath
         self.controlPersistSeconds = controlPersistSeconds
+        self.openGate = openGate
+        self.openerStallTimeout = openerStallTimeout
     }
 
     // MARK: - High-level tmux operations
@@ -431,18 +459,57 @@ actor RemoteTmuxSSHTransport {
         // and master reopens with no immediate control re-attach still
         // retarget the link. The snippet is stdout/stderr-silent and always
         // exits 0, so the readiness classification is untouched.
-        let opened = try await execute(
-            [
-                "/bin/sh", "-c",
-                RemoteTmuxHost.agentLinkRefreshScript(connectionHash: host.connectionHash) + "; true",
-            ],
-            role: .opener
-        )
+        //
+        // The open itself (the authentication) runs under the shared open
+        // gate: a fleet attach or a reconnect storm after wake must not
+        // fire every machine's authentication at the agent at once (see
+        // RemoteTmuxMasterOpenGate for the measured stall and hang).
+        let openerCommand = [
+            "/bin/sh", "-c",
+            RemoteTmuxHost.agentLinkRefreshScript(connectionHash: host.connectionHash) + "; true",
+        ]
+        let opened: RemoteTmuxCommandResult? = try await openGate.withSlot { waited in
+            // Time spent parked in the gate is exactly the window in which the
+            // user's terminal (an interactive handover, an ssh-tmux rerun) may
+            // have brought THIS master up; never authenticate a second time
+            // for a master that is already serving.
+            if waited, try await self.observedMasterRunning() { return nil }
+            return try await self.executeOpenerOrStall(openerCommand)
+        }
+        guard let opened else { return true }
         if try await observedMasterRunning() { return true }
         if !opened.succeeded {
             throw RemoteTmuxError.commandFailed(exitCode: opened.exitCode, stderr: opened.stderr)
         }
         return false
+    }
+
+    /// Spawns the opener and races it against ``openerStallTimeout``. On a
+    /// stall the ssh process is killed (task cancellation reaches
+    /// ``runProcess``'s cancellation handler) so no orphaned authentication
+    /// keeps the agent or a gate slot busy, and
+    /// ``RemoteTmuxError/authenticationStalled(destination:seconds:)`` tells
+    /// the callers to hand this machine to the interactive terminal.
+    private func executeOpenerOrStall(_ command: [String]) async throws -> RemoteTmuxCommandResult {
+        let budget = openerStallTimeout
+        let destination = host.destination
+        return try await withThrowingTaskGroup(of: RemoteTmuxCommandResult?.self) { group in
+            group.addTask { try await self.execute(command, role: .opener) }
+            group.addTask {
+                try await Task.sleep(for: budget)
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw RemoteTmuxError.unreachable(destination)
+            }
+            guard let result = first else {
+                let seconds = Int((Double(budget.components.seconds)
+                    + Double(budget.components.attoseconds) / 1e18).rounded(.up))
+                throw RemoteTmuxError.authenticationStalled(destination: destination, seconds: max(seconds, 1))
+            }
+            return result
+        }
     }
 
     /// ``masterIsRunning()`` plus generation bookkeeping: the ONLY way the

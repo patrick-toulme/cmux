@@ -12,6 +12,13 @@ enum RemoteTmuxError: Error, Sendable, Equatable {
     /// The remote host is not reachable / the SSH master could not be opened.
     case unreachable(String)
 
+    /// The BatchMode master open spent longer than
+    /// `seconds` authenticating, so cmux killed it. A connect that neither
+    /// fails nor completes is waiting on a human (a security key touch, a
+    /// prompt BatchMode cannot service) or on a wedged agent; either way the
+    /// interactive terminal is where it can finish.
+    case authenticationStalled(destination: String, seconds: Int)
+
     /// cmux could not create the local window requested for a dedicated mirror.
     case windowCreationFailed
 
@@ -68,6 +75,13 @@ extension RemoteTmuxError {
                 defaultValue: "host unreachable: %@"
             )
             return String(format: format, Self.sanitizedDetail(detail))
+        case let .authenticationStalled(destination, seconds):
+            let format = String(
+                localized: "remoteTmux.error.authenticationStalled",
+                defaultValue: "authentication to %1$@ did not finish within %2$d seconds (a security key touch, a prompt, or a stuck SSH agent); complete it in a terminal: cmux ssh-tmux %3$@"
+            )
+            let sanitized = Self.sanitizedDetail(destination)
+            return String(format: format, sanitized, seconds, sanitized)
         case .windowCreationFailed:
             return String(
                 localized: "remoteTmux.error.windowCreationFailed",

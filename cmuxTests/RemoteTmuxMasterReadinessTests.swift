@@ -301,6 +301,296 @@ import Testing
     }
 }
 
+/// The bound on concurrent master opens across the app. Live repro on an 11 machine
+/// corp fleet: the parallel attach fired 11 BatchMode openers at once, the
+/// agent serialized them (5 done, a 25s stall, then the rest) and, with the
+/// agent degraded, every opener hung past the probe budget so every machine
+/// failed while the orphaned openers kept authenticating for minutes. Bounded
+/// to a few in flight the same fleet opened in 15-23s with no stall.
+@Suite struct RemoteTmuxMasterOpenGateTests {
+
+    @Test func slotsAreBoundedAndHandOverInOrder() async throws {
+        let gate = RemoteTmuxMasterOpenGate(limit: 2)
+
+        #expect(await gate.acquire() == false)
+        #expect(await gate.acquire() == false)
+        #expect(await gate.inFlightCount == 2)
+
+        // Third and fourth callers park, in order, until someone releases.
+        let third = Task { await gate.acquire() }
+        let waiting = await waitUntil { await gate.waitingCount == 1 }
+        #expect(waiting)
+        let fourth = Task { await gate.acquire() }
+        #expect(await waitUntil { await gate.waitingCount == 2 })
+        #expect(await gate.inFlightCount == 2)
+
+        await gate.release()
+        // The slot went straight to the longest waiter (FIFO): the third
+        // caller resumes, reports it waited, and the fourth is still parked.
+        #expect(await third.value == true)
+        #expect(await gate.waitingCount == 1)
+        #expect(await gate.inFlightCount == 2)
+
+        await gate.release()
+        #expect(await fourth.value == true)
+        #expect(await gate.waitingCount == 0)
+
+        await gate.release()
+        await gate.release()
+        #expect(await gate.inFlightCount == 0)
+        #expect(await gate.peakInFlight == 2)
+    }
+
+    @Test func concurrentColdOpensAcrossHostsStayUnderTheGateLimit() async throws {
+        let fleet = try FleetFakeSSH(openDuration: 0.25)
+        defer { fleet.cleanUp() }
+        let gate = RemoteTmuxMasterOpenGate(limit: 3)
+        let hosts = (0..<8).map { "user@host-\($0)" }
+        let transports = hosts.map {
+            RemoteTmuxSSHTransport(
+                host: RemoteTmuxHost(destination: $0),
+                sshExecutablePath: fleet.executablePath,
+                openGate: gate
+            )
+        }
+
+        let ready = try await withThrowingTaskGroup(of: Bool.self) { group in
+            for transport in transports {
+                group.addTask { try await transport.ensureMasterReady() }
+            }
+            var all: [Bool] = []
+            for try await value in group { all.append(value) }
+            return all
+        }
+
+        #expect(ready.count == 8)
+        #expect(ready.allSatisfy { $0 })
+        // Every host authenticated exactly once (the gate queues, it never
+        // drops or duplicates an open)...
+        #expect(fleet.openCount() == 8)
+        // ...and never more than `limit` authentications overlapped, measured
+        // from the fake ssh's own start/end timestamps, not from what the gate
+        // reports about itself.
+        #expect(fleet.peakConcurrentOpens() <= 3, "opens overlapped: \(fleet.peakConcurrentOpens())")
+        #expect(await gate.peakInFlight == 3)
+    }
+
+    @Test func aWaitedOpenerRechecksBeforeAuthenticatingAgain() async throws {
+        // Slot holder A's authentication is in flight; B is parked behind it.
+        // Meanwhile B's master comes up out of band (the user's terminal ssh
+        // for B, an ssh-tmux rerun). When B finally gets the slot it must see
+        // the serving master and NOT authenticate a second time.
+        let fleet = try FleetFakeSSH(openDuration: 0)
+        defer { fleet.cleanUp() }
+        let gate = RemoteTmuxMasterOpenGate(limit: 1)
+        let a = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-a"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+        let b = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-b"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate
+        )
+
+        fleet.holdOpen(for: "user@host-a")
+        let readyA = Task { try await a.ensureMasterReady() }
+        #expect(await waitUntil { fleet.openStarted(for: "user@host-a") })
+
+        let readyB = Task { try await b.ensureMasterReady() }
+        #expect(await waitUntil { await gate.waitingCount == 1 })
+
+        fleet.bringMasterUp(for: "user@host-b")
+        fleet.releaseOpen(for: "user@host-a")
+
+        #expect(try await readyA.value)
+        #expect(try await readyB.value)
+        #expect(fleet.openCount(for: "user@host-a") == 1)
+        #expect(fleet.openCount(for: "user@host-b") == 0)
+    }
+
+    @Test func aStalledOpenerIsKilledAndHandedToTheTerminal() async throws {
+        // The live shape: a BatchMode open whose authentication never returns
+        // (the agent waiting on a touch, or wedged). The transport must not sit
+        // on it until the server's login grace closes it minutes later; it
+        // kills the opener at the stall budget, frees the gate slot, and
+        // reports the machine as needing interactive authentication.
+        let fleet = try FleetFakeSSH(openDuration: 0)
+        defer { fleet.cleanUp() }
+        let gate = RemoteTmuxMasterOpenGate(limit: 1)
+        let transport = RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host-stuck"),
+            sshExecutablePath: fleet.executablePath,
+            openGate: gate,
+            openerStallTimeout: .milliseconds(300)
+        )
+        fleet.holdOpen(for: "user@host-stuck")
+
+        let start = ContinuousClock().now
+        var thrown: RemoteTmuxError?
+        do {
+            _ = try await transport.ensureMasterReady()
+        } catch let error as RemoteTmuxError {
+            thrown = error
+        }
+        let elapsed = ContinuousClock().now - start
+
+        let error = try #require(thrown)
+        #expect(error == .authenticationStalled(destination: "user@host-stuck", seconds: 1))
+        #expect(RemoteTmuxSSHTransport.interactiveAttachRetryWillHelp(error))
+        #expect(RemoteTmuxSSHTransport.interactiveRetryWillHelp(error))
+        // Gave up at the budget, not at the process exit (which never arrives).
+        #expect(elapsed < .seconds(3), "stall took \(elapsed)")
+        // The opener was killed while it was still held (it never wrote its
+        // completion line), and its slot went back to the gate.
+        let pid = try #require(fleet.openerPid(for: "user@host-stuck"))
+        #expect(await waitUntil { kill(pid, 0) != 0 }, "opener pid \(pid) still alive")
+        #expect(!fleet.openFinished(for: "user@host-stuck"))
+        #expect(await gate.inFlightCount == 0)
+        #expect(await transport.masterGeneration == 0)
+    }
+
+    @Test func stallMessageNamesTheMachineAndTheRecovery() {
+        let message = RemoteTmuxError.authenticationStalled(destination: "user@host", seconds: 30).message
+        #expect(message.contains("user@host"))
+        #expect(message.contains("30"))
+        #expect(message.contains("cmux ssh-tmux user@host"))
+        // Only stalls and classifiable stderr route to the terminal; a plain
+        // unreachable host still surfaces as an error.
+        #expect(!RemoteTmuxSSHTransport.interactiveRetryWillHelp(.unreachable("user@host")))
+        #expect(!RemoteTmuxSSHTransport.interactiveAttachRetryWillHelp(.unreachable("user@host")))
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        _ condition: @Sendable () async -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock().now + timeout
+        while ContinuousClock().now < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await condition()
+    }
+
+    /// A fake `ssh` shared by several hosts: a master sentinel and a hold file
+    /// (parks an open until released) per destination, and a
+    /// timestamped call log so overlap can be measured from the processes'
+    /// own lifetimes. The destination is the token after `--`, exactly where
+    /// the transport puts it for both `-O check` probes and opens.
+    private struct FleetFakeSSH {
+        let root: URL
+        let executablePath: String
+        private let logPath: String
+
+        init(openDuration: Double) throws {
+            root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("remote-tmux-open-gate-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            logPath = root.appendingPathComponent("calls.log").path
+            let script = """
+            #!/bin/sh
+            ROOT='\(root.path)'
+            LOG="$ROOT/calls.log"
+            dest=''
+            prev=''
+            is_check=0
+            is_exit=0
+            for arg in "$@"; do
+                if [ "$prev" = "-O" ] && [ "$arg" = "check" ]; then is_check=1; fi
+                if [ "$prev" = "-O" ] && [ "$arg" = "exit" ]; then is_exit=1; fi
+                if [ "$prev" = "--" ] && [ -z "$dest" ]; then dest="$arg"; fi
+                prev="$arg"
+            done
+            STATE="$ROOT/up-$dest"
+            HOLD="$ROOT/hold-$dest"
+            now() { perl -MTime::HiRes=time -e 'printf "%.6f", time'; }
+            if [ "$is_check" = "1" ]; then
+                printf 'check %s\\n' "$dest" >> "$LOG"
+                if [ -e "$STATE" ]; then exit 0; else exit 255; fi
+            fi
+            if [ "$is_exit" = "1" ]; then
+                rm -f "$STATE"
+                exit 0
+            fi
+            printf 'open-start %s %s %s\\n' "$dest" "$(now)" "$$" >> "$LOG"
+            while [ -e "$HOLD" ]; do sleep 0.02; done
+            sleep \(openDuration)
+            : > "$STATE"
+            printf 'open-end %s %s\\n' "$dest" "$(now)" >> "$LOG"
+            exit 0
+            """
+            let scriptURL = root.appendingPathComponent("ssh")
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+            executablePath = scriptURL.path
+        }
+
+        private func lines() -> [String] {
+            guard let contents = try? String(contentsOfFile: logPath, encoding: .utf8) else { return [] }
+            return contents.split(separator: "\n").map(String.init)
+        }
+
+        func openCount() -> Int { lines().filter { $0.hasPrefix("open-start ") }.count }
+
+        func openCount(for destination: String) -> Int {
+            lines().filter { $0 == "open-start \(destination)" || $0.hasPrefix("open-start \(destination) ") }.count
+        }
+
+        func openStarted(for destination: String) -> Bool { openCount(for: destination) > 0 }
+
+        func openFinished(for destination: String) -> Bool {
+            lines().contains { $0.hasPrefix("open-end \(destination) ") }
+        }
+
+        /// The fake ssh process id recorded by the open for `destination`.
+        func openerPid(for destination: String) -> pid_t? {
+            for line in lines() where line.hasPrefix("open-start \(destination) ") {
+                let parts = line.split(separator: " ")
+                if parts.count == 4, let pid = pid_t(parts[3]) { return pid }
+            }
+            return nil
+        }
+
+        /// Maximum number of opens whose [start, end] intervals overlapped.
+        func peakConcurrentOpens() -> Int {
+            var events: [(time: Double, delta: Int)] = []
+            for line in lines() {
+                let parts = line.split(separator: " ")
+                guard parts.count >= 3, let time = Double(parts[2]) else { continue }
+                if parts[0] == "open-start" { events.append((time, 1)) }
+                if parts[0] == "open-end" { events.append((time, -1)) }
+            }
+            // Ends sort before starts at equal timestamps so touching
+            // intervals do not count as overlapping.
+            events.sort { $0.time == $1.time ? $0.delta < $1.delta : $0.time < $1.time }
+            var current = 0
+            var peak = 0
+            for event in events {
+                current += event.delta
+                peak = max(peak, current)
+            }
+            return peak
+        }
+
+        func holdOpen(for destination: String) {
+            FileManager.default.createFile(atPath: root.appendingPathComponent("hold-\(destination)").path, contents: Data())
+        }
+
+        func releaseOpen(for destination: String) {
+            try? FileManager.default.removeItem(atPath: root.appendingPathComponent("hold-\(destination)").path)
+        }
+
+        /// Something other than this transport's opener brings the master up.
+        func bringMasterUp(for destination: String) {
+            FileManager.default.createFile(atPath: root.appendingPathComponent("up-\(destination)").path, contents: Data())
+        }
+
+        func cleanUp() { try? FileManager.default.removeItem(at: root) }
+    }
+}
+
 /// The scheduling half of the agent-bridge heal (the generation signal above
 /// is the observing half): one bridge configuration per master generation, no
 /// stacking across coalesced gate passes, forced refresh on user attach, and

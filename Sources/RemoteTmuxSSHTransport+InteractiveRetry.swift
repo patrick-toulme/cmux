@@ -100,4 +100,34 @@ extension RemoteTmuxSSHTransport {
         indicatesInteractiveRetryWillHelp(stderr)
             || indicatesInteractiveNetworkRetryMayHelp(stderr)
     }
+
+    /// The strict reconnect rule applied to an error value. Besides a failed
+    /// connect whose stderr says so, a BatchMode authentication that STALLED
+    /// (``RemoteTmuxError/authenticationStalled(destination:seconds:)``) also
+    /// needs the terminal: it neither failed nor finished, which is what a
+    /// pending security key touch or a stuck agent looks like from here, and
+    /// silent retries would only blink the key again.
+    static func interactiveRetryWillHelp(_ error: RemoteTmuxError) -> Bool {
+        switch error {
+        case let .commandFailed(_, stderr):
+            return indicatesInteractiveRetryWillHelp(stderr)
+        case .authenticationStalled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The wider attach rule applied to an error value (see
+    /// ``indicatesInteractiveAttachRetryWillHelp``), stalls included.
+    static func interactiveAttachRetryWillHelp(_ error: RemoteTmuxError) -> Bool {
+        switch error {
+        case let .commandFailed(_, stderr):
+            return indicatesInteractiveAttachRetryWillHelp(stderr)
+        case .authenticationStalled:
+            return true
+        default:
+            return false
+        }
+    }
 }

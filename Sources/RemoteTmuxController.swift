@@ -154,8 +154,10 @@ final class RemoteTmuxController {
             await warmRemoteHome(host: host)
             return nil
         } catch let error as RemoteTmuxError {
-            if case .commandFailed(_, let stderr) = error,
-               RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
+            // Attach predicate, stalls included: a BatchMode open that
+            // spent the whole stall budget authenticating was killed by the
+            // transport and needs the terminal (touch, prompt, stuck agent).
+            if RemoteTmuxSSHTransport.interactiveAttachRetryWillHelp(error) {
                 await transport.shutdownMaster()
                 return host.interactiveAuthInvocation()
             }
@@ -218,8 +220,10 @@ final class RemoteTmuxController {
         } catch is CancellationError {
             return .retryLater
         } catch let error as RemoteTmuxError {
-            if case .commandFailed(_, let stderr) = error,
-               RemoteTmuxSSHTransport.indicatesInteractiveRetryWillHelp(stderr) {
+            // Strict reconnect rule plus stalls: a silent retry of a stalled
+            // authentication would just blink the security key again every
+            // round, so park for the user like any other auth requirement.
+            if RemoteTmuxSSHTransport.interactiveRetryWillHelp(error) {
                 return .authRequired
             }
             return .retryLater
@@ -597,10 +601,9 @@ final class RemoteTmuxController {
             }
             return nil
         } catch let error as RemoteTmuxError {
-            // Attach-time predicate (wider than the reconnect gate's): see
-            // ``RemoteTmuxSSHTransport/indicatesInteractiveAttachRetryWillHelp``.
-            if case .commandFailed(_, let stderr) = error,
-               RemoteTmuxSSHTransport.indicatesInteractiveAttachRetryWillHelp(stderr) {
+            // Attach predicate (wider than the reconnect gate's), stalls
+            // included: see ``RemoteTmuxSSHTransport/interactiveAttachRetryWillHelp``.
+            if RemoteTmuxSSHTransport.interactiveAttachRetryWillHelp(error) {
                 // Clear any wake-stale master before the terminal ssh runs
                 // (see the identical step in attachHost's discovery catch).
                 await transport.shutdownMaster()

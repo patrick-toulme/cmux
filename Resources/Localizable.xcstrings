@@ -149823,6 +149823,131 @@
         }
       }
     },
+    "remoteTmux.error.authenticationStalled": {
+      "extractionState": "manual",
+      "localizations": {
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "لم تكتمل المصادقة إلى %1$@ خلال %2$d ثانية (لمسة مفتاح الأمان، أو مطالبة، أو وكيل SSH عالق)؛ أكملها في الطرفية: cmux ssh-tmux %3$@"
+          }
+        },
+        "bs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autentifikacija na %1$@ nije završena u roku od %2$d sekundi (dodir sigurnosnog ključa, upit ili zaglavljeni SSH agent); dovršite je u terminalu: cmux ssh-tmux %3$@"
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Godkendelse til %1$@ blev ikke fuldført inden for %2$d sekunder (et tryk på sikkerhedsnøglen, en prompt eller en fastlåst SSH-agent); fuldfør den i en terminal: cmux ssh-tmux %3$@"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Die Authentifizierung bei %1$@ wurde nicht innerhalb von %2$d Sekunden abgeschlossen (Berührung des Sicherheitsschlüssels, eine Eingabeaufforderung oder ein hängender SSH-Agent); schließen Sie sie in einem Terminal ab: cmux ssh-tmux %3$@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "authentication to %1$@ did not finish within %2$d seconds (a security key touch, a prompt, or a stuck SSH agent); complete it in a terminal: cmux ssh-tmux %3$@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La autenticación en %1$@ no terminó en %2$d segundos (un toque de la llave de seguridad, una solicitud o un agente SSH bloqueado); complétala en una terminal: cmux ssh-tmux %3$@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'authentification auprès de %1$@ ne s'est pas terminée en %2$d secondes (toucher de la clé de sécurité, invite ou agent SSH bloqué) ; terminez-la dans un terminal : cmux ssh-tmux %3$@"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'autenticazione a %1$@ non è stata completata entro %2$d secondi (tocco della chiave di sicurezza, una richiesta o un agente SSH bloccato); completala in un terminale: cmux ssh-tmux %3$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ への認証が %2$d 秒以内に完了しませんでした（セキュリティキーのタッチ、プロンプト、または停止した SSH エージェント）。ターミナルで完了してください: cmux ssh-tmux %3$@"
+          }
+        },
+        "km": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ការផ្ទៀងផ្ទាត់ទៅ %1$@ មិនបានបញ្ចប់ក្នុងរយៈពេល %2$d វិនាទីទេ (ការប៉ះកូនសោសុវត្ថិភាព ការជម្រុញ ឬ SSH agent ជាប់គាំង)។ សូមបញ្ចប់វានៅក្នុងស្ថានីយ៖ cmux ssh-tmux %3$@"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ 인증이 %2$d초 내에 완료되지 않았습니다(보안 키 터치, 프롬프트 또는 멈춘 SSH 에이전트). 터미널에서 완료하세요: cmux ssh-tmux %3$@"
+          }
+        },
+        "nb": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autentisering mot %1$@ ble ikke fullført innen %2$d sekunder (et trykk på sikkerhetsnøkkelen, en ledetekst eller en fastlåst SSH-agent); fullfør den i en terminal: cmux ssh-tmux %3$@"
+          }
+        },
+        "pl": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uwierzytelnianie w %1$@ nie zakończyło się w ciągu %2$d sekund (dotknięcie klucza bezpieczeństwa, monit lub zawieszony agent SSH); dokończ je w terminalu: cmux ssh-tmux %3$@"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A autenticação em %1$@ não terminou em %2$d segundos (um toque na chave de segurança, um prompt ou um agente SSH travado); conclua-a em um terminal: cmux ssh-tmux %3$@"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Аутентификация на %1$@ не завершилась за %2$d с (касание ключа безопасности, запрос или зависший SSH-агент); завершите её в терминале: cmux ssh-tmux %3$@"
+          }
+        },
+        "th": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "การยืนยันตัวตนไปยัง %1$@ ไม่เสร็จภายใน %2$d วินาที (การแตะคีย์ความปลอดภัย พรอมต์ หรือ SSH agent ค้าง) โปรดทำให้เสร็จในเทอร์มินัล: cmux ssh-tmux %3$@"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ kimlik doğrulaması %2$d saniye içinde tamamlanmadı (güvenlik anahtarına dokunma, bir istem veya takılı kalmış bir SSH aracısı); bir terminalde tamamlayın: cmux ssh-tmux %3$@"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Автентифікація на %1$@ не завершилася за %2$d с (дотик до ключа безпеки, запит або завислий SSH-агент); завершіть її в терміналі: cmux ssh-tmux %3$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "对 %1$@ 的身份验证未在 %2$d 秒内完成（安全密钥触碰、提示或卡住的 SSH 代理）；请在终端中完成：cmux ssh-tmux %3$@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "對 %1$@ 的驗證未在 %2$d 秒內完成（安全金鑰觸碰、提示或卡住的 SSH 代理程式）；請在終端機中完成：cmux ssh-tmux %3$@"
+          }
+        }
+      }
+    },
     "remoteTmux.error.commandFailed": {
       "extractionState": "manual",
       "localizations": {
