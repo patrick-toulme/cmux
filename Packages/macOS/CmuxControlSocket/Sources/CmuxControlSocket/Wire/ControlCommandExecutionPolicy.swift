@@ -146,6 +146,13 @@ public enum ControlCommandExecutionPolicy: Sendable, Equatable {
         "remote.tmux.state",
         "remote.tmux.mirror", "remote.tmux.pane_grids", "remote.tmux.pane_surfaces",
         "remote.tmux.resolve_pane",
+        // The multi-machine attach preflight: opens the shared master with
+        // BatchMode (network I/O), so it must run on the worker like mirror.
+        // It shipped without this entry, so the main lane answered
+        // method_not_found, the CLI silently fell back to the sequential
+        // path, and every machine was routed through the interactive
+        // "Authenticating..." handoff on every attach.
+        "remote.tmux.probe",
         "sidebar.custom.validate",
         "sidebar.custom.reload",
         "sidebar.custom.select",

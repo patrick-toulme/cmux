@@ -2811,7 +2811,7 @@ class TerminalController {
             "workspace.remote.pty_bridge", "workspace.remote.pty_resize", "workspace.remote.pty_attach_end",
             "workspace.remote.terminal_session_launching",
             "workspace.remote.terminal_session_connected", "workspace.remote.terminal_session_end",
-            "remote.tmux.sessions", "remote.tmux.attach", "remote.tmux.detach", "remote.tmux.state", "remote.tmux.mirror", "remote.tmux.window", "remote.tmux.pane_grids", "remote.tmux.pane_surfaces", "remote.tmux.resolve_pane",
+            "remote.tmux.sessions", "remote.tmux.probe", "remote.tmux.attach", "remote.tmux.detach", "remote.tmux.state", "remote.tmux.mirror", "remote.tmux.window", "remote.tmux.pane_grids", "remote.tmux.pane_surfaces", "remote.tmux.resolve_pane",
             "session.restore_previous",
             "settings.open",
             "feedback.open",
