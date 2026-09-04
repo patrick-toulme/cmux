@@ -483,8 +483,10 @@ import Testing
         }
         #expect(await waitUntil { await gate.waitingCount == 1 })
 
-        #expect(await stuckOutcome.value == .authenticationStalled(destination: "user@host-stuck", seconds: 1))
-        #expect(await queuedOutcome.value == .authenticationStalled(destination: "user@host-queued", seconds: 1))
+        // The outcome tasks rethrow anything that is not a RemoteTmuxError, so
+        // an unexpected failure surfaces here instead of being swallowed.
+        #expect(try await stuckOutcome.value == .authenticationStalled(destination: "user@host-stuck", seconds: 1))
+        #expect(try await queuedOutcome.value == .authenticationStalled(destination: "user@host-queued", seconds: 1))
         #expect(await gate.isParked)
         // Only the stalled machine ever authenticated; the queued one was
         // refused before it could raise a prompt.
@@ -559,7 +561,7 @@ import Testing
         let readyB = Task { try await b.ensureMasterReady() }
         #expect(await waitUntil { fleet.openStarted(for: "user@host-a") && fleet.openStarted(for: "user@host-b") })
 
-        #expect(await aOutcome.value == .authenticationStalled(destination: "user@host-a", seconds: 1))
+        #expect(try await aOutcome.value == .authenticationStalled(destination: "user@host-a", seconds: 1))
         #expect(await gate.isParked)
         fleet.releaseOpen(for: "user@host-b")
         #expect(try await readyB.value)
