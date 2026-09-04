@@ -94,6 +94,11 @@ import Testing
         let session = RemoteTmuxHost(destination: "user@host").detectedSSHSession()
         #expect(session.sshOptions.contains("ProxyJump=none"))
         #expect(session.sshOptions.contains("ProxyCommand=\(RemoteTmuxHost.muxOnlyProxyCommand)"))
+        // Like every other mux-only client: the user's config tunnels belong
+        // to the master alone, and ControlPersist must not silence the
+        // sentinel (OpenSSH drops a ProxyCommand's stderr under ControlPersist).
+        #expect(session.sshOptions.contains("ClearAllForwardings=yes"))
+        #expect(session.sshOptions.contains("ControlPersist=no"))
     }
 
     @Test func masterUnavailableSentinelClassification() {
