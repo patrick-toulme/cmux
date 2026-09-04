@@ -228,12 +228,28 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     /// `ask` prompts) to confirm the fingerprint in their terminal — the native
     /// SSH first-contact experience.
     ///
+    /// The user's configured port forwards (`RemoteForward`, `LocalForward`,
+    /// `DynamicForward`) belong to the master alone: the opener keeps them, so
+    /// the tunnels ride the one authenticated connection, and every mux-only
+    /// client clears them (`ClearAllForwardings=yes`). A client that inherited
+    /// them would re-request each forward through the master on every spawn,
+    /// and OpenSSH fails the WHOLE session when the server refuses one (port
+    /// still bound by a previous master generation's lingering server-side
+    /// session, or by any other connection), so one unavailable tunnel took
+    /// the entire host down instead of just that tunnel. Agent forwarding is a
+    /// per-session request, not a port forward, and is unaffected.
+    ///
     /// - Parameter controlPersistSeconds: how long the master lingers idle
     ///   after the last client detaches (`0` = indefinitely, see
-    ///   ``masterControlPersistIndefinitely``). Only meaningful for
-    ///   ``RemoteTmuxControlMasterRole/opener`` invocations — a mux-only
-    ///   client never becomes the master — but always emitted so the argv
-    ///   shape stays uniform.
+    ///   ``masterControlPersistIndefinitely``). Opener only: a mux-only client
+    ///   never becomes the master, and its argv pins `ControlPersist=no`
+    ///   instead. That pin is load-bearing, not cosmetic: OpenSSH redirects a
+    ///   ProxyCommand's stderr to `/dev/null` whenever `ControlPath` and
+    ///   `ControlPersist` are both in effect (`sshconnect.c`), and the user's
+    ///   own config routinely sets `ControlPersist`, so without the override
+    ///   the fail-fast ProxyCommand's ``masterUnavailableSentinel`` never
+    ///   reaches cmux and a dead master surfaces as an opaque
+    ///   `Connection closed by UNKNOWN port 65535`.
     /// - Parameter batchMode: when `true`, ssh never prompts interactively.
     ///   Use this for discovery/mutation commands and for the pipe-backed local
     ///   `tmux -CC` control client; interactive prompts are handled only by
@@ -252,9 +268,11 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
         // `tmux -CC …`, one-shot discovery), which OpenSSH refuses while a
         // host-configured RemoteCommand is in effect (issue #7246).
         var args = SSHHostConfiguredRemoteCommand().overrideArguments
+        let controlPersist: String
         switch role {
         case .opener:
             args += ["-o", "ControlMaster=auto"]
+            controlPersist = String(controlPersistSeconds)
         case .client:
             // `ControlMaster=no` selects mux-client mode; the ProxyCommand
             // severs the direct-connection fallback so a dead master makes the
@@ -264,11 +282,16 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
             // `ProxyJump=none` clears any configured jump host so the explicit
             // ProxyCommand can never conflict with it; both options only govern
             // the never-taken fallback path, so a live master is unaffected.
+            // `ClearAllForwardings=yes` leaves the user's config tunnels to the
+            // master (see the type doc); `ControlPersist=no` keeps the
+            // sentinel visible on that fallback path.
             args += [
                 "-o", "ControlMaster=no",
                 "-o", "ProxyJump=none",
                 "-o", "ProxyCommand=\(Self.muxOnlyProxyCommand)",
+                "-o", "ClearAllForwardings=yes",
             ]
+            controlPersist = "no"
         }
         // Keepalives every 20s keep relay tunnels warm; a dead transport is
         // declared only after 2 minutes without a reply (6 misses). A shorter
@@ -277,7 +300,7 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
         // touch, so the tolerance errs toward surviving the blip.
         args += [
             "-o", "ControlPath=\(controlSocketPath)",
-            "-o", "ControlPersist=\(controlPersistSeconds)",
+            "-o", "ControlPersist=\(controlPersist)",
             "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=\(Self.serverAliveIntervalSeconds)",
             "-o", "ServerAliveCountMax=\(Self.serverAliveCountMax)",
@@ -292,6 +315,27 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
             args.append(contentsOf: ["-i", identityFile])
         }
         return args
+    }
+
+    /// The `ssh -O <command>` argv for a master control command (`check`,
+    /// `exit`, `forward`, `cancel`) against this host's shared master, with
+    /// `options` (e.g. a `-R` forward spec) ahead of the guarded destination.
+    ///
+    /// Control commands talk only to the local control socket, so the user's
+    /// ssh config contributes nothing they need, and reading it is actively
+    /// harmful: `-O forward` and `-O cancel` act on EVERY forward the config
+    /// declares for the host, not just the `-R` on the command line. The agent
+    /// bridge's `-O cancel` therefore silently cancelled the user's
+    /// `RemoteForward` tunnels on the master, and its `-O forward` failed
+    /// outright whenever one of them could not be re-established. `-F
+    /// /dev/null` scopes both to exactly their own forward (it also skips the
+    /// config's `Match exec` probes, which are network round trips for every
+    /// `-O check`). `ClearAllForwardings` cannot do this job: OpenSSH applies
+    /// it after the command line is parsed, so it would wipe the `-R` too.
+    func masterControlCommandArguments(_ command: String, options: [String] = []) -> [String] {
+        ["-O", command, "-F", "/dev/null", "-o", "ControlPath=\(controlSocketPath)"]
+            + options
+            + ["--", destination]
     }
 
     /// Builds the full `ssh` argv (executable first) for a one-shot **interactive**
@@ -549,12 +593,11 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     ///   - createIfMissing: `new-session -A -s` (attach or create) vs `attach-session -t`.
     func controlModeArguments(
         sessionName: String,
-        createIfMissing: Bool,
-        controlPersistSeconds: Int = 180
+        createIfMissing: Bool
     ) -> [String] {
         var args = ["-tt"]
         args.append(contentsOf: sshControlArguments(
-            controlPersistSeconds: controlPersistSeconds,
+            controlPersistSeconds: Self.masterControlPersistIndefinitely,
             batchMode: true,
             role: .client
         ))
@@ -587,7 +630,10 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
     /// direct-connection fallback, so an upload attempted while the master is
     /// down fails immediately with ``masterUnavailableSentinel`` instead of
     /// silently opening its own authenticated connection (an invisible
-    /// security-key touch that would hang the paste until it timed out).
+    /// security-key touch that would hang the paste until it timed out). The
+    /// upload's ssh/scp also clear the user's config forwards and pin
+    /// `ControlPersist=no`, for the reasons given on
+    /// ``sshControlArguments(controlPersistSeconds:batchMode:role:)``.
     func detectedSSHSession() -> DetectedSSHSession {
         DetectedSSHSession(
             destination: destination,
@@ -603,6 +649,8 @@ struct RemoteTmuxHost: Sendable, Equatable, Identifiable {
             sshOptions: [
                 "ProxyJump=none",
                 "ProxyCommand=\(Self.muxOnlyProxyCommand)",
+                "ClearAllForwardings=yes",
+                "ControlPersist=no",
             ]
         )
     }

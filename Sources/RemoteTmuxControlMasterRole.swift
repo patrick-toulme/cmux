@@ -24,5 +24,9 @@ enum RemoteTmuxControlMasterRole: Sendable, Equatable {
     /// that fails fast, emitting ``RemoteTmuxHost/masterUnavailableSentinel``
     /// on stderr — so callers classify "master gone" and route recovery
     /// through the readiness gate instead of authenticating on their own.
+    /// A client also never carries the user's config port forwards (those are
+    /// the master's) and pins `ControlPersist=no` so OpenSSH does not silence
+    /// the sentinel; see
+    /// ``RemoteTmuxHost/sshControlArguments(controlPersistSeconds:batchMode:role:)``.
     case client
 }

@@ -23,7 +23,6 @@ actor RemoteTmuxSSHTransport {
     nonisolated let host: RemoteTmuxHost
 
     private let sshExecutablePath: String
-    private let controlPersistSeconds: Int
 
     /// The bound on concurrent master opens across the app (see
     /// ``RemoteTmuxMasterOpenGate``); every host's transport shares one.
@@ -97,7 +96,6 @@ actor RemoteTmuxSSHTransport {
     /// - Parameters:
     ///   - host: the remote destination.
     ///   - sshExecutablePath: the local `ssh` binary (overridable for tests).
-    ///   - controlPersistSeconds: idle lifetime of the shared master.
     ///   - openGate: the bound on concurrent opens shared across hosts
     ///     (overridable for tests).
     ///   - openerStallTimeout: the BatchMode opener's authentication budget
@@ -105,13 +103,11 @@ actor RemoteTmuxSSHTransport {
     init(
         host: RemoteTmuxHost,
         sshExecutablePath: String = RemoteTmuxHost.defaultSSHExecutablePath(),
-        controlPersistSeconds: Int = 180,
         openGate: RemoteTmuxMasterOpenGate = .shared,
         openerStallTimeout: Duration = RemoteTmuxSSHTransport.defaultOpenerStallTimeout
     ) {
         self.host = host
         self.sshExecutablePath = sshExecutablePath
-        self.controlPersistSeconds = controlPersistSeconds
         self.openGate = openGate
         self.openerStallTimeout = openerStallTimeout
     }
@@ -301,9 +297,7 @@ actor RemoteTmuxSSHTransport {
         // (e.g. `-oProxyCommand=…`) can never be consumed as an ssh option.
         let sshArgs =
             host.sshControlArguments(
-                controlPersistSeconds: role == .opener
-                    ? RemoteTmuxHost.masterControlPersistIndefinitely
-                    : controlPersistSeconds,
+                controlPersistSeconds: RemoteTmuxHost.masterControlPersistIndefinitely,
                 batchMode: true,
                 role: role
             )
@@ -561,19 +555,21 @@ actor RemoteTmuxSSHTransport {
     /// reach this cmux instance's control socket (the remote agent bridge).
     /// `-O forward` talks only to the local control socket of an existing
     /// master — it can never authenticate on its own and fails fast when no
-    /// master is serving, preserving the single-auth guarantee.
+    /// master is serving, preserving the single-auth guarantee. Scoped to
+    /// exactly this forward (see
+    /// ``RemoteTmuxHost/masterControlCommandArguments(_:options:)``): the
+    /// user's config forwards are the master's business, and a refused one
+    /// must not fail the bridge.
     func requestReverseUnixForward(
         remoteSocketPath: String,
         localSocketPath: String
     ) async throws -> Bool {
         let result = try await Self.runProcess(
             executable: sshExecutablePath,
-            arguments: [
-                "-O", "forward",
-                "-o", "ControlPath=\(host.controlSocketPath)",
-                "-R", "\(remoteSocketPath):\(localSocketPath)",
-                "--", host.destination,
-            ]
+            arguments: host.masterControlCommandArguments(
+                "forward",
+                options: ["-R", "\(remoteSocketPath):\(localSocketPath)"]
+            )
         )
         return result.succeeded
     }
@@ -585,18 +581,20 @@ actor RemoteTmuxSSHTransport {
     /// duplicate `-O forward` stacks a second registration on an orphaned
     /// socket. Best-effort: a fresh master with nothing registered (or no
     /// master at all) just fails fast, like every other `-O` control command.
+    /// Scoped to exactly this forward: an unscoped `-O cancel` also cancels
+    /// every forward the user's config declares for the host, which is how
+    /// the bridge used to tear down the user's `RemoteForward` tunnels on the
+    /// shared master.
     func cancelReverseUnixForward(
         remoteSocketPath: String,
         localSocketPath: String
     ) async {
         _ = try? await Self.runProcess(
             executable: sshExecutablePath,
-            arguments: [
-                "-O", "cancel",
-                "-o", "ControlPath=\(host.controlSocketPath)",
-                "-R", "\(remoteSocketPath):\(localSocketPath)",
-                "--", host.destination,
-            ]
+            arguments: host.masterControlCommandArguments(
+                "cancel",
+                options: ["-R", "\(remoteSocketPath):\(localSocketPath)"]
+            )
         )
     }
 
@@ -612,7 +610,7 @@ actor RemoteTmuxSSHTransport {
         do {
             let result = try await Self.runProcess(
                 executable: sshExecutablePath,
-                arguments: ["-O", "check", "-o", "ControlPath=\(host.controlSocketPath)", "--", host.destination]
+                arguments: host.masterControlCommandArguments("check")
             )
             return result.succeeded
         } catch is CancellationError {
@@ -630,7 +628,7 @@ actor RemoteTmuxSSHTransport {
     func shutdownMaster() async {
         _ = try? await Self.runProcess(
             executable: sshExecutablePath,
-            arguments: ["-O", "exit", "-o", "ControlPath=\(host.controlSocketPath)", "--", host.destination]
+            arguments: host.masterControlCommandArguments("exit")
         )
         // Deliberate teardown is a known dead edge: the next serving
         // confirmation is a new generation (its replacement master carries
@@ -748,7 +746,9 @@ actor RemoteTmuxSSHTransport {
     /// direct-connection fallback ran the fail-fast ProxyCommand, which prints
     /// the cmux-unique sentinel. This is a LOCAL condition ("the shared master
     /// is gone"), never a remote error — callers route recovery through
-    /// ``ensureMasterReady()`` instead of surfacing it.
+    /// ``ensureMasterReady()`` instead of surfacing it. The sentinel reaches
+    /// stderr only because client spawns pin `ControlPersist=no`: OpenSSH
+    /// silences a ProxyCommand's stderr under `ControlPath` + `ControlPersist`.
     static func indicatesMasterUnavailable(_ stderr: String) -> Bool {
         stderr.contains(RemoteTmuxHost.masterUnavailableSentinel)
     }
