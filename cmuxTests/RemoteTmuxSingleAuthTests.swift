@@ -114,10 +114,7 @@ import Testing
     @Test func coldOneShotOpensMasterExactlyOnceThenRetries() async throws {
         let env = try SingleAuthFakeSSH(behavior: .normal)
         defer { env.cleanUp() }
-        let transport = RemoteTmuxSSHTransport(
-            host: RemoteTmuxHost(destination: "user@host"),
-            sshExecutablePath: env.executablePath
-        )
+        let transport = Self.isolatedTransport(env)
 
         let result = try await transport.run(["remote-echo"])
 
@@ -131,10 +128,7 @@ import Testing
     @Test func warmOneShotRidesMasterWithNoGateTraffic() async throws {
         let env = try SingleAuthFakeSSH(behavior: .normal, masterInitiallyUp: true)
         defer { env.cleanUp() }
-        let transport = RemoteTmuxSSHTransport(
-            host: RemoteTmuxHost(destination: "user@host"),
-            sshExecutablePath: env.executablePath
-        )
+        let transport = Self.isolatedTransport(env)
 
         let result = try await transport.run(["remote-echo"])
 
@@ -146,10 +140,7 @@ import Testing
     @Test func concurrentColdOneShotsCoalesceOnOneOpen() async throws {
         let env = try SingleAuthFakeSSH(behavior: .normal)
         defer { env.cleanUp() }
-        let transport = RemoteTmuxSSHTransport(
-            host: RemoteTmuxHost(destination: "user@host"),
-            sshExecutablePath: env.executablePath
-        )
+        let transport = Self.isolatedTransport(env)
 
         async let first = transport.run(["remote-echo"])
         async let second = transport.run(["remote-echo"])
@@ -165,10 +156,7 @@ import Testing
     @Test func teardownKillNeverReopensTheMaster() async throws {
         let env = try SingleAuthFakeSSH(behavior: .normal)
         defer { env.cleanUp() }
-        let transport = RemoteTmuxSSHTransport(
-            host: RemoteTmuxHost(destination: "user@host"),
-            sshExecutablePath: env.executablePath
-        )
+        let transport = Self.isolatedTransport(env)
 
         let result = try await transport.runTmux(
             ["kill-session", "-t", "gone"],
@@ -186,10 +174,7 @@ import Testing
     @Test func openerAuthFailureThrowsClassifiableErrorWithoutRetryStorm() async throws {
         let env = try SingleAuthFakeSSH(behavior: .openFailsAuth)
         defer { env.cleanUp() }
-        let transport = RemoteTmuxSSHTransport(
-            host: RemoteTmuxHost(destination: "user@host"),
-            sshExecutablePath: env.executablePath
-        )
+        let transport = Self.isolatedTransport(env)
 
         do {
             _ = try await transport.run(["remote-echo"])
@@ -211,10 +196,7 @@ import Testing
     @Test func masterDyingAgainAfterReopenSurfacesUnreachable() async throws {
         let env = try SingleAuthFakeSSH(behavior: .clientAlwaysFindsDeadSocket)
         defer { env.cleanUp() }
-        let transport = RemoteTmuxSSHTransport(
-            host: RemoteTmuxHost(destination: "user@host"),
-            sshExecutablePath: env.executablePath
-        )
+        let transport = Self.isolatedTransport(env)
 
         do {
             _ = try await transport.run(["remote-echo"])
@@ -316,6 +298,19 @@ import Testing
     }
 
     // MARK: - Helpers
+
+    /// A transport on its OWN open gate. The app-wide `.shared` gate is also
+    /// used by sibling suites running in parallel (the readiness tests hold
+    /// opens for whole test durations); a contended slot makes the warmup
+    /// re-check the master after waiting, which would add a `check` to the
+    /// exact invocation sequences these tests pin.
+    private static func isolatedTransport(_ env: SingleAuthFakeSSH) -> RemoteTmuxSSHTransport {
+        RemoteTmuxSSHTransport(
+            host: RemoteTmuxHost(destination: "user@host"),
+            sshExecutablePath: env.executablePath,
+            openGate: RemoteTmuxMasterOpenGate(limit: 4)
+        )
+    }
 
     /// Counts master-gate calls on the MainActor (the gate closure is
     /// `@MainActor`, matching how the controller's gate runs).
