@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v12
+// cmux-feed-plugin-marker v13
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -266,8 +266,15 @@ export const CMUXFeed = async (ctx) => {
 
   // Ownership proof: streaming deltas, idle edges, and blocking asks are
   // emitted only by the process that runs the session (mirrored copies
-  // carry busy edges and message parts, never these). A confirmed lead
-  // confirms its subagents: workers run in the lead's process.
+  // carry busy edges and message parts, never these). On origin-tagged
+  // engines an untagged busy edge counts too. Nothing else does: a
+  // process publishes plenty of LOCAL events about sessions it does not
+  // run (a swarm registry mirroring another process's workers, a peer
+  // message written into another pane's session), and treating any
+  // untagged event as proof made an idle pane adopt a sibling's workers
+  // and paint their running dot, activity text, and finished-a-turn
+  // toasts onto the wrong tab. A confirmed lead confirms its subagents:
+  // workers run in the lead's process.
   const confirmSessionLocal = (sid) => {
     const state = sessionState(sid);
     if (state.confirmedLocal) return state;
@@ -1056,7 +1063,7 @@ export const CMUXFeed = async (ctx) => {
     lastActivitySentAt = 0;
     if (!isRemote() || !remoteTarget) return;
     writeLine(
-      `clear_status ${ACTIVITY_STATUS_KEY} --tab=${remoteTarget.workspaceId}`
+      `clear_status ${ACTIVITY_STATUS_KEY} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
     );
   };
 
@@ -1097,7 +1104,7 @@ export const CMUXFeed = async (ctx) => {
       );
     } else {
       writeLine(
-        `clear_status ${GOAL_STATUS_KEY} --tab=${remoteTarget.workspaceId}`
+        `clear_status ${GOAL_STATUS_KEY} --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
       );
     }
   };
@@ -1461,12 +1468,14 @@ export const CMUXFeed = async (ctx) => {
       // Older builds stamped only foreign ones, so a lone session could sit
       // in heuristic mode forever; a boolean of either value settles it.
       if (typeof event.external === "boolean" && !engineTagsOrigin) engineTagsOrigin = true;
-      if (!external && engineTagsOrigin) {
-        // Tagged engine and no tag on this delivery: published by this
-        // process, so the session is ours by definition.
-        const sid = eventSessionId();
-        if (sid) confirmSessionLocal(sid);
-      }
+      // An untagged delivery proves only that THIS process published it,
+      // not that this process runs the session: the engine's swarm layer
+      // republishes every process's worker registry locally
+      // (swarm.worker.* carrying a sibling pane's worker sessionID), and a
+      // peer message is written straight into the target session from the
+      // sender. Ownership is therefore claimed only by the events below
+      // that the running process alone can author (its busy/idle edges,
+      // streaming deltas, blocking asks, goal transitions).
       if (external) {
         // Foreign delivery. Process it only for sessions this pane
         // already owns (a worker child process adopted through its
@@ -1569,6 +1578,13 @@ export const CMUXFeed = async (ctx) => {
             confirmSessionLocal(sid);
             noteSessionBusyState(sid, false);
           } else if (statusType === "busy" || statusType === "retry") {
+            // Only the process running a session sets its status, so on
+            // an origin-tagged engine the untagged busy edge is proof
+            // (no first-delta wait for tool-first turns). Untagged
+            // engines cannot tell this edge from a mirrored sibling's,
+            // so there the busy is recorded and ownership waits for a
+            // delta, idle, or ask.
+            if (!external && engineTagsOrigin) confirmSessionLocal(sid);
             noteSessionBusyState(sid, true);
           }
           break;

@@ -435,7 +435,7 @@ if (received.some((l) => l.includes("c=turn-complete"))) {
 received.length = 0;
 const activityLine = (text) =>
   `set_status opencode.activity "${text}" --priority=-1 --lease=1 --tab=W1 --panel=S1`;
-const activityClearLine = "clear_status opencode.activity --tab=W1";
+const activityClearLine = "clear_status opencode.activity --tab=W1 --panel=S1";
 await hooks.event({ event: { type: "session.status", properties: { sessionID: "s1", status: { type: "busy" } } } });
 await hooks.event({ event: { type: "message.part.updated", properties: {
   part: { type: "tool", sessionID: "s1", messageID: "mt1", tool: "bash", state: { status: "running", input: { command: "git status" } } },
@@ -566,7 +566,7 @@ received.length = 0;
 // goal toast, and settles the held turn debt.
 received.length = 0;
 const goalLine = (text) => `set_status opencode.goal "${text}" --priority=-2 --lease=1 --tab=W1 --panel=S1`;
-const goalClear = "clear_status opencode.goal --tab=W1";
+const goalClear = "clear_status opencode.goal --tab=W1 --panel=S1";
 await hooks.event({ event: { type: "goal.updated", properties: {
   sessionID: "g1", goal: { status: "active", objective: "ship the goal feature" },
 } } });
