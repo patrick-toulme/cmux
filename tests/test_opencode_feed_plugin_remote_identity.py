@@ -674,6 +674,64 @@ await hooks.event({ event: { type: "session.status", external: true, properties:
 await waitFor(() => received.some((l) => l === idleLine), 5000, "adopted worker idle settles the pane");
 received.length = 0;
 
+// Scenario 3k2: an untagged event ABOUT a session is not ownership OF it.
+// Engines publish plenty of local events for sessions that run in another
+// process: the swarm layer mirrors every process's worker registry onto
+// the local bus (swarm.worker.* carrying a sibling pane's worker
+// sessionID), and a peer message is written straight into the target
+// session from the sender (untagged message.updated / message.part.updated
+// for a session that runs elsewhere). Treating those as proof made an idle
+// tab adopt its neighbour's workers: their tagged busy painted this pane
+// running, their tools painted its activity line, and their typed turn
+// settling minted a finished-a-turn toast on the wrong tab. The sibling's
+// traffic must stay quarantined end to end.
+received.length = 0;
+await hooks.event({ event: { type: "swarm.worker.spawned", external: false, properties: {
+  workerID: "swa-foreign", parentSessionID: "lead-elsewhere", sessionID: "fw1", agent: "general",
+} } });
+await hooks.event({ event: { type: "swarm.worker.status", external: false, properties: {
+  workerID: "swa-foreign", parentSessionID: "lead-elsewhere", sessionID: "fw1", status: "running",
+} } });
+await hooks.event({ event: { type: "message.updated", external: false, properties: {
+  info: { id: "mpeer1", sessionID: "fp1", role: "user" },
+} } });
+await hooks.event({ event: { type: "message.part.updated", external: false, properties: {
+  part: {
+    type: "text", messageID: "mpeer1", sessionID: "fp1", synthetic: true,
+    text: "<cross-session-message><message>hello</message></cross-session-message>",
+  },
+} } });
+for (const sid of ["fw1", "fp1"]) {
+  await hooks.event({ event: { type: "session.status", external: true, properties: { sessionID: sid, status: { type: "busy" } } } });
+  await hooks.event({ event: { type: "message.updated", external: true, properties: {
+    info: { id: `mf-${sid}`, sessionID: sid, role: "user" },
+  } } });
+  await hooks.event({ event: { type: "message.part.updated", external: true, properties: {
+    part: { type: "text", messageID: `mf-${sid}`, sessionID: sid, text: `foreign prompt ${sid}` },
+  } } });
+  await hooks.event({ event: { type: "message.part.updated", external: true, properties: {
+    part: { type: "tool", sessionID: sid, messageID: `mft-${sid}`, tool: "bash", state: { status: "running", input: { command: `foreign job ${sid}` } } },
+  } } });
+}
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.some((l) => l === runningLine)) {
+  throw new Error(`a sibling's worker adopted through a local registry event painted this pane running: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.includes("foreign job"))) {
+  throw new Error(`a sibling's tool painted this pane's activity line: ${JSON.stringify(received)}`);
+}
+for (const sid of ["fw1", "fp1"]) {
+  await hooks.event({ event: { type: "session.status", external: true, properties: { sessionID: sid, status: { type: "idle" } } } });
+}
+await new Promise((resolve) => setTimeout(resolve, 900));
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`a sibling's typed turn minted a finished-a-turn toast on this tab: ${JSON.stringify(received)}`);
+}
+if (received.some((l) => l.startsWith("v2:feed.push"))) {
+  throw new Error(`a sibling's session leaked telemetry through this pane: ${JSON.stringify(received)}`);
+}
+received.length = 0;
+
 // Scenario 3l: recovery repaints the truth in BOTH directions. A turn that
 // ENDS while cmux is down previously left the pre-drop "running" paint
 // stranded forever (a finished goal session gets no future edge: the
