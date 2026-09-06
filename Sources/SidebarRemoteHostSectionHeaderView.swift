@@ -19,10 +19,33 @@ struct SidebarRemoteHostSectionRowSnapshot: Equatable {
     /// The machine's reconnect loops are parked awaiting interactive
     /// re-authentication (`cmux ssh-tmux <destination>`).
     let authRequired: Bool
+    /// Tooltip describing the configured ssh tunnels the machine currently
+    /// refuses (the tunnel healer keeps retrying them); `nil` when every
+    /// tunnel is up or none is configured.
+    let tunnelProblem: String?
     let isPointerHovering: Bool
     let fontScale: CGFloat
     let rowSpacing: CGFloat
     let isFirstRow: Bool
+
+    /// The tunnel indicator's tooltip for a degraded status: one line per
+    /// refused forward with ssh's reason, plus the standing retry note.
+    static func tunnelProblemTooltip(_ status: RemoteTmuxTunnelStatus) -> String {
+        let lines = status.failed.map { failure in
+            String(
+                format: String(
+                    localized: "remoteTmuxHostSection.tunnelProblem.line",
+                    defaultValue: "Tunnel %@ unavailable: %@"
+                ),
+                failure.spec.description,
+                failure.reason
+            )
+        }
+        return (lines + [String(
+            localized: "remoteTmuxHostSection.tunnelProblem.retrying",
+            defaultValue: "cmux retries automatically. See the connection log for details."
+        )]).joined(separator: "\n")
+    }
 }
 
 /// Collapsible per-machine section header for remote tmux mirrors.
@@ -47,6 +70,7 @@ struct SidebarRemoteHostSectionHeaderView: View, Equatable {
     let onDetachMachine: () -> Void
     let onReauthenticateAll: () -> Void
     let onKillAllSessions: () -> Void
+    let onShowConnectionLog: () -> Void
     let onContextMenuAppear: () -> Void
     let onContextMenuDisappear: () -> Void
 
@@ -136,6 +160,18 @@ struct SidebarRemoteHostSectionHeaderView: View, Equatable {
                     .safeHelp(authRequiredTooltip)
                     .accessibilityLabel(Text(authRequiredTooltip))
                 }
+                if let tunnelProblem = snapshot.tunnelProblem {
+                    CmuxSystemSymbolImage(
+                        systemName: "point.3.connected.trianglepath.dotted",
+                        pointSize: metrics.iconFontSize,
+                        weight: .semibold,
+                        appliesGlobalFontMagnification: true
+                    )
+                    .foregroundStyle(.orange)
+                    .frame(width: metrics.iconFrame, height: metrics.iconFrame)
+                    .safeHelp(tunnelProblem)
+                    .accessibilityLabel(Text(tunnelProblem))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -213,6 +249,13 @@ struct SidebarRemoteHostSectionHeaderView: View, Equatable {
                     defaultValue: "Detach Machine (Keep Sessions Running)"
                 ),
                 action: onDetachMachine
+            )
+            Button(
+                String(
+                    localized: "remoteTmuxHostSection.contextMenu.connectionLog",
+                    defaultValue: "Show Connection Log"
+                ),
+                action: onShowConnectionLog
             )
             Button(role: .destructive) {
                 onKillAllSessions()

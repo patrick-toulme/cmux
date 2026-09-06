@@ -6775,6 +6775,10 @@ extension Notification.Name {
     /// (reconnect loops parked or resumed); the sidebar's machine section
     /// headers repaint their auth badge on this.
     static let remoteTmuxHostAuthStateDidChange = Notification.Name("cmux.remoteTmuxHostAuthStateDidChange")
+    /// Posted when a remote tmux machine's configured-tunnel state changes
+    /// (a forward refused or restored by the tunnel healer); the sidebar's
+    /// machine section headers repaint their tunnel indicator on this.
+    static let remoteTmuxHostTunnelStateDidChange = Notification.Name("cmux.remoteTmuxHostTunnelStateDidChange")
 }
 
 enum BrowserFirstResponderNotificationUserInfoKey {

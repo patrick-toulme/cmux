@@ -208,6 +208,150 @@ struct CLIRemoteTmuxParallelAttachTests {
         #expect(mirrors[1].windowParam == Self.windowId)
     }
 
+    @Test func verboseFailureShowsTheFullSSHOutputAndPointsAtTheLog() throws {
+        // The app caps the one-line error message but ships the whole ssh
+        // stderr in the error's `data.detail`; `--verbose` prints it under the
+        // FAILED line, `--json` carries it, and every failure points at
+        // `cmux ssh-tmux-log <host>`.
+        let sshOutput = "mux_client_forward: forwarding request failed: remote port forwarding failed for listen port 9998\nmuxclient: master forward request failed\nConnection closed by UNKNOWN port 65535"
+        func serve(_ socketPath: String, listenerFD: Int32) {
+            Self.startDetachedServer(listenerFD: listenerFD, timeline: TimelineState(), shim: nil) { method, host, id, params in
+                switch method {
+                case "remote.tmux.probe":
+                    guard let host else {
+                        return Self.v2Response(id: id, ok: false, error: ["code": "invalid_params", "message": "host is required"])
+                    }
+                    if host == "hostB" {
+                        return Self.v2Response(id: id, ok: false, error: [
+                            "code": "vm_error",
+                            "message": "remote command failed (exit 255): mux_client_forward: forwarding request failed…",
+                            "data": ["kind": "command_failed", "exit_code": 255, "detail": sshOutput],
+                        ])
+                    }
+                    return Self.v2Response(id: id, ok: true, result: ["host": host, "ready": true])
+                case "remote.tmux.window", "remote.tmux.mirror":
+                    return Self.v2Response(id: id, ok: true, result: [
+                        "mirrored": true, "host": host ?? "", "window_id": Self.windowId, "workspace_ids": ["ws"],
+                    ])
+                default:
+                    return Self.v2Response(id: id, ok: false, error: ["code": "unexpected_method", "message": method])
+                }
+            }
+        }
+
+        for (mode, arguments) in [
+            ("verbose", ["ssh-tmux", "hostA", "hostB", "--new-window", "--verbose"]),
+            ("plain", ["ssh-tmux", "hostA", "hostB", "--new-window"]),
+            ("json", ["--json", "ssh-tmux", "hostA", "hostB", "--new-window"]),
+        ] {
+            let socketPath = Self.makeSocketPath("verbose-\(mode)")
+            let listenerFD = try Self.bindUnixSocket(at: socketPath)
+            defer {
+                CLIMockAcceptLoopRegistry.shared.stop(listenerFD: listenerFD)
+                Darwin.close(listenerFD)
+                unlink(socketPath)
+            }
+            serve(socketPath, listenerFD: listenerFD)
+            let result = Self.runProcess(
+                executablePath: try Self.bundledCLIPath(),
+                arguments: arguments,
+                environment: Self.cliEnvironment(socketPath: socketPath, shim: nil, authLog: nil),
+                timeout: 30
+            )
+            let comment = Comment(rawValue: "\(mode)\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)")
+            #expect(!result.timedOut, comment)
+            #expect(result.status == 0, comment)
+            switch mode {
+            case "verbose":
+                #expect(result.stderr.contains("FAILED host=hostB: remote command failed (exit 255)"), comment)
+                #expect(result.stderr.contains("  ssh output:\n    mux_client_forward: forwarding request failed: remote port forwarding failed for listen port 9998\n    muxclient: master forward request failed\n    Connection closed by UNKNOWN port 65535"), comment)
+                #expect(result.stdout.contains("Details: cmux ssh-tmux-log hostB"), comment)
+                #expect(!result.stdout.contains("rerun with --verbose"), comment)
+            case "plain":
+                #expect(result.stderr.contains("FAILED host=hostB: remote command failed (exit 255)"), comment)
+                #expect(!result.stderr.contains("ssh output:"), comment)
+                #expect(result.stdout.contains("Details: cmux ssh-tmux-log hostB  (or rerun with --verbose for the full ssh output)"), comment)
+            default:
+                let payload = try #require(Self.jsonObject(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)), comment)
+                let failed = try #require(payload["failed_hosts"] as? [[String: Any]], comment)
+                #expect(failed.count == 1)
+                #expect(failed.first?["host"] as? String == "hostB")
+                #expect(failed.first?["detail"] as? String == sshOutput)
+                #expect(failed.first?["exit_code"] as? Int == 255)
+            }
+        }
+    }
+
+    @Test func sshTmuxLogPrintsTheMachinesConnectionLog() throws {
+        let socketPath = Self.makeSocketPath("conn-log")
+        let listenerFD = try Self.bindUnixSocket(at: socketPath)
+        defer {
+            CLIMockAcceptLoopRegistry.shared.stop(listenerFD: listenerFD)
+            Darwin.close(listenerFD)
+            unlink(socketPath)
+        }
+        let seenParams = TimelineState()
+        Self.startDetachedServer(listenerFD: listenerFD, timeline: seenParams, shim: nil) { method, host, id, params in
+            guard method == "remote.tmux.connection_log", let host else {
+                return Self.v2Response(id: id, ok: false, error: ["code": "unexpected_method", "message": method])
+            }
+            seenParams.record(kind: "limit", host: "\(params["limit"] ?? "nil")")
+            seenParams.record(kind: "port", host: "\(params["port"] ?? "nil")")
+            return Self.v2Response(id: id, ok: true, result: [
+                "host": host,
+                "path": "/Users/me/.cmux/remote-tmux/logs/xxl-abc.jsonl",
+                "markdown_path": "/Users/me/.cmux/remote-tmux/logs/xxl-abc.md",
+                "tunnels": [
+                    "generation": 2,
+                    "established": ["L 3000:127.0.0.1:3000"],
+                    "failed": [["spec": "R 9998:localhost:9998", "reason": "remote port forwarding failed for listen port 9998"]],
+                ],
+                "entries": [
+                    ["time": "2026-09-05T16:32:50.000Z", "kind": "master.serving", "message": "master serving (generation 2)", "failure": false, "generation": 2],
+                    ["time": "2026-09-05T16:33:10.000Z", "kind": "tunnel.failed", "message": "tunnel R 9998:localhost:9998 unavailable: remote port forwarding failed for listen port 9998; retrying", "failure": true, "generation": 2,
+                     "detail": "R 9998:localhost:9998\nmux_client_forward: forwarding request failed: remote port forwarding failed for listen port 9998"],
+                ],
+            ])
+        }
+
+        let result = Self.runProcess(
+            executablePath: try Self.bundledCLIPath(),
+            arguments: ["ssh-tmux-log", "xxl", "--limit", "5", "--port", "2222"],
+            environment: Self.cliEnvironment(socketPath: socketPath, shim: nil, authLog: nil),
+            timeout: 30
+        )
+        let comment = Comment(rawValue: "stdout:\n\(result.stdout)\nstderr:\n\(result.stderr)")
+        #expect(!result.timedOut, comment)
+        #expect(result.status == 0, comment)
+        #expect(seenParams.events(kind: "limit").first?.host == "5")
+        #expect(seenParams.events(kind: "port").first?.host == "2222")
+        #expect(result.stdout.contains("Connection log for xxl (/Users/me/.cmux/remote-tmux/logs/xxl-abc.jsonl)"), comment)
+        #expect(result.stdout.contains("Tunnels up: L 3000:127.0.0.1:3000"), comment)
+        #expect(result.stdout.contains("Tunnel DOWN: R 9998:localhost:9998 (remote port forwarding failed for listen port 9998; cmux is retrying)"), comment)
+        // Timestamps are rendered in the user's local time zone.
+        let local = DateFormatter()
+        local.locale = Locale(identifier: "en_US_POSIX")
+        local.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let servingStamp = local.string(from: try #require(iso.date(from: "2026-09-05T16:32:50.000Z")))
+        let tunnelStamp = local.string(from: try #require(iso.date(from: "2026-09-05T16:33:10.000Z")))
+        #expect(result.stdout.contains("\(servingStamp)   master serving (generation 2) (gen 2)"), comment)
+        #expect(result.stdout.contains("\(tunnelStamp) ! tunnel R 9998:localhost:9998 unavailable"), comment)
+        #expect(result.stdout.contains("                       mux_client_forward: forwarding request failed"), comment)
+
+        // --json passes the payload through untouched.
+        let json = Self.runProcess(
+            executablePath: try Self.bundledCLIPath(),
+            arguments: ["ssh-tmux-log", "xxl", "--json"],
+            environment: Self.cliEnvironment(socketPath: socketPath, shim: nil, authLog: nil),
+            timeout: 30
+        )
+        let payload = try #require(Self.jsonObject(json.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect((payload["entries"] as? [[String: Any]])?.count == 2)
+        #expect(payload["host"] as? String == "xxl")
+    }
+
     // MARK: - Mock server plumbing
 
     private struct TimelineEvent {

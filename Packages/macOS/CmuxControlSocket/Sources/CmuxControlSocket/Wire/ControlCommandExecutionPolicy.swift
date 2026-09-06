@@ -153,6 +153,10 @@ public enum ControlCommandExecutionPolicy: Sendable, Equatable {
         // path, and every machine was routed through the interactive
         // "Authenticating..." handoff on every attach.
         "remote.tmux.probe",
+        // Reads the persisted connection log file (disk I/O) plus one main
+        // hop for the tunnel status; worker lane like the other remote.tmux
+        // readers so a large log never stalls the UI.
+        "remote.tmux.connection_log",
         "sidebar.custom.validate",
         "sidebar.custom.reload",
         "sidebar.custom.select",

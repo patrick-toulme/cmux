@@ -10974,6 +10974,7 @@ struct VerticalTabsSidebar: View, Equatable {
     /// (the controller is not observable); the body reads it so the machine
     /// section headers repaint their auth badge.
     @State private var remoteHostAuthRevision: Int = 0
+    @State private var remoteHostTunnelRevision: Int = 0
     @AppStorage(CmuxExtensionSidebarSelection.defaultsKey)
     private var selectedExtensionSidebarProviderId = CmuxExtensionSidebarSelection.defaultProviderId
     @LiveSetting(\.betaFeatures.extensions) private var extensionsExperimentalEnabled
@@ -11237,6 +11238,9 @@ struct VerticalTabsSidebar: View, Equatable {
         let memberWorkspaceIdsByRemoteHostKey: [String: [UUID]]
         let collapsedRemoteHostKeys: Set<String>
         let remoteHostAuthRequiredKeys: Set<String>
+        /// Machines whose configured ssh tunnels are currently refused, with
+        /// the tooltip text describing which and why (the healer retries).
+        let remoteHostTunnelProblemByHostKey: [String: String]
         /// The agent inbox (t3code-style): mirrored tmux windows whose agent
         /// needs the user right now, decisions first, in stable
         /// machine/session order. Empty means no inbox section renders.
@@ -11377,6 +11381,15 @@ struct VerticalTabsSidebar: View, Equatable {
                     .hostAwaitsReauthentication(connectionHash: hostKey) == true
             }
         )
+        let _ = remoteHostTunnelRevision
+        let remoteHostTunnelProblemByHostKey: [String: String] = Dictionary(
+            uniqueKeysWithValues: memberWorkspaceIdsByRemoteHostKey.keys.compactMap { hostKey -> (String, String)? in
+                guard let status = AppDelegate.shared?.remoteTmuxController
+                    .tunnelStatus(connectionHash: hostKey),
+                    status.hasProblem else { return nil }
+                return (hostKey, SidebarRemoteHostSectionRowSnapshot.tunnelProblemTooltip(status))
+            }
+        )
         // The agent inbox (t3code-style): every mirrored tmux window whose
         // agent needs the user right now — a decision to approve, a question
         // to answer, or a finish to review. Built outside the ViewBuilder
@@ -11470,6 +11483,7 @@ struct VerticalTabsSidebar: View, Equatable {
             memberWorkspaceIdsByRemoteHostKey: memberWorkspaceIdsByRemoteHostKey,
             collapsedRemoteHostKeys: collapsedRemoteHostKeys,
             remoteHostAuthRequiredKeys: remoteHostAuthRequiredKeys,
+            remoteHostTunnelProblemByHostKey: remoteHostTunnelProblemByHostKey,
             agentInboxItems: agentInboxItems,
             workspaceRenderItems: workspaceRenderItems,
             visibleWorkspaceRowIds: visibleWorkspaceRowIds
@@ -11798,6 +11812,9 @@ struct VerticalTabsSidebar: View, Equatable {
             }
             .onReceive(NotificationCenter.default.publisher(for: .remoteTmuxHostAuthStateDidChange)) { _ in
                 remoteHostAuthRevision &+= 1
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .remoteTmuxHostTunnelStateDidChange)) { _ in
+                remoteHostTunnelRevision &+= 1
             }
             .onReceive(NotificationCenter.default.publisher(for: SidebarMultiSelectionDidHideEvent.notificationName)) { notification in
                 // Group collapse hides some workspaces without changing

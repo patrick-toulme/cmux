@@ -24,6 +24,10 @@ actor RemoteTmuxSSHTransport {
 
     private let sshExecutablePath: String
 
+    /// Where this endpoint's master edges, opens, and command failures are
+    /// persisted for the user (see ``RemoteTmuxConnectionLog``).
+    nonisolated let connectionLog: RemoteTmuxConnectionLog
+
     /// The bound on concurrent master opens across the app (see
     /// ``RemoteTmuxMasterOpenGate``); every host's transport shares one.
     private let openGate: RemoteTmuxMasterOpenGate
@@ -100,16 +104,20 @@ actor RemoteTmuxSSHTransport {
     ///     (overridable for tests).
     ///   - openerStallTimeout: the BatchMode opener's authentication budget
     ///     (overridable for tests).
+    ///   - connectionLog: the persisted per-endpoint event log (overridable
+    ///     for tests).
     init(
         host: RemoteTmuxHost,
         sshExecutablePath: String = RemoteTmuxHost.defaultSSHExecutablePath(),
         openGate: RemoteTmuxMasterOpenGate = .shared,
-        openerStallTimeout: Duration = RemoteTmuxSSHTransport.defaultOpenerStallTimeout
+        openerStallTimeout: Duration = RemoteTmuxSSHTransport.defaultOpenerStallTimeout,
+        connectionLog: RemoteTmuxConnectionLog = .shared
     ) {
         self.host = host
         self.sshExecutablePath = sshExecutablePath
         self.openGate = openGate
         self.openerStallTimeout = openerStallTimeout
+        self.connectionLog = connectionLog
     }
 
     // MARK: - High-level tmux operations
@@ -274,6 +282,13 @@ actor RemoteTmuxSSHTransport {
         }
         // The confirmed master died again before the retry could ride it —
         // an unusable connection, not a command failure.
+        connectionLog.record(
+            host: host,
+            kind: .masterDead,
+            message: "master unavailable again right after it was confirmed serving",
+            detail: retried.stderr,
+            generation: masterGeneration
+        )
         throw RemoteTmuxError.unreachable(host.destination)
     }
 
@@ -486,10 +501,33 @@ actor RemoteTmuxSSHTransport {
             return try await self.executeOpenerOrStall(openerCommand)
         }
         guard let opened else { return true }
-        if try await observedMasterRunning() { return true }
+        if try await observedMasterRunning() {
+            connectionLog.record(
+                host: host,
+                kind: .masterOpened,
+                message: "master opened by the app (BatchMode authentication succeeded)",
+                detail: opened.stderr,
+                generation: masterGeneration
+            )
+            return true
+        }
         if !opened.succeeded {
+            connectionLog.record(
+                host: host,
+                kind: .masterOpenFailed,
+                message: "BatchMode master open failed (exit \(opened.exitCode))",
+                detail: opened.stderr,
+                generation: masterGeneration
+            )
             throw RemoteTmuxError.commandFailed(exitCode: opened.exitCode, stderr: opened.stderr)
         }
+        connectionLog.record(
+            host: host,
+            kind: .masterOpenFailed,
+            message: "BatchMode open exited 0 but no master is serving (non-multiplexed fallback?)",
+            detail: opened.stderr,
+            generation: masterGeneration
+        )
         return false
     }
 
@@ -525,6 +563,12 @@ actor RemoteTmuxSSHTransport {
             // Park the fleet before reporting: the sibling opens queued in
             // the gate must not each raise (and cancel) a fresh touch prompt.
             await openGate.noteOpenerStalled()
+            connectionLog.record(
+                host: host,
+                kind: .masterOpenStalled,
+                message: "BatchMode master open killed after \(Self.wholeSeconds(budget))s without finishing authentication; handing the machine to the terminal",
+                generation: masterGeneration
+            )
             throw RemoteTmuxError.authenticationStalled(destination: destination, seconds: Self.wholeSeconds(budget))
         }
         if result.succeeded {
@@ -542,11 +586,26 @@ actor RemoteTmuxSSHTransport {
         let alive = try await masterIsRunning()
         let wasAlive = lastObservedMasterAlive
         noteMasterAliveObservation(alive)
-        // A dead-to-serving edge means someone authenticated this endpoint
-        // out of band (the interactive terminal after a park, most likely):
-        // the agent is answering again, so the fleet may open through the
-        // gate once more.
-        if alive, !wasAlive { await openGate.noteAuthenticationSucceeded() }
+        if alive, !wasAlive {
+            connectionLog.record(
+                host: host,
+                kind: .masterServing,
+                message: "master serving (generation \(masterGeneration))",
+                generation: masterGeneration
+            )
+            // A dead-to-serving edge means someone authenticated this endpoint
+            // out of band (the interactive terminal after a park, most likely):
+            // the agent is answering again, so the fleet may open through the
+            // gate once more.
+            await openGate.noteAuthenticationSucceeded()
+        } else if !alive, wasAlive {
+            connectionLog.record(
+                host: host,
+                kind: .masterDead,
+                message: "master gone (its control socket answers no `ssh -O check`)",
+                generation: masterGeneration
+            )
+        }
         return alive
     }
 
@@ -564,14 +623,32 @@ actor RemoteTmuxSSHTransport {
         remoteSocketPath: String,
         localSocketPath: String
     ) async throws -> Bool {
-        let result = try await Self.runProcess(
+        try await requestForward(
+            .reverseUnixSocket(remotePath: remoteSocketPath, localPath: localSocketPath)
+        ).succeeded
+    }
+
+    /// Registers one forward (`-R`/`-L`/`-D`) on the LIVE master via
+    /// `ssh -O forward`, scoped to exactly that forward. The result carries
+    /// ssh's stderr: a refused forward reads e.g. `remote port forwarding
+    /// failed for listen port 9998` (the remote port is bound elsewhere) or
+    /// `Port forwarding failed` (a local bind conflict), which the tunnel
+    /// healer records for the user.
+    func requestForward(_ spec: RemoteTmuxForwardSpec) async throws -> RemoteTmuxCommandResult {
+        try await Self.runProcess(
             executable: sshExecutablePath,
-            arguments: host.masterControlCommandArguments(
-                "forward",
-                options: ["-R", "\(remoteSocketPath):\(localSocketPath)"]
-            )
+            arguments: host.masterControlCommandArguments("forward", options: spec.arguments)
         )
-        return result.succeeded
+    }
+
+    /// Cancels one forward on the LIVE master via `ssh -O cancel`, scoped to
+    /// exactly that forward. Best-effort like every `-O` control command; a
+    /// forward the master never registered just reports "port not forwarded".
+    func cancelForward(_ spec: RemoteTmuxForwardSpec) async {
+        _ = try? await Self.runProcess(
+            executable: sshExecutablePath,
+            arguments: host.masterControlCommandArguments("cancel", options: spec.arguments)
+        )
     }
 
     /// Removes a previously registered reverse forward from the LIVE master.
@@ -589,13 +666,24 @@ actor RemoteTmuxSSHTransport {
         remoteSocketPath: String,
         localSocketPath: String
     ) async {
-        _ = try? await Self.runProcess(
-            executable: sshExecutablePath,
-            arguments: host.masterControlCommandArguments(
-                "cancel",
-                options: ["-R", "\(remoteSocketPath):\(localSocketPath)"]
-            )
-        )
+        await cancelForward(.reverseUnixSocket(remotePath: remoteSocketPath, localPath: localSocketPath))
+    }
+
+    /// The forwards the user's ssh config declares for this host, as
+    /// `ssh -G` resolves them (so `Match` blocks and includes apply). The
+    /// master carried them at open; the tunnel healer re-requests the ones
+    /// the server refused. Fails closed to an empty list when ssh itself
+    /// fails (a broken config heals nothing rather than guessing).
+    func configuredForwards() async -> [RemoteTmuxForwardSpec] {
+        var arguments = ["-G"]
+        if let port = host.port { arguments += ["-p", String(port)] }
+        if let identityFile = host.identityFile, !identityFile.isEmpty {
+            arguments += ["-i", identityFile]
+        }
+        arguments += ["--", host.destination]
+        guard let result = try? await Self.runProcess(executable: sshExecutablePath, arguments: arguments),
+              result.succeeded else { return [] }
+        return RemoteTmuxForwardSpec.parseSSHConfigDump(result.stdout)
     }
 
     /// Whether the shared ControlMaster is live and accepting sessions, via the
@@ -629,6 +717,12 @@ actor RemoteTmuxSSHTransport {
         _ = try? await Self.runProcess(
             executable: sshExecutablePath,
             arguments: host.masterControlCommandArguments("exit")
+        )
+        connectionLog.record(
+            host: host,
+            kind: .disconnected,
+            message: "master shut down deliberately (`ssh -O exit`)",
+            generation: masterGeneration
         )
         // Deliberate teardown is a known dead edge: the next serving
         // confirmation is a new generation (its replacement master carries

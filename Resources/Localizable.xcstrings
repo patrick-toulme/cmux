@@ -43321,7 +43321,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nMirror a remote host's tmux sessions into the current cmux window over SSH tmux control mode. Each session becomes a workspace, each window a tab, and each multi-pane window a native split. Requires the \"Remote tmux\" beta setting.\n\nIf interactive authentication is needed, cmux runs ssh in this terminal and then retries over the shared connection. ~/.ssh/config aliases and settings are honored.\n\nFlags:\n  --port <n>          SSH port\n  --identity <path>   SSH identity file path\n  --no-focus          Do not select the mirror workspace or activate its window\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nMirror a remote host's tmux sessions into the current cmux window over SSH tmux control mode. Each session becomes a workspace, each window a tab, and each multi-pane window a native split. Requires the \"Remote tmux\" beta setting.\n\nIf interactive authentication is needed, cmux runs ssh in this terminal and then retries over the shared connection. ~/.ssh/config aliases and settings are honored.\n\nFlags:\n  --port <n>          SSH port\n  --identity <path>   SSH identity file path\n  --no-focus          Do not select the mirror workspace or activate its window\n  --verbose, -v       Print the full ssh output for every machine that fails\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "es": {
@@ -43345,7 +43345,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSSH の tmux コントロールモードで、リモートホストの tmux セッションを現在の cmux ウィンドウにミラーリングします。各セッションはワークスペースに、各ウィンドウはタブに、複数ペインのウィンドウはネイティブな分割になります。「Remote tmux」ベータ設定を有効にする必要があります。\n\n対話型認証が必要な場合、cmux はこのターミナルで ssh を実行し、共有接続を使って再試行します。~/.ssh/config のエイリアスと設定も使用されます。\n\nFlags:\n  --port <n>          SSH ポート\n  --identity <path>   SSH 識別ファイルのパス\n  --no-focus          ミラーワークスペースを選択せず、ウィンドウもアクティブにしない\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
+            "value": "Usage: cmux ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus]\n\nSSH の tmux コントロールモードで、リモートホストの tmux セッションを現在の cmux ウィンドウにミラーリングします。各セッションはワークスペースに、各ウィンドウはタブに、複数ペインのウィンドウはネイティブな分割になります。「Remote tmux」ベータ設定を有効にする必要があります。\n\n対話型認証が必要な場合、cmux はこのターミナルで ssh を実行し、共有接続を使って再試行します。~/.ssh/config のエイリアスと設定も使用されます。\n\nFlags:\n  --port <n>          SSH ポート\n  --identity <path>   SSH 識別ファイルのパス\n  --no-focus          ミラーワークスペースを選択せず、ウィンドウもアクティブにしない\n  --verbose, -v       失敗したマシンごとに ssh の出力全文を表示する\n\nExample:\n  cmux ssh-tmux dev@my-host\n  cmux ssh-tmux host-a host-b host-c\n  cmux ssh-tmux dev@my-host --port 2222 --identity ~/.ssh/id_ed25519"
           }
         },
         "km": {
@@ -272918,6 +272918,139 @@
         "uk": { "stringUnit": { "state": "translated", "value": "Не знайдено потрібний CLI. Установіть команду та повторіть спробу." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "未找到所需的 CLI。请安装该命令后重试。" } },
         "zh-Hant": { "stringUnit": { "state": "translated", "value": "找不到必要的 CLI。請安裝該命令後再試一次。" } }
+      }
+    },
+    "cli.help.ssh-tmux-log": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Usage: cmux ssh-tmux-log <destination> [--port <n>] [--identity <path>] [--limit <n>] [--json]\n\nShow a remote tmux machine's connection log: master generations, app-side\nopens and interactive re-authentications (with ssh's full stderr), agent\nbridge and configured-tunnel outcomes, control stream losses and\nreconnects, and every failed remote command. Newest last. The log persists\nacross cmux restarts under ~/.cmux/remote-tmux/logs/, one file per machine.\n\nFlags:\n  --port <n>          SSH port (must match the attach)\n  --identity <path>   SSH identity file path (must match the attach)\n  --limit <n>         Number of newest events to show (default 50, max 500)\n  --json              Structured JSON output\n\nExample:\n  cmux ssh-tmux-log xxl\n  cmux ssh-tmux-log dev@my-host --limit 200" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "Usage: cmux ssh-tmux-log <destination> [--port <n>] [--identity <path>] [--limit <n>] [--json]\n\nリモート tmux マシンの接続ログを表示します: マスター世代、アプリ側の接続と\n対話型の再認証 (ssh の stderr 全文付き)、エージェントブリッジと設定済みトンネルの\n結果、コントロールストリームの切断と再接続、失敗したリモートコマンド。新しいものが\n最後に表示されます。ログは cmux を再起動しても ~/.cmux/remote-tmux/logs/ に\nマシンごとに 1 ファイルとして保持されます。\n\nFlags:\n  --port <n>          SSH ポート (アタッチ時と一致させる)\n  --identity <path>   SSH 識別ファイルのパス (アタッチ時と一致させる)\n  --limit <n>         表示する最新イベント数 (デフォルト 50、最大 500)\n  --json              JSON 形式で出力\n\nExample:\n  cmux ssh-tmux-log xxl\n  cmux ssh-tmux-log dev@my-host --limit 200" } }
+      }
+    },
+    "remoteTmuxHostSection.contextMenu.connectionLog": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Show Connection Log" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "接続ログを表示" } }
+      }
+    },
+    "remoteTmuxHostSection.tunnelProblem.line": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tunnel %@ unavailable: %@" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "トンネル %@ が利用できません: %@" } }
+      }
+    },
+    "remoteTmuxHostSection.tunnelProblem.retrying": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "cmux retries automatically. See the connection log for details." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "cmux が自動的に再試行します。詳細は接続ログを参照してください。" } }
+      }
+    },
+    "remoteTmux.connectionLog.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Connection log: %@" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "接続ログ: %@" } }
+      }
+    },
+    "remoteTmux.connectionLog.file": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Log file: `%@`" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ログファイル: `%@`" } }
+      }
+    },
+    "remoteTmux.connectionLog.state": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Current state" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "現在の状態" } }
+      }
+    },
+    "remoteTmux.connectionLog.events": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Events (newest first)" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "イベント (新しい順)" } }
+      }
+    },
+    "remoteTmux.connectionLog.column.time": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Time" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "時刻" } }
+      }
+    },
+    "remoteTmux.connectionLog.column.event": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Event" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "イベント" } }
+      }
+    },
+    "remoteTmux.connectionLog.column.detail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Detail" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "詳細" } }
+      }
+    },
+    "remoteTmux.connectionLog.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No events recorded yet." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "まだイベントは記録されていません。" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.master": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Master: %@ (%@)" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "マスター: %@ (%@)" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.authParked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Authentication: waiting for the terminal since %@" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "認証: %@ からターミナルでの認証待ち" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.bridge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Agent bridge: %@ (%@)" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "エージェントブリッジ: %@ (%@)" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.tunnel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Tunnel %@: %@ (%@)" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "トンネル %@: %@ (%@)" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.tunnel.up": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "established" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "確立済み" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.tunnel.down": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "unavailable, retrying" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "利用不可、再試行中" } }
+      }
+    },
+    "remoteTmux.connectionLog.state.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No connection observed yet." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "まだ接続は観測されていません。" } }
       }
     }
   },

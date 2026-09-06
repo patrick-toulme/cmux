@@ -35,6 +35,7 @@ extension VerticalTabsSidebar {
             memberCount: members.count,
             collapsedUnreadCount: collapsedUnreadCount,
             authRequired: renderContext.remoteHostAuthRequiredKeys.contains(hostKey),
+            tunnelProblem: renderContext.remoteHostTunnelProblemByHostKey[hostKey],
             isPointerHovering: isPointerHovering,
             fontScale: renderContext.tabItemSettings.sidebarFontScale,
             rowSpacing: tabRowSpacing,
@@ -84,6 +85,11 @@ extension VerticalTabsSidebar {
                 }
                 AppDelegate.shared?.remoteTmuxController
                     .killHostSessions(connectionHash: hostKey)
+            },
+            onShowConnectionLog: { [weak tabManager] in
+                guard let tabManager else { return }
+                AppDelegate.shared?.remoteTmuxController
+                    .showConnectionLog(connectionHash: hostKey, in: tabManager)
             },
             onContextMenuAppear: { contextMenuActions?.didOpen() },
             onContextMenuDisappear: { contextMenuActions?.didClose() }
