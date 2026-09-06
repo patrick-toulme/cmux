@@ -129,6 +129,61 @@ extension RemoteTmuxError {
         guard trimmed.count > maxLength else { return trimmed }
         return String(trimmed.prefix(maxLength)) + "…"
     }
+
+    /// Upper bound on the full detail shipped in a socket error's `data`.
+    static let socketDetailMaxCharacters = 8_000
+
+    /// The structured `data` a socket error carries next to the capped
+    /// ``message``: the failure kind and, where one exists, the WHOLE ssh
+    /// stderr (line structure kept, control bytes flattened, bounded) so the
+    /// CLI's `--verbose`/`--json` can show what the one-liner truncated.
+    var socketErrorData: [String: Any] {
+        switch self {
+        case let .commandFailed(exitCode, stderr):
+            var data: [String: Any] = ["kind": "command_failed", "exit_code": Int(exitCode)]
+            if let detail = Self.fullDetail(stderr) { data["detail"] = detail }
+            return data
+        case let .launchFailed(detail):
+            var data: [String: Any] = ["kind": "launch_failed"]
+            if let detail = Self.fullDetail(detail) { data["detail"] = detail }
+            return data
+        case let .unreachable(detail):
+            var data: [String: Any] = ["kind": "unreachable"]
+            if let detail = Self.fullDetail(detail) { data["detail"] = detail }
+            return data
+        case let .authenticationStalled(destination, seconds):
+            return ["kind": "authentication_stalled", "destination": destination, "seconds": seconds]
+        case .windowCreationFailed:
+            return ["kind": "window_creation_failed"]
+        case let .unsupportedTmux(detected):
+            return ["kind": "unsupported_tmux", "detected": detected]
+        case let .tmuxNotFound(destination):
+            return ["kind": "tmux_not_found", "destination": destination]
+        }
+    }
+
+    /// Multi-line sanitization for ``socketErrorData``: newlines and tabs
+    /// survive (the CLI prints the block indented), other control/format
+    /// scalars flatten to spaces, and the text is capped.
+    private static func fullDetail(_ raw: String) -> String? {
+        var scalars = String.UnicodeScalarView()
+        for scalar in raw.unicodeScalars {
+            if scalar == "\n" || scalar == "\t" {
+                scalars.append(scalar)
+                continue
+            }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                scalars.append(" ")
+            default:
+                scalars.append(scalar)
+            }
+        }
+        let trimmed = String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.count > socketDetailMaxCharacters else { return trimmed }
+        return String(trimmed.prefix(socketDetailMaxCharacters)) + "…"
+    }
 }
 
 // `String(describing:)` and `error.localizedDescription` both surface the

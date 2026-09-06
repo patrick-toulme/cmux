@@ -42,6 +42,7 @@ struct ControlCommandExecutionPolicyTests {
             "remote.tmux.sessions", "remote.tmux.probe", "remote.tmux.mirror",
             "remote.tmux.attach", "remote.tmux.detach", "remote.tmux.state",
             "remote.tmux.resolve_pane", "remote.tmux.pane_surfaces",
+            "remote.tmux.connection_log",
             // JavaScript-evaluating browser methods block on page JS and must
             // not hold the main actor (see socketWorkerMethods rationale).
             "browser.eval", "browser.wait", "browser.snapshot", "browser.click",

@@ -62,7 +62,24 @@ final class RemoteTmuxController {
     /// the same `%sessions-changed`, and a session creation emits several.
     private var sessionDiscoveryTasks: [String: Task<Void, Never>] = [:]
 
-    init() {}
+    /// The persisted per-endpoint event log every layer writes to (see
+    /// ``RemoteTmuxConnectionLog``); the transports share it.
+    let connectionLog: RemoteTmuxConnectionLog
+
+    /// Per-endpoint tunnel healers (see ``RemoteTmuxTunnelHealer``), keyed by
+    /// ``RemoteTmuxHost/connectionHash``.
+    var tunnelHealersByConnectionHash: [String: RemoteTmuxTunnelHealer] = [:]
+
+    /// Control streams currently in `.reconnecting`, so the next `.connected`
+    /// is logged as a recovery rather than a first attach.
+    private var reconnectingControlStreams: Set<ObjectIdentifier> = []
+
+    init(connectionLog: RemoteTmuxConnectionLog = .shared) {
+        self.connectionLog = connectionLog
+        transportRegistry.onTransportRemoved = { [weak self] connectionHash in
+            self?.stopTunnelHealing(connectionHash: connectionHash)
+        }
+    }
 
     /// Synchronous read of the `remoteTmux` beta flag for AppKit/socket paths
     /// that run outside the SwiftUI update cycle. Resolves the same catalog key
@@ -159,10 +176,22 @@ final class RemoteTmuxController {
             // transport and needs the terminal (touch, prompt, stuck agent).
             if RemoteTmuxSSHTransport.interactiveAttachRetryWillHelp(error) {
                 await transport.shutdownMaster()
+                noteInteractiveAuthHandoff(host: host, reason: error.message)
                 return host.interactiveAuthInvocation()
             }
             throw error
         }
+    }
+
+    /// Records that a machine was handed to the user's terminal for
+    /// interactive authentication, with the classified reason.
+    func noteInteractiveAuthHandoff(host: RemoteTmuxHost, reason: String) {
+        connectionLog.record(
+            host: host,
+            kind: .interactiveAuth,
+            message: "handed to the terminal for interactive authentication (cmux ssh-tmux \(host.destination))",
+            detail: reason
+        )
     }
 
     /// The tmux control line pinning `SSH_AUTH_SOCK` to this endpoint's
@@ -250,6 +279,11 @@ final class RemoteTmuxController {
         guard !hostsAwaitingReauth.contains(host.connectionHash) else { return }
         hostsAwaitingReauth.insert(host.connectionHash)
         Self.logger.warning("remote-tmux: reconnect parked, interactive auth required [\(host.connectionHash, privacy: .public)]")
+        connectionLog.record(
+            host: host,
+            kind: .reauthParked,
+            message: "reconnects parked: reopening the master needs interactive authentication (cmux ssh-tmux \(host.destination))"
+        )
         NotificationCenter.default.post(name: .remoteTmuxHostAuthStateDidChange, object: nil)
         enqueueReauthNotification(host: host)
     }
@@ -329,6 +363,11 @@ final class RemoteTmuxController {
     /// re-attaches ride it with no further prompts).
     private func clearReauthStateAndResumeSuspended(host: RemoteTmuxHost) {
         if hostsAwaitingReauth.remove(host.connectionHash) != nil {
+            connectionLog.record(
+                host: host,
+                kind: .reauthCleared,
+                message: "master serving again; parked reconnects resume"
+            )
             NotificationCenter.default.post(name: .remoteTmuxHostAuthStateDidChange, object: nil)
         }
         for connection in connectionsByHostSession.values
@@ -471,8 +510,50 @@ final class RemoteTmuxController {
             onReconnectAuthRequired: { [weak self, weak connection] in
                 guard let self, let connection else { return }
                 self.noteReconnectAuthRequired(host: connection.host)
+            },
+            onExit: { [weak self, weak connection] in
+                guard let self, let connection else { return }
+                self.connectionLog.record(
+                    host: connection.host,
+                    kind: .controlStreamEnded,
+                    message: "control stream for session \(connection.sessionName) ended (session or server gone)"
+                )
+            },
+            onConnectionStateChanged: { [weak self, weak connection] state in
+                guard let self, let connection else { return }
+                self.noteControlStreamStateChanged(connection: connection, state: state)
             }
         )
+    }
+
+    /// Persists a control stream's transport-loss and recovery edges so an
+    /// outage leaves a trail per session (the first loss of a host is the
+    /// interesting one; each session logs its own line, in the same second).
+    private func noteControlStreamStateChanged(
+        connection: RemoteTmuxControlConnection,
+        state: RemoteTmuxControlConnection.ConnectionState
+    ) {
+        let id = ObjectIdentifier(connection)
+        switch state {
+        case .reconnecting:
+            reconnectingControlStreams.insert(id)
+            connectionLog.record(
+                host: connection.host,
+                kind: .controlStreamEnded,
+                message: "control stream for session \(connection.sessionName) lost; reconnecting"
+            )
+        case .connected:
+            guard reconnectingControlStreams.remove(id) != nil else { return }
+            connectionLog.record(
+                host: connection.host,
+                kind: .controlStreamReconnected,
+                message: "control stream for session \(connection.sessionName) reconnected"
+            )
+        case .ended:
+            reconnectingControlStreams.remove(id)
+        case .connecting:
+            break
+        }
     }
 
     /// `%sessions-changed` from any of a host's control clients: the server's
@@ -1194,6 +1275,36 @@ final class RemoteTmuxController {
         }
     }
 
+    /// The endpoint behind a sidebar host key: a live mirror's host, else the
+    /// transport's (a host whose sessions all ended keeps its transport).
+    func host(forConnectionHash connectionHash: String) -> RemoteTmuxHost? {
+        hostMirrors(connectionHash: connectionHash).first?.host
+            ?? transportRegistry.allHosts().first { $0.connectionHash == connectionHash }
+    }
+
+    /// Opens the machine's connection log (the live markdown view of
+    /// ``RemoteTmuxConnectionLog``) in a panel: split next to the focused
+    /// surface of the selected workspace so the trail sits beside whatever
+    /// the user is looking at, and re-rendered on every new event.
+    func showConnectionLog(connectionHash: String, in tabManager: TabManager) {
+        guard let host = host(forConnectionHash: connectionHash) else { return }
+        let markdownPath = connectionLog.renderMarkdownNow(for: host).path
+        guard let workspace = tabManager.selectedWorkspace ?? tabManager.tabs.first else { return }
+        if let focused = workspace.focusedPanelId,
+           workspace.newMarkdownSplit(
+               from: focused,
+               orientation: .horizontal,
+               filePath: markdownPath,
+               focus: true
+           ) != nil {
+            return
+        }
+        if let paneId = workspace.bonsplitController.focusedPaneId
+            ?? workspace.bonsplitController.allPaneIds.first {
+            workspace.newMarkdownSurface(inPane: paneId, filePath: markdownPath, focus: true)
+        }
+    }
+
     /// Kills every remote tmux session of a machine and closes its mirror
     /// workspaces. The explicit destructive counterpart of
     /// ``detachHost(connectionHash:)`` — callers confirm with the user first.
@@ -1264,6 +1375,11 @@ final class RemoteTmuxController {
     /// gate pass or attach.
     func scheduleAgentBridgeRefresh(host: RemoteTmuxHost, force: Bool) {
         guard Self.isEnabled else { return }
+        // The user's configured tunnels die with the master exactly like the
+        // bridge's forward does, and a master that opened while a previous
+        // generation still held the remote port never got them at all; heal
+        // them on the same edges (see RemoteTmuxTunnelHealer).
+        scheduleTunnelHeal(host: host, force: force)
         Task { [weak self] in
             for attempt in 0..<3 {
                 guard let self else { return }
@@ -1283,6 +1399,54 @@ final class RemoteTmuxController {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+    }
+
+    // MARK: - Configured tunnels
+
+    /// Returns (creating if needed) the tunnel healer for a host, bound to the
+    /// host's transport.
+    func tunnelHealer(for host: RemoteTmuxHost) -> RemoteTmuxTunnelHealer {
+        if let existing = tunnelHealersByConnectionHash[host.connectionHash] {
+            return existing
+        }
+        let transport = transport(for: host)
+        let healer = RemoteTmuxTunnelHealer(
+            host: host,
+            operations: RemoteTmuxTunnelHealer.Operations(
+                configuredForwards: { await transport.configuredForwards() },
+                cancel: { await transport.cancelForward($0) },
+                request: { try await transport.requestForward($0) },
+                currentGeneration: { await transport.masterGeneration }
+            ),
+            connectionLog: connectionLog,
+            onStatusChanged: { _ in
+                NotificationCenter.default.post(name: .remoteTmuxHostTunnelStateDidChange, object: nil)
+            }
+        )
+        tunnelHealersByConnectionHash[host.connectionHash] = healer
+        return healer
+    }
+
+    /// Starts (or, on a user-driven attach, restarts) the host's tunnel heal
+    /// cycle for the transport's current master generation.
+    func scheduleTunnelHeal(host: RemoteTmuxHost, force: Bool) {
+        let healer = tunnelHealer(for: host)
+        let transport = transport(for: host)
+        Task { @MainActor in
+            let generation = await transport.masterGeneration
+            healer.heal(generation: generation, force: force)
+        }
+    }
+
+    /// The tunnel state of a mirrored machine, `nil` until its first heal
+    /// cycle reports (drives the sidebar's tunnel indicator).
+    func tunnelStatus(connectionHash: String) -> RemoteTmuxTunnelStatus? {
+        tunnelHealersByConnectionHash[connectionHash]?.status
+    }
+
+    /// Ends a host's heal cycle and forgets its status (detach/disconnect).
+    func stopTunnelHealing(connectionHash: String) {
+        tunnelHealersByConnectionHash.removeValue(forKey: connectionHash)?.stop()
     }
 
     /// Sets up the remote agent bridge after a successful attach: forwards the
@@ -1321,11 +1485,18 @@ final class RemoteTmuxController {
             // A stale socket file from a dead master generation blocks the
             // re-bind (sshd rarely enables StreamLocalBindUnlink); clear it.
             _ = try await transport.run(["rm", "-f", remoteSocketPath])
-            guard try await transport.requestReverseUnixForward(
-                remoteSocketPath: remoteSocketPath,
-                localSocketPath: localSocketPath
-            ) else {
+            let forward = try await transport.requestForward(
+                .reverseUnixSocket(remotePath: remoteSocketPath, localPath: localSocketPath)
+            )
+            guard forward.succeeded else {
                 Self.logger.info("remote-tmux: agent bridge forward failed [\(host.connectionHash, privacy: .public)]")
+                connectionLog.record(
+                    host: host,
+                    kind: .bridgeFailed,
+                    message: "agent bridge: reverse forward of the control socket refused (exit \(forward.exitCode))",
+                    detail: forward.stderr,
+                    generation: await transport.masterGeneration
+                )
                 return false
             }
             _ = try await transport.runTmux(
@@ -1336,9 +1507,23 @@ final class RemoteTmuxController {
             )
             await installOpencodePluginIfNeeded(host: host)
             Self.logger.info("remote-tmux: agent bridge ready [\(host.connectionHash, privacy: .public)]")
+            connectionLog.record(
+                host: host,
+                kind: .bridgeConfigured,
+                message: "agent bridge ready",
+                detail: remoteSocketPath,
+                generation: await transport.masterGeneration
+            )
             return true
         } catch {
             Self.logger.info("remote-tmux: agent bridge setup failed [\(host.connectionHash, privacy: .public)]")
+            connectionLog.record(
+                host: host,
+                kind: .bridgeFailed,
+                message: "agent bridge setup failed",
+                detail: String(describing: error),
+                generation: await transport.masterGeneration
+            )
             return false
         }
     }

@@ -1533,6 +1533,7 @@ class TerminalController {
         case "remote.tmux.state":
             return v2RemoteTmuxState(id: request.id, params: request.params)
         case "remote.tmux.probe": return v2RemoteTmuxProbe(id: request.id, params: request.params)
+        case "remote.tmux.connection_log": return v2RemoteTmuxConnectionLog(id: request.id, params: request.params)
         case "remote.tmux.mirror": return v2RemoteTmuxMirror(id: request.id, params: request.params)
         case "remote.tmux.window": return v2RemoteTmuxWindow(id: request.id, params: request.params)
         case "remote.tmux.pane_grids": return v2RemoteTmuxPaneGrids(id: request.id, params: request.params)
@@ -2811,7 +2812,7 @@ class TerminalController {
             "workspace.remote.pty_bridge", "workspace.remote.pty_resize", "workspace.remote.pty_attach_end",
             "workspace.remote.terminal_session_launching",
             "workspace.remote.terminal_session_connected", "workspace.remote.terminal_session_end",
-            "remote.tmux.sessions", "remote.tmux.probe", "remote.tmux.attach", "remote.tmux.detach", "remote.tmux.state", "remote.tmux.mirror", "remote.tmux.window", "remote.tmux.pane_grids", "remote.tmux.pane_surfaces", "remote.tmux.resolve_pane",
+            "remote.tmux.sessions", "remote.tmux.probe", "remote.tmux.connection_log", "remote.tmux.attach", "remote.tmux.detach", "remote.tmux.state", "remote.tmux.mirror", "remote.tmux.window", "remote.tmux.pane_grids", "remote.tmux.pane_surfaces", "remote.tmux.resolve_pane",
             "session.restore_previous",
             "settings.open",
             "feedback.open",
@@ -3754,6 +3755,7 @@ class TerminalController {
     nonisolated func v2VmCall(
         id: Any?,
         timeoutSeconds: TimeInterval = 17 * 60,
+        errorData: ((Error) -> Any?)? = nil,
         _ work: @escaping () async throws -> [String: Any]
     ) -> String {
         let semaphore = DispatchSemaphore(value: 0)
@@ -3781,7 +3783,8 @@ class TerminalController {
             return v2Error(
                 id: id,
                 code: "vm_error",
-                message: String(describing: error)
+                message: String(describing: error),
+                data: errorData?(error)
             )
         case nil:
             return v2Error(

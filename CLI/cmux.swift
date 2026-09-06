@@ -26,18 +26,31 @@ struct CLIError: Error, CustomStringConvertible {
     let exitCode: Int32
     /// Structured v2 protocol error code when the failure came from a v2 error response.
     let v2Code: String?
+    /// The v2 error's structured `data` object, when the app attached one
+    /// (e.g. the full ssh stderr behind a capped remote tmux message).
+    let v2Data: [String: Any]?
     let socketFailureKind: SocketFailureKind?
 
     init(
         message: String,
         exitCode: Int32 = 1,
         v2Code: String? = nil,
+        v2Data: [String: Any]? = nil,
         socketFailureKind: SocketFailureKind? = nil
     ) {
         self.message = message
         self.exitCode = exitCode
         self.v2Code = v2Code
+        self.v2Data = v2Data
         self.socketFailureKind = socketFailureKind
+    }
+
+    /// The multi-line detail the app shipped with the error (`data.detail`),
+    /// trimmed, or `nil`.
+    var v2Detail: String? {
+        guard let detail = v2Data?["detail"] as? String else { return nil }
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     var description: String { message }
@@ -2822,7 +2835,8 @@ final class SocketClient {
                     reason: reason,
                     details: safeV2Details(error["details"])
                 ),
-                v2Code: error["code"] as? String
+                v2Code: error["code"] as? String,
+                v2Data: error["data"] as? [String: Any]
             )
         }
 
@@ -4911,6 +4925,12 @@ struct CMUXCLI {
             )
         case "ssh-tmux":
             try runRemoteTmux(
+                commandArgs: commandArgs,
+                client: client,
+                jsonOutput: jsonOutput
+            )
+        case "ssh-tmux-log":
+            try runRemoteTmuxLog(
                 commandArgs: commandArgs,
                 client: client,
                 jsonOutput: jsonOutput
@@ -9378,6 +9398,109 @@ struct CMUXCLI {
         )
     }
 
+    /// Prints a machine's persisted remote tmux connection log
+    /// (`remote.tmux.connection_log`): newest `--limit` events, oldest first,
+    /// with each event's detail (ssh stderr, forward spec) indented under it.
+    private func runRemoteTmuxLog(
+        commandArgs: [String],
+        client: SocketClient,
+        jsonOutput: Bool
+    ) throws {
+        var destination: String?
+        var port: Int?
+        var identityFile: String?
+        var limit = 50
+        var index = 0
+        while index < commandArgs.count {
+            let arg = commandArgs[index]
+            switch arg {
+            case "--port":
+                guard index + 1 < commandArgs.count,
+                      let parsed = Int(commandArgs[index + 1]), parsed > 0, parsed <= 65535 else {
+                    throw CLIError(message: "ssh-tmux-log: --port must be 1-65535")
+                }
+                port = parsed
+                index += 2
+            case "--identity":
+                guard index + 1 < commandArgs.count else {
+                    throw CLIError(message: "ssh-tmux-log: --identity requires a path")
+                }
+                identityFile = commandArgs[index + 1]
+                index += 2
+            case "--limit":
+                guard index + 1 < commandArgs.count, let parsed = Int(commandArgs[index + 1]), parsed > 0 else {
+                    throw CLIError(message: "ssh-tmux-log: --limit requires a positive number")
+                }
+                limit = min(parsed, 500)
+                index += 2
+            case "--json":
+                index += 1
+            default:
+                if arg.hasPrefix("-") {
+                    throw CLIError(message: "ssh-tmux-log: unknown flag '\(arg)'. Known flags: --port <n> --identity <path> --limit <n> --json")
+                }
+                guard destination == nil else {
+                    throw CLIError(message: "ssh-tmux-log: pass exactly one destination")
+                }
+                destination = arg
+                index += 1
+            }
+        }
+        guard let destination, !destination.isEmpty else {
+            throw CLIError(message: "ssh-tmux-log requires a destination (example: cmux ssh-tmux-log dev@my-host)")
+        }
+        var params: [String: Any] = ["host": destination, "limit": limit]
+        if let port { params["port"] = port }
+        if let identityFile, !identityFile.isEmpty { params["identity_file"] = identityFile }
+        let result = try client.sendV2(method: "remote.tmux.connection_log", params: params, responseTimeout: 30)
+        if jsonOutput {
+            print(jsonString(result))
+            return
+        }
+        let entries = (result["entries"] as? [[String: Any]]) ?? []
+        print("Connection log for \(destination) (\((result["path"] as? String) ?? "?"))")
+        if let tunnels = result["tunnels"] as? [String: Any] {
+            let established = (tunnels["established"] as? [String]) ?? []
+            let failed = (tunnels["failed"] as? [[String: Any]]) ?? []
+            if !established.isEmpty {
+                print("Tunnels up: " + established.joined(separator: ", "))
+            }
+            for failure in failed {
+                let spec = (failure["spec"] as? String) ?? "?"
+                let reason = (failure["reason"] as? String) ?? ""
+                print("Tunnel DOWN: \(spec) (\(reason); cmux is retrying)")
+            }
+        }
+        guard !entries.isEmpty else {
+            print("No events recorded yet.")
+            return
+        }
+        let isoParser = ISO8601DateFormatter()
+        isoParser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoParserNoFraction = ISO8601DateFormatter()
+        isoParserNoFraction.formatOptions = [.withInternetDateTime]
+        let localFormatter = DateFormatter()
+        localFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        for entry in entries {
+            let rawTime = (entry["time"] as? String) ?? ""
+            let stamp: String
+            if let date = isoParser.date(from: rawTime) ?? isoParserNoFraction.date(from: rawTime) {
+                stamp = localFormatter.string(from: date)
+            } else {
+                stamp = String(rawTime.replacingOccurrences(of: "T", with: " ").prefix(19))
+            }
+            let marker = (entry["failure"] as? Bool) == true ? "!" : " "
+            let generation = (entry["generation"] as? Int).map { " (gen \($0))" } ?? ""
+            print("\(stamp) \(marker) \((entry["message"] as? String) ?? "")\(generation)")
+            if let detail = entry["detail"] as? String {
+                for line in detail.split(whereSeparator: \.isNewline) {
+                    print("                       " + line)
+                }
+            }
+        }
+    }
+
     /// Mirrors one or more remote hosts' tmux sessions into ONE window;
     /// interactive SSH authentication runs inline in the caller's terminal (at
     /// most once per machine) before retrying over that machine's shared master.
@@ -9397,6 +9520,7 @@ struct CMUXCLI {
         var identityFile: String?
         var noFocus = false
         var newWindow = false
+        var verbose = false
 
         // Intentional subset of parseSSHCommandOptions: ssh-tmux has no relay,
         // passthrough, --ssh-option, --name, or --window support.
@@ -9424,6 +9548,9 @@ struct CMUXCLI {
                 index += 1
             case "--new-window":
                 newWindow = true
+                index += 1
+            case "--verbose", "-v":
+                verbose = true
                 index += 1
             default:
                 if arg.hasPrefix("-") {
@@ -9477,7 +9604,7 @@ struct CMUXCLI {
         // One unreachable machine must not strand the rest of the fleet:
         // record the failure, keep attaching the others, report at the end.
         // The command exits non-zero only when EVERY machine failed.
-        var failedHosts: [(destination: String, message: String)] = []
+        var failedHosts: [RemoteTmuxAttachFailure] = []
         if destinations.count >= 2, remoteTmuxProbeSupported(client: client) {
             let bundle = try runRemoteTmuxParallelAttach(
                 destinations: destinations,
@@ -9487,6 +9614,7 @@ struct CMUXCLI {
                 callerContextParams: callerContextParams,
                 newWindow: newWindow,
                 noFocus: noFocus,
+                verbose: verbose,
                 socketPath: client.socketPath,
                 jsonOutput: jsonOutput
             )
@@ -9526,10 +9654,11 @@ struct CMUXCLI {
                     jsonOutput: jsonOutput
                 )
             } catch let error as CLIError {
-                failedHosts.append((destination, error.message))
+                let failure = RemoteTmuxAttachFailure(destination: destination, error: error)
+                failedHosts.append(failure)
                 if !jsonOutput {
                     FileHandle.standardError.write(
-                        Data("FAILED host=\(destination): \(error.message)\n".utf8)
+                        Data((failure.consoleLine(verbose: verbose) + "\n").utf8)
                     )
                 }
                 continue
@@ -9557,9 +9686,7 @@ struct CMUXCLI {
                 ]
                 if let joinedWindowId { summary["window_id"] = joinedWindowId }
                 if !failedHosts.isEmpty {
-                    summary["failed_hosts"] = failedHosts.map {
-                        ["host": $0.destination, "error": $0.message]
-                    }
+                    summary["failed_hosts"] = failedHosts.map(\.jsonPayload)
                 }
                 print(jsonString(summary))
             }
@@ -9567,16 +9694,72 @@ struct CMUXCLI {
         if hostResults.isEmpty, let firstFailure = failedHosts.first {
             // Every machine failed: exit non-zero with the full list.
             let hosts = failedHosts.map(\.destination).joined(separator: ", ")
-            throw CLIError(
-                message: failedHosts.count == 1
-                    ? firstFailure.message
-                    : "ssh-tmux: all machines failed (\(hosts)); first error: \(firstFailure.message)"
-            )
+            var message = failedHosts.count == 1
+                ? firstFailure.message
+                : "ssh-tmux: all machines failed (\(hosts)); first error: \(firstFailure.message)"
+            if !jsonOutput {
+                message += "\n" + Self.remoteTmuxFailureDetailsHint(destinations: failedHosts.map(\.destination), verbose: verbose)
+            }
+            throw CLIError(message: message)
         }
         if !failedHosts.isEmpty, !jsonOutput {
             let hosts = failedHosts.map(\.destination).joined(separator: ", ")
             print("Attached \(hostResults.count) of \(destinations.count) machines; failed: \(hosts)")
+            print(Self.remoteTmuxFailureDetailsHint(destinations: failedHosts.map(\.destination), verbose: verbose))
         }
+    }
+
+    /// One failed machine of an `ssh-tmux` attach: the capped one-line message
+    /// plus, when the app shipped it, the full ssh stderr and exit code.
+    struct RemoteTmuxAttachFailure {
+        let destination: String
+        let message: String
+        let detail: String?
+        let exitCode: Int?
+
+        init(destination: String, error: CLIError) {
+            self.destination = destination
+            self.message = error.message
+            self.detail = error.v2Detail
+            self.exitCode = error.v2Data?["exit_code"] as? Int
+        }
+
+        init(destination: String, message: String) {
+            self.destination = destination
+            self.message = message
+            self.detail = nil
+            self.exitCode = nil
+        }
+
+        /// `FAILED host=<h>: <message>`, followed under `--verbose` by the
+        /// indented full detail.
+        func consoleLine(verbose: Bool) -> String {
+            var line = "FAILED host=\(destination): \(message)"
+            guard verbose, let detail else { return line }
+            line += "\n  ssh output:"
+            for detailLine in detail.split(whereSeparator: \.isNewline) {
+                line += "\n    " + detailLine
+            }
+            return line
+        }
+
+        var jsonPayload: [String: Any] {
+            var payload: [String: Any] = ["host": destination, "error": message]
+            if let detail { payload["detail"] = detail }
+            if let exitCode { payload["exit_code"] = exitCode }
+            return payload
+        }
+    }
+
+    /// Where to look after a failed attach: the verbose rerun (full ssh
+    /// stderr) and the machine's persisted connection log.
+    static func remoteTmuxFailureDetailsHint(destinations: [String], verbose: Bool) -> String {
+        let first = destinations.first ?? "<host>"
+        var hint = "Details: cmux ssh-tmux-log \(first)"
+        if !verbose {
+            hint += "  (or rerun with --verbose for the full ssh output)"
+        }
+        return hint
     }
 
     /// Whether the app serves `remote.tmux.probe` (the parallel pipeline's
@@ -9597,7 +9780,7 @@ struct CMUXCLI {
     private struct RemoteTmuxAttachBundle {
         var joinedWindowId: String?
         var hostResults: [[String: Any]]
-        var failedHosts: [(destination: String, message: String)]
+        var failedHosts: [RemoteTmuxAttachFailure]
     }
 
     /// Shared mutable state for the parallel attach workers; every access
@@ -9606,7 +9789,7 @@ struct CMUXCLI {
     private final class RemoteTmuxParallelAttachState: @unchecked Sendable {
         let lock = NSLock()
         var resultsByIndex: [Int: [String: Any]] = [:]
-        var failuresByIndex: [Int: String] = [:]
+        var failuresByIndex: [Int: RemoteTmuxAttachFailure] = [:]
         var firstWindowId: String?
 
         func withLock<T>(_ body: () -> T) -> T {
@@ -9630,6 +9813,7 @@ struct CMUXCLI {
         callerContextParams: [String: Any],
         newWindow: Bool,
         noFocus: Bool,
+        verbose: Bool,
         socketPath: String,
         jsonOutput: Bool
     ) throws -> RemoteTmuxAttachBundle {
@@ -9764,12 +9948,13 @@ struct CMUXCLI {
                     let count = (result["workspace_ids"] as? [Any])?.count ?? 0
                     emit("OK host=\(destination) workspaces=\(count) window=\(windowId)")
                 } catch let error as CLIError {
-                    state.withLock { state.failuresByIndex[index] = error.message }
-                    emit("FAILED host=\(destination): \(error.message)", toStderr: true)
+                    let failure = RemoteTmuxAttachFailure(destination: destination, error: error)
+                    state.withLock { state.failuresByIndex[index] = failure }
+                    emit(failure.consoleLine(verbose: verbose), toStderr: true)
                 } catch {
-                    let message = String(describing: error)
-                    state.withLock { state.failuresByIndex[index] = message }
-                    emit("FAILED host=\(destination): \(message)", toStderr: true)
+                    let failure = RemoteTmuxAttachFailure(destination: destination, message: String(describing: error))
+                    state.withLock { state.failuresByIndex[index] = failure }
+                    emit(failure.consoleLine(verbose: verbose), toStderr: true)
                 }
             }
         }
@@ -9783,8 +9968,13 @@ struct CMUXCLI {
         for (index, destination) in destinations.enumerated() {
             if let result = state.withLock({ state.resultsByIndex[index] }) {
                 bundle.hostResults.append(result)
-            } else if let message = state.withLock({ state.failuresByIndex[index] }) {
-                bundle.failedHosts.append((destination, message))
+            } else if let failure = state.withLock({ state.failuresByIndex[index] }) {
+                bundle.failedHosts.append(failure)
+            } else {
+                bundle.failedHosts.append(RemoteTmuxAttachFailure(
+                    destination: destination,
+                    message: "ssh-tmux: no result for \(destination)"
+                ))
             }
         }
         return bundle
@@ -17205,6 +17395,7 @@ struct CMUXCLI {
               --port <n>          SSH port
               --identity <path>   SSH identity file path
               --no-focus          Do not select the mirror workspace or focus its window
+              --verbose, -v       Print the full ssh output for every machine that fails
 
             Example:
               cmux ssh-tmux dev@my-host
@@ -17228,6 +17419,26 @@ struct CMUXCLI {
                 """
             )
             return "\(help)\n\n\(multiHostHelp)\n\n\(newWindowHelp)"
+        case "ssh-tmux-log":
+            return String(localized: "cli.help.ssh-tmux-log", defaultValue: """
+            Usage: cmux ssh-tmux-log <destination> [--port <n>] [--identity <path>] [--limit <n>] [--json]
+
+            Show a remote tmux machine's connection log: master generations, app-side
+            opens and interactive re-authentications (with ssh's full stderr), agent
+            bridge and configured-tunnel outcomes, control stream losses and
+            reconnects, and every failed remote command. Newest last. The log persists
+            across cmux restarts under ~/.cmux/remote-tmux/logs/, one file per machine.
+
+            Flags:
+              --port <n>          SSH port (must match the attach)
+              --identity <path>   SSH identity file path (must match the attach)
+              --limit <n>         Number of newest events to show (default 50, max 500)
+              --json              Structured JSON output
+
+            Example:
+              cmux ssh-tmux-log xxl
+              cmux ssh-tmux-log dev@my-host --limit 200
+            """)
         case "ssh-session-list":
             return """
             Usage: cmux ssh-session-list [--workspace <id|ref|index> | --all-workspaces]
@@ -37339,7 +37550,8 @@ export default CMUXSessionRestore;
           ssh <destination> [--transport <ssh|mosh>] [--name <title>] [--command <text>] [--port <n>] [--identity <path>] [-A|--forward-agent] [-a|--no-forward-agent] [--ssh-option <opt>] [--window <id|ref|index>] [--no-focus] [-- <remote-command-args>]
           mosh <destination> [--name <title>] [--command <text>] [--port <n>] [--identity <path>] [-A|--forward-agent] [-a|--no-forward-agent] [--ssh-option <opt>] [--window <id|ref|index>] [--no-focus] [-- <remote-command-args>]
           mosh-tmux <destination> [--session <name>] [--name <title>] [--command <text>] [--port <n>] [--identity <path>] [-A|--forward-agent] [-a|--no-forward-agent] [--ssh-option <opt>] [--window <id|ref|index>] [--no-focus]
-          ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus] [--new-window]
+          ssh-tmux <destination> [<destination>…] [--port <n>] [--identity <path>] [--no-focus] [--new-window] [--verbose]
+          ssh-tmux-log <destination> [--port <n>] [--identity <path>] [--limit <n>] [--json]
           ssh-session-list [--workspace <id|ref|index> | --all-workspaces]
           ssh-session-attach --session-id <id> [--workspace <id|ref|index>] [--pane <id|ref|index> | --split <left|right|up|down>]
           ssh-session-cleanup [--workspace <id|ref|index> | --all-workspaces] (--session-id <id> | --all)
