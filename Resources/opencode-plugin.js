@@ -111,6 +111,35 @@ const feedDebugLog = (process.env.CMUX_FEED_DEBUG || "").trim()
   ? (...parts) => console.error("[cmux-feed]", ...parts)
   : () => {};
 
+// The engine loads this plugin once per Instance, and a lead's
+// worktree-isolated workers each run in their own Instance inside the SAME
+// process: several plugin instances, one $TMUX_PANE, one sidebar slot. The
+// pane's lifecycle dot and its completion toasts are pane-level facts, so
+// the instances of one process coordinate through this registry: the dot
+// goes idle only when NO instance still has busy work (a worker settling
+// no longer blanks a busy lead's dot until the next keepalive), and one
+// completion toast per burst leaves the pane whichever instance's session
+// settled. Module scope would do for one load; globalThis also covers the
+// module being loaded twice.
+const PANE_REGISTRY_KEY = Symbol.for("cmux.feed.paneRegistry.v1");
+const paneRegistry =
+  globalThis[PANE_REGISTRY_KEY] || (globalThis[PANE_REGISTRY_KEY] = new Map());
+const paneRecordFor = (paneId) => {
+  let record = paneRegistry.get(paneId);
+  if (!record) {
+    record = {
+      // instance token -> the seat registered by registerInPane
+      instances: new Map(),
+      busyInstances: new Set(),
+      idleGraceTimer: null,
+      idleGraceOwner: null,
+      lastTurnCompleteSentAt: 0,
+    };
+    paneRegistry.set(paneId, record);
+  }
+  return record;
+};
+
 const tmuxEnvLookup = async (name) => {
   if (!(process.env.TMUX || "").trim()) return null;
   for (const args of [["show-environment", name], ["show-environment", "-g", name]]) {
@@ -167,8 +196,9 @@ export const CMUXFeed = async (ctx) => {
   // The last lifecycle state actually written, so aggregate updates only
   // write edges. Reset on every reconnect (a fresh cmux must be repainted).
   let lastLifecycleSent = null;
-  // Pending delayed idle write (see updateAggregateLifecycle's grace).
-  let idleGraceTimer = null;
+  // Whether this instance's own sessions currently hold the pane busy
+  // (the edge tracker behind the pane registry's busyInstances).
+  let ownBusy = false;
   // Live activity ticker state (see sendActivityStatus).
   let lastActivitySentText = null;
   let lastActivitySentAt = 0;
@@ -188,9 +218,22 @@ export const CMUXFeed = async (ctx) => {
   // so a disconnect can re-mark them owed for redelivery.
   const recentTurnCompleteSends = new Map();
   let reconnectRecoveryTimer = null;
-  // Wall clock of the last completion toast that left this pane (see
-  // TURN_COMPLETE_COALESCE_MS).
-  let lastTurnCompleteSentAt = 0;
+  // The pane-level record shared with every other plugin instance of this
+  // pane in the process (null outside tmux). Wall clock of the last
+  // completion toast that left the pane lives there (see
+  // TURN_COMPLETE_COALESCE_MS), as does the idle grace timer.
+  const paneRecord = remotePaneId ? paneRecordFor(remotePaneId) : null;
+  const instanceToken = {};
+  // Set once the engine disposed this instance: timers are stopped and the
+  // shared connection closed. Soft: a later event proves the instance is
+  // still alive and simply resumes (lazy connect, timers re-armed).
+  let disposed = false;
+
+  const lastTurnCompleteSentAt = () =>
+    paneRecord ? paneRecord.lastTurnCompleteSentAt : 0;
+  const noteTurnCompleteSent = () => {
+    if (paneRecord) paneRecord.lastTurnCompleteSentAt = Date.now();
+  };
 
   const ensureIdentity = () => {
     if (!identityPromise) {
@@ -237,6 +280,14 @@ export const CMUXFeed = async (ctx) => {
         // They flap busy/idle constantly and their prompts are engine
         // deliveries, so they never mint turn-complete notifications.
         parentId: null,
+        // Whether parentage was learned from the session's own creation
+        // event (or looked up). A worktree-isolated worker's plugin
+        // instance is born AFTER the lead created the worker's session,
+        // so it never sees that session.created; without this its first
+        // task prompt would read as a typed human turn and toast at idle
+        // (one toast per worker instance on one tab).
+        parentageKnown: false,
+        parentLookup: null,
         // A typed turn ended but the completion notification has not been
         // delivered yet: it settles (see armCompletionSettle) or carries
         // across goal-loop iterations and disconnects until a send lands.
@@ -452,6 +503,55 @@ export const CMUXFeed = async (ctx) => {
     }
 
     await callClientMethod(ctx?.client?.session, "promptAsync", { path: { id: sessionId }, body });
+  };
+
+  // The session record (id, parentID, ...) through the SDK, or null when
+  // the engine offers no client or the lookup fails.
+  const fetchSessionInfo = async (sid) => {
+    try {
+      const result = await rawClientRequest("get", {
+        url: "/session/{sessionID}",
+        path: { sessionID: sid },
+      });
+      if (isObject(result?.data)) return result.data;
+    } catch (_) {}
+    const fn = clientMethod(ctx?.client?.session, "get");
+    if (!fn) return null;
+    try {
+      const result = await fn({ path: { id: sid } });
+      if (isObject(result?.data)) return result.data;
+      if (isObject(result) && typeof result.id === "string") return result;
+    } catch (_) {}
+    return null;
+  };
+
+  // Learns a session's parentage when this instance never saw it created.
+  // A worktree-isolated worker runs in its own Instance (its own copy of
+  // this plugin), born after the lead created the worker's session, so the
+  // worker's task prompt arrived here looking like a typed human turn and
+  // every worker instance toasted its own "finished a turn" onto the lead's
+  // tab. One lookup per session; an answer naming a parent closes any turn
+  // the prompt opened meanwhile and forgives its debt. No answer keeps the
+  // status quo.
+  const ensureParentageKnown = (sid) => {
+    const state = sessionState(sid);
+    if (state.parentageKnown || state.parentLookup) return;
+    state.parentLookup = (async () => {
+      const info = await fetchSessionInfo(sid);
+      state.parentLookup = null;
+      if (!info) return;
+      state.parentageKnown = true;
+      const parentId = firstString(info.parentID, info.parentId);
+      if (!parentId) return;
+      feedDebugLog("session", sid, "is a subagent of", parentId);
+      state.parentId = parentId;
+      state.turnOpen = false;
+      state.completionOwed = false;
+      if (state.settleTimer) {
+        clearTimeout(state.settleTimer);
+        state.settleTimer = null;
+      }
+    })();
   };
 
   const permissionRulesForExitPlanMode = (mode) => {
@@ -731,27 +831,30 @@ export const CMUXFeed = async (ctx) => {
   };
 
   // Keeps the shared connection out of the app's idle reaper and probes
-  // half-open sockets. Runs for the plugin's whole life; write errors
-  // surface through the socket's own error event. While any session is
-  // busy it also refreshes the deduped "running" lifecycle line, so an
+  // half-open sockets. Runs for the plugin's whole life (re-armed if the
+  // instance resumes after a disposal notice); write errors surface
+  // through the socket's own error event. While this instance's own work
+  // is busy it also refreshes the deduped "running" lifecycle line, so an
   // app-side clear (the shell-clear safety net firing on a suspended
-  // agent) heals within one keepalive instead of waiting for a busy edge.
-  const keepaliveTimer = setInterval(() => {
-    if (!client) return;
-    try {
-      client.write("\n");
-    } catch (_) {}
-    if (
-      lastLifecycleSent === "running"
-      && remoteTarget
-      && [...sessions.values()].some((state) => state.confirmedLocal && state.isBusy)
-    ) {
-      writeLine(
-        `set_agent_lifecycle opencode running --lease=1 --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
-      );
-    }
-  }, KEEPALIVE_INTERVAL_MS);
-  if (typeof keepaliveTimer.unref === "function") keepaliveTimer.unref();
+  // agent, a sibling instance's lease sweep) heals within one keepalive
+  // instead of waiting for a busy edge.
+  let keepaliveTimer = null;
+  const armKeepalive = () => {
+    if (keepaliveTimer) return;
+    keepaliveTimer = setInterval(() => {
+      if (!client) return;
+      try {
+        client.write("\n");
+      } catch (_) {}
+      if (lastLifecycleSent === "running" && remoteTarget && ownBusy) {
+        writeLine(
+          `set_agent_lifecycle opencode running --lease=1 --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+        );
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+    if (typeof keepaliveTimer.unref === "function") keepaliveTimer.unref();
+  };
+  armKeepalive();
 
   // V2 request/reply for non-feed verbs, reusing the pending map: replies
   // correlate through the frame id (`opencode-<requestId>`).
@@ -836,7 +939,7 @@ export const CMUXFeed = async (ctx) => {
   // socket) and retry identity + resolve on a timer, because an agent deep
   // in a long tool call emits no bus events to drive the lazy path.
   const noteDisconnected = () => {
-    if (!remotePaneId) return;
+    if (!remotePaneId || disposed) return;
     // Turn-completes sent just before the drop may sit in the dead
     // socket's buffer: re-mark them owed so recovery redelivers them
     // (at-least-once; the duplicate window is only entered by an app
@@ -865,7 +968,7 @@ export const CMUXFeed = async (ctx) => {
   // unresolved-pane path: an agent deep in a long tool call emits no bus
   // events, so nothing else would ever drive the lazy retry.
   const armRecoveryTimer = () => {
-    if (reconnectRecoveryTimer) return;
+    if (reconnectRecoveryTimer || disposed) return;
     reconnectRecoveryTimer = setInterval(() => {
       void (async () => {
         feedDebugLog("recovery tick; resolveInFlight =", remoteResolvePromise != null);
@@ -889,14 +992,18 @@ export const CMUXFeed = async (ctx) => {
       clearInterval(reconnectRecoveryTimer);
       reconnectRecoveryTimer = null;
     }
-    const busy = [...sessions.values()].some(
-      (state) => state.confirmedLocal && state.isBusy
-    );
-    if (busy) {
+    if (ownBusy) {
       lastLifecycleSent = "running";
       writeLine(
         `set_agent_lifecycle opencode running --lease=1 --tab=${target.workspaceId} --panel=${target.surfaceId}`
       );
+    } else if (paneBusyElsewhere()) {
+      // A sibling instance of this pane still works: its own recovery
+      // repaints running (and its keepalive keeps it so). Writing idle
+      // here would blank its dot; this instance simply forgets what it
+      // last painted so its next busy edge writes through.
+      lastLifecycleSent = null;
+      if (!repaintSiblingActivity()) clearActivityStatus(true);
     } else {
       // Paint the idle truth NOW. Waiting for "the next aggregate edge"
       // stranded a stale running dot forever when the turn ENDED during
@@ -956,13 +1063,18 @@ export const CMUXFeed = async (ctx) => {
 
   const sendRemoteLifecycle = (state) => {
     if (!isRemote()) return;
-    if (state === "idle") clearActivityStatus();
-    if (state === "running" && idleGraceTimer) {
+    if (state === "idle") {
+      clearActivityStatus();
+      // The pane is idle for every instance sharing it: their next busy
+      // edge must write through instead of deduping against a running
+      // paint that no longer exists.
+      for (const sibling of paneSiblings()) sibling.noteIdleWritten();
+    }
+    if (state === "running") {
       // A parked idle write must never land on top of a fresher running
       // one (the timer's own busy re-check covers tracked sessions, but
       // direct writers like the sid-less prompt fallback bypass them).
-      clearTimeout(idleGraceTimer);
-      idleGraceTimer = null;
+      cancelPaneIdleGrace();
     }
     lastLifecycleSent = state;
     if (!remoteTarget) {
@@ -1129,32 +1241,90 @@ export const CMUXFeed = async (ctx) => {
   // additionally waits out a grace window (goal loops re-prompt moments
   // after idling; the strobe served no one) and is cancelled by busy
   // returning first.
+  //
+  // The slot is also shared ACROSS the plugin instances of one process (a
+  // lead plus its worktree-isolated workers, see paneRegistry): a sibling
+  // instance's busy work holds the pane running, so an instance whose own
+  // sessions settled never writes idle underneath it. The idle grace timer
+  // is pane-level for the same reason.
+  const paneSiblings = () =>
+    paneRecord
+      ? [...paneRecord.instances.entries()]
+          .filter(([token]) => token !== instanceToken)
+          .map(([, sibling]) => sibling)
+      : [];
+
+  const paneBusyElsewhere = () =>
+    Boolean(paneRecord)
+    && [...paneRecord.busyInstances].some((token) => token !== instanceToken);
+
+  // Hands the row's activity line to a busy sibling once this instance's
+  // work settles: the newest running tool of the pane should show, not a
+  // finished worker's last command. True when a sibling repainted.
+  const repaintSiblingActivity = () =>
+    paneSiblings().some((sibling) => sibling.isBusy() && sibling.repaintActivity());
+
+  // Local-mode / no-tmux fallback for the idle grace (no pane record).
+  let localIdleGraceTimer = null;
+  const paneIdleGraceArmed = () =>
+    paneRecord ? paneRecord.idleGraceTimer !== null : localIdleGraceTimer !== null;
+  const cancelPaneIdleGrace = () => {
+    if (paneRecord) {
+      if (!paneRecord.idleGraceTimer) return;
+      clearTimeout(paneRecord.idleGraceTimer);
+      paneRecord.idleGraceTimer = null;
+      paneRecord.idleGraceOwner = null;
+      return;
+    }
+    if (!localIdleGraceTimer) return;
+    clearTimeout(localIdleGraceTimer);
+    localIdleGraceTimer = null;
+  };
+  const armPaneIdleGrace = () => {
+    const timer = setTimeout(() => {
+      if (paneRecord) {
+        paneRecord.idleGraceTimer = null;
+        paneRecord.idleGraceOwner = null;
+      } else {
+        localIdleGraceTimer = null;
+      }
+      if (ownBusy || paneBusyElsewhere()) return;
+      if (lastLifecycleSent !== "idle") sendRemoteLifecycle("idle");
+    }, IDLE_LIFECYCLE_GRACE_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    if (paneRecord) {
+      paneRecord.idleGraceTimer = timer;
+      paneRecord.idleGraceOwner = instanceToken;
+    } else {
+      localIdleGraceTimer = timer;
+    }
+  };
+
   const updateAggregateLifecycle = () => {
     // Only sessions PROVEN to run in this process count: a mirrored
     // sibling's busy edge (whose idle never crosses) would otherwise pin
     // every same-folder pane to "running" forever.
-    const desired = [...sessions.values()].some(
+    const wasBusy = ownBusy;
+    ownBusy = [...sessions.values()].some(
       (state) => state.confirmedLocal && state.isBusy
-    )
-      ? "running"
-      : "idle";
-    if (desired === "running") {
-      if (idleGraceTimer) {
-        clearTimeout(idleGraceTimer);
-        idleGraceTimer = null;
-      }
+    );
+    if (paneRecord) {
+      if (ownBusy) paneRecord.busyInstances.add(instanceToken);
+      else paneRecord.busyInstances.delete(instanceToken);
+    }
+    if (ownBusy) {
+      cancelPaneIdleGrace();
       if (lastLifecycleSent !== "running") sendRemoteLifecycle("running");
       return;
     }
-    if (lastLifecycleSent === "idle" || idleGraceTimer) return;
-    idleGraceTimer = setTimeout(() => {
-      idleGraceTimer = null;
-      const stillIdle = ![...sessions.values()].some(
-        (state) => state.confirmedLocal && state.isBusy
-      );
-      if (stillIdle && lastLifecycleSent !== "idle") sendRemoteLifecycle("idle");
-    }, IDLE_LIFECYCLE_GRACE_MS);
-    if (typeof idleGraceTimer.unref === "function") idleGraceTimer.unref();
+    if (paneBusyElsewhere()) {
+      // Settled here, still working there: the dot stays. Only the
+      // activity line changes hands (or clears when no sibling has one).
+      if (wasBusy && !repaintSiblingActivity()) clearActivityStatus();
+      return;
+    }
+    if (lastLifecycleSent === "idle" || paneIdleGraceArmed()) return;
+    armPaneIdleGrace();
   };
 
   // The wire payload is |-separated; fields must never smuggle a separator.
@@ -1180,9 +1350,10 @@ export const CMUXFeed = async (ctx) => {
     if (state.goal && (state.goal.status === "active" || state.goal.status === "paused")) {
       return;
     }
-    // Burst suppression: a toast already left this pane moments ago, so
-    // this completion is part of the same burst. Settle the debt silently.
-    if (Date.now() - lastTurnCompleteSentAt < TURN_COMPLETE_COALESCE_MS) {
+    // Burst suppression: a toast already left this pane moments ago (from
+    // this instance or a sibling sharing the pane), so this completion is
+    // part of the same burst. Settle the debt silently.
+    if (Date.now() - lastTurnCompleteSentAt() < TURN_COMPLETE_COALESCE_MS) {
       state.completionOwed = false;
       return;
     }
@@ -1190,7 +1361,7 @@ export const CMUXFeed = async (ctx) => {
     const body = sanitizeNotifyField(state.assistantPreamble, 160) || "Finished a turn";
     const send = (target) => {
       if (!state.completionOwed) return;
-      if (Date.now() - lastTurnCompleteSentAt < TURN_COMPLETE_COALESCE_MS) {
+      if (Date.now() - lastTurnCompleteSentAt() < TURN_COMPLETE_COALESCE_MS) {
         state.completionOwed = false;
         return;
       }
@@ -1203,7 +1374,7 @@ export const CMUXFeed = async (ctx) => {
       // dead socket keeps it owed for the recovery flush.
       if (wrote) {
         state.completionOwed = false;
-        lastTurnCompleteSentAt = Date.now();
+        noteTurnCompleteSent();
       }
     };
     if (!remoteTarget) {
@@ -1329,6 +1500,10 @@ export const CMUXFeed = async (ctx) => {
       // the TUI uses to tell deliveries from prompts).
       if (part.synthetic === true) return null;
       state.lastUserMessage = text;
+      // A prompt for a session this instance never saw created may be a
+      // worker's task prompt, not a human's: settle parentage before the
+      // turn's idle can mint a toast.
+      if (isRemote() && !state.parentageKnown) ensureParentageKnown(meta.sessionId);
       // Streaming re-delivers the same part as it grows; one prompt is
       // one turn, so later updates of a message already counted only
       // refresh the notification subtitle above.
@@ -1450,8 +1625,114 @@ export const CMUXFeed = async (ctx) => {
     });
   };
 
+  // This instance's seat in the pane registry: what the siblings may ask
+  // of it once their own work settles or they are torn down.
+  const registerInPane = () => {
+    if (!paneRecord) return;
+    paneRecord.instances.set(instanceToken, {
+      isBusy: () => ownBusy,
+      noteIdleWritten: () => {
+        lastLifecycleSent = "idle";
+      },
+      // A sibling's connection is closing while this instance still
+      // works: if that connection was the slot's last painter, the app's
+      // lease sweep clears the running dot, so repaint it now instead of
+      // at the next keepalive.
+      repaintRunning: () => {
+        if (!ownBusy || !remoteTarget || !isRemote()) return false;
+        lastLifecycleSent = "running";
+        return writeLine(
+          `set_agent_lifecycle opencode running --lease=1 --tab=${remoteTarget.workspaceId} --panel=${remoteTarget.surfaceId}`
+        );
+      },
+      repaintActivity: () => {
+        if (!ownBusy || lastActivitySentText === null || !remoteTarget) return false;
+        writeActivityStatus(lastActivitySentText);
+        return true;
+      },
+      reevaluate: () => updateAggregateLifecycle(),
+    });
+  };
+
+  const disposeInstance = () => {
+    if (disposed) return;
+    disposed = true;
+    feedDebugLog("instance disposed");
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+    if (reconnectRecoveryTimer) {
+      clearInterval(reconnectRecoveryTimer);
+      reconnectRecoveryTimer = null;
+    }
+    if (activityFlushTimer) {
+      clearTimeout(activityFlushTimer);
+      activityFlushTimer = null;
+    }
+    for (const state of sessions.values()) {
+      if (state.settleTimer) {
+        clearTimeout(state.settleTimer);
+        state.settleTimer = null;
+      }
+    }
+    ownBusy = false;
+    if (paneRecord) {
+      paneRecord.busyInstances.delete(instanceToken);
+      paneRecord.instances.delete(instanceToken);
+      // A grace this instance armed must not fire from a dead instance; a
+      // sibling re-arms it from its own truth.
+      if (paneRecord.idleGraceOwner === instanceToken) cancelPaneIdleGrace();
+      const siblings = [...paneRecord.instances.values()];
+      const busySibling = siblings.find((sibling) => sibling.isBusy());
+      if (busySibling) {
+        busySibling.repaintRunning();
+        if (!busySibling.repaintActivity()) clearActivityStatus();
+      } else if (siblings.length > 0) {
+        siblings[0].reevaluate();
+      }
+      // With no sibling left, closing the connection below lets the app's
+      // lease sweep clear whatever this instance still had painted: the
+      // right resting state for a pane whose last agent instance is gone.
+    }
+    if (client) {
+      const conn = client;
+      client = null;
+      // end(), not destroy(): the handover lines written just above must
+      // flush before the FIN; the app closes its side on EOF.
+      try {
+        conn.end();
+      } catch (_) {}
+    }
+    remoteTarget = null;
+    lastLifecycleSent = null;
+  };
+
+  // A disposal notice this instance outlived (a same-directory sibling
+  // Instance went away, not this one): pick the work back up.
+  const resumeInstance = () => {
+    disposed = false;
+    feedDebugLog("instance resumed after disposal notice");
+    registerInPane();
+    armKeepalive();
+    updateAggregateLifecycle();
+  };
+
+  registerInPane();
+
   return {
     event: async ({ event }) => {
+      // The engine tearing this Instance down (a worker's worktree Instance
+      // released, the process exiting): stop the timers, hand the pane to
+      // the sibling instances, and close the shared connection so the app
+      // sweeps this connection's leases instead of keeping a dead
+      // instance's keepalive alive forever.
+      if (event.type === "server.instance.disposed") {
+        const directory = firstString(event.properties?.directory);
+        if (!directory || !ctx?.directory || directory === ctx.directory) disposeInstance();
+        return;
+      }
+      if (disposed) resumeInstance();
       await ensureIdentity();
       if (isRemote()) await resolveRemoteTarget();
       // Session id across the event shapes this plugin consumes. Order
@@ -1468,6 +1749,22 @@ export const CMUXFeed = async (ctx) => {
       // Older builds stamped only foreign ones, so a lone session could sit
       // in heuristic mode forever; a boolean of either value settles it.
       if (typeof event.external === "boolean" && !engineTagsOrigin) engineTagsOrigin = true;
+      // Parentage is metadata, not ownership: record it from every
+      // creation notice, foreign ones included, so a worker session this
+      // instance later proves its own (a worktree worker's plugin instance
+      // sees the lead's creation of its session only as a tagged copy)
+      // is known to be a subagent before its first prompt.
+      if (event.type === "session.created") {
+        const info = event.properties?.info || {};
+        const createdId = firstString(info.id);
+        if (createdId) {
+          const created = sessionState(createdId);
+          created.parentageKnown = true;
+          const createdParent = firstString(info.parentID);
+          if (createdParent) created.parentId = createdParent;
+          pruneUnconfirmedSessions();
+        }
+      }
       // An untagged delivery proves only that THIS process published it,
       // not that this process runs the session: the engine's swarm layer
       // republishes every process's worker registry locally
@@ -1653,7 +1950,7 @@ export const CMUXFeed = async (ctx) => {
             );
             // The goal edge is THE completion signal; per-turn settles that
             // follow within the coalesce window are the same event.
-            if (wrote) lastTurnCompleteSentAt = Date.now();
+            if (wrote) noteTurnCompleteSent();
           };
           if (remoteTarget) {
             deliver(remoteTarget);
