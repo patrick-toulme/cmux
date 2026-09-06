@@ -873,6 +873,142 @@ await waitFor(() => received.some((l) => l.includes("c=turn-complete") && l.incl
 await new Promise((resolve) => setTimeout(resolve, 500));
 received.length = 0;
 
+// Scenario 3q: a worker's plugin instance learns its session is a subagent
+// even though it never saw the session created. A worktree-isolated worker
+// runs in its own Instance (its own copy of this plugin), born after the
+// lead created the worker's session; its task prompt arrived looking like
+// a typed human turn and toasted "finished a turn" onto the lead's tab at
+// every worker completion. The instance now looks the session up through
+// the SDK on the first typed prompt: a parent closes the turn silently,
+// no parent (a resumed top-level session) keeps the toast.
+received.length = 0;
+const sessionRecords = {
+  wk1: { id: "wk1", parentID: "lead-elsewhere", directory: "/tmp/x/wt" },
+  top1: { id: "top1", directory: "/tmp/x/wt" },
+};
+const sdkGets = [];
+const fakeClient = {
+  _client: {
+    get: async (options) => {
+      sdkGets.push(`${options.url}:${options.path?.sessionID}`);
+      const record = sessionRecords[options.path?.sessionID];
+      if (!record) throw new Error("not found");
+      return { data: record };
+    },
+  },
+};
+const hooksWorker = await mod.CMUXFeed({ directory: "/tmp/x/wt", client: fakeClient });
+for (const sid of ["wk1", "top1"]) {
+  await hooksWorker.event({ event: { type: "message.updated", external: false, properties: {
+    info: { id: `m-${sid}`, sessionID: sid, role: "user" },
+  } } });
+  await hooksWorker.event({ event: { type: "message.part.updated", external: false, properties: {
+    part: { type: "text", messageID: `m-${sid}`, sessionID: sid, text: `task prompt for ${sid}` },
+  } } });
+  await hooksWorker.event({ event: { type: "session.status", external: false, properties: { sessionID: sid, status: { type: "busy" } } } });
+}
+await waitFor(() => received.some((l) => l === runningLine), 5000, "worker instance paints running for its own sessions");
+await waitFor(() => sdkGets.includes("/session/{sessionID}:wk1") && sdkGets.includes("/session/{sessionID}:top1"), 5000, "unknown parentage is looked up once per session");
+await hooksWorker.event({ event: { type: "session.status", external: false, properties: { sessionID: "wk1", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 900));
+if (received.some((l) => l.includes("c=turn-complete"))) {
+  throw new Error(`a worker session's task prompt minted a finished-a-turn toast: ${JSON.stringify(received)}`);
+}
+await hooksWorker.event({ event: { type: "session.status", external: false, properties: { sessionID: "top1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l.includes("c=turn-complete") && l.includes("task prompt for top1")), 5000, "a looked-up top-level session still toasts");
+if (sdkGets.filter((entry) => entry.endsWith(":wk1")).length !== 1) {
+  throw new Error(`parentage must be looked up exactly once per session: ${JSON.stringify(sdkGets)}`);
+}
+await waitFor(() => received.some((l) => l === idleLine), 5000, "worker instance settles idle");
+await new Promise((resolve) => setTimeout(resolve, 500));
+received.length = 0;
+
+// Scenario 3r: the plugin instances of one process share the pane. A lead
+// and its worktree-isolated workers each load their own copy of this
+// plugin under the same $TMUX_PANE; the pane's dot must be the OR of all
+// of them (a worker settling never blanked a busy lead's dot until the
+// next keepalive), completion toasts coalesce across them (one burst, one
+// toast, not one per instance), and an instance the engine disposes hands
+// the pane over: its busy claim drops, its connection closes, and a busy
+// sibling repaints what the lease sweep clears.
+received.length = 0;
+const connsBefore = conns.size;
+const hooksLead = await mod.CMUXFeed({ directory: "/tmp/x/lead" });
+const hooksWorkerB = await mod.CMUXFeed({ directory: "/tmp/x/wt-b" });
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead1", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "lead instance paints running");
+await hooksWorkerB.event({ event: { type: "session.status", external: false, properties: { sessionID: "wb1", status: { type: "busy" } } } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+received.length = 0;
+// The worker settles while the lead still works: no idle write may land.
+await hooksWorkerB.event({ event: { type: "session.status", external: false, properties: { sessionID: "wb1", status: { type: "idle" } } } });
+await new Promise((resolve) => setTimeout(resolve, 600));
+if (received.some((l) => l === idleLine)) {
+  throw new Error(`a settled worker instance blanked the busy lead's dot: ${JSON.stringify(received)}`);
+}
+// The lead settles too: exactly one idle write for the pane.
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "pane goes idle once every instance settled");
+await new Promise((resolve) => setTimeout(resolve, 400));
+if (received.filter((l) => l === idleLine).length !== 1) {
+  throw new Error(`the pane must go idle exactly once: ${JSON.stringify(received)}`);
+}
+// The worker busy again after the pane idled must repaint running even
+// though it never wrote the idle itself.
+received.length = 0;
+await hooksWorkerB.event({ event: { type: "session.status", external: false, properties: { sessionID: "wb1", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "a sibling's idle write does not stale this instance's dedupe");
+await hooksWorkerB.event({ event: { type: "session.status", external: false, properties: { sessionID: "wb1", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "worker settles the pane again");
+await new Promise((resolve) => setTimeout(resolve, 500));
+// Typed turns finishing in two instances inside one coalesce window: one
+// toast for the pane.
+received.length = 0;
+for (const [instance, sid] of [[hooksLead, "lead2"], [hooksWorkerB, "wb2"]]) {
+  await instance.event({ event: { type: "message.updated", external: false, properties: {
+    info: { id: `m-${sid}`, sessionID: sid, role: "user" },
+  } } });
+  await instance.event({ event: { type: "message.part.updated", external: false, properties: {
+    part: { type: "text", messageID: `m-${sid}`, sessionID: sid, text: `prompt ${sid}` },
+  } } });
+  await instance.event({ event: { type: "session.status", external: false, properties: { sessionID: sid, status: { type: "busy" } } } });
+}
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead2", status: { type: "idle" } } } });
+await hooksWorkerB.event({ event: { type: "session.status", external: false, properties: { sessionID: "wb2", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l.includes("c=turn-complete")), 5000, "the pane's first completion toasts");
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (received.filter((l) => l.includes("c=turn-complete")).length !== 1) {
+  throw new Error(`completions across sibling instances must coalesce to one toast: ${JSON.stringify(received.filter((l) => l.includes("c=turn-complete")))}`);
+}
+await waitFor(() => received.some((l) => l === idleLine), 5000, "pane idle after the burst");
+await new Promise((resolve) => setTimeout(resolve, 500));
+// Disposal: the engine tears the worker Instance down mid-turn. Its busy
+// claim must drop (the lead alone decides the pane's idle from now on) and
+// its shared connection must close.
+received.length = 0;
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead3", status: { type: "busy" } } } });
+await hooksWorkerB.event({ event: { type: "session.status", external: false, properties: { sessionID: "wb3", status: { type: "busy" } } } });
+await new Promise((resolve) => setTimeout(resolve, 200));
+const connsWithWorker = conns.size;
+if (connsWithWorker < connsBefore + 2) {
+  throw new Error(`expected both instances to hold a shared connection: before=${connsBefore} now=${connsWithWorker}`);
+}
+await hooksWorkerB.event({ event: { type: "server.instance.disposed", external: false, properties: { directory: "/tmp/x/wt-b" } } });
+await waitFor(() => conns.size < connsWithWorker, 5000, "disposed instance closes its shared connection");
+received.length = 0;
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead3", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "a disposed sibling's stale busy claim no longer holds the pane running");
+// A disposal notice naming another directory is not ours.
+received.length = 0;
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead4", status: { type: "busy" } } } });
+await waitFor(() => received.some((l) => l === runningLine), 5000, "lead busy again");
+await hooksLead.event({ event: { type: "server.instance.disposed", external: false, properties: { directory: "/tmp/x/other" } } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+await hooksLead.event({ event: { type: "session.status", external: false, properties: { sessionID: "lead4", status: { type: "idle" } } } });
+await waitFor(() => received.some((l) => l === idleLine), 5000, "a foreign disposal notice leaves the instance working");
+await new Promise((resolve) => setTimeout(resolve, 500));
+received.length = 0;
+
 // Scenario 4: not in tmux and no env: local mode, events complete, and no
 // lifecycle lines are emitted.
 received.length = 0;
