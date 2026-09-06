@@ -6184,7 +6184,7 @@ class TerminalController {
                     },
                 ] as [String: Any]
             }
-            return [
+            var payload: [String: Any] = [
                 "workspace_id": workspace.id.uuidString,
                 "title": workspace.title,
                 "host_key": workspace.remoteTmuxHostKey ?? "",
@@ -6194,8 +6194,49 @@ class TerminalController {
                 "unread_turn_complete": hasUnread,
                 "lifecycle": lifecycle,
             ]
+            // Mirrored tmux sessions also report per WINDOW (the user's unit
+            // of agent work, one tab each), resolved exactly as the agent
+            // inbox resolves them: only that window's pane panels count, so
+            // "which tab needs attention" is observable, not inferred from
+            // the session-wide aggregate above.
+            if workspace.remoteTmuxHostKey != nil {
+                payload["windows"] = Self.debugAttentionWindowPayloads(workspace: workspace)
+            }
+            return payload
         }
         return ["workspaces": workspaces]
+    }
+
+    /// One entry per mirrored tmux window of `workspace`, in tab-strip order.
+    @MainActor
+    static func debugAttentionWindowPayloads(workspace: Workspace) -> [[String: Any]] {
+        workspace.sidebarOrderedPanelIds()
+            .filter { workspace.isRemoteTmuxControlContainer($0) }
+            .map { windowPanelId -> [String: Any] in
+                let panePanelIds = workspace.remoteTmuxControlPanes(containerPanelID: windowPanelId)
+                    .map { $0.pane.panel.id }
+                var scopedPanelIds = Set(panePanelIds)
+                scopedPanelIds.insert(windowPanelId)
+                let phase = VerticalTabsSidebar.remoteTmuxWindowAttentionPhase(
+                    workspace: workspace,
+                    windowPanelId: windowPanelId,
+                    showsAttentionStates: true
+                )
+                let decisionKinds = FeedCoordinator.shared
+                    .pendingBlockingDecisions(forWorkspace: workspace.id)
+                    .filter { decision in decision.panelId.map(scopedPanelIds.contains) ?? false }
+                    .map { String(describing: $0.kind) }
+                return [
+                    "window_panel_id": windowPanelId.uuidString,
+                    "title": workspace.panelTitles[windowPanelId] ?? "",
+                    "pane_panel_ids": panePanelIds.map(\.uuidString),
+                    "phase": phase.map { String(describing: $0) } ?? "none",
+                    "pending_decisions": decisionKinds,
+                    "unread_turn_complete": TerminalNotificationStore.shared
+                        .hasUnreadTurnComplete(forTabId: workspace.id, surfaceIds: scopedPanelIds),
+                    "focused": workspace.focusedPanelId == windowPanelId,
+                ]
+            }
     }
 
     /// `debug.set_app_focus_override`: pins `AppFocusState` for harness
