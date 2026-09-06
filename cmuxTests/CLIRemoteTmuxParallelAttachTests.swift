@@ -122,18 +122,22 @@ struct CLIRemoteTmuxParallelAttachTests {
             mirrorA.time < authB.end,
             Comment(rawValue: "hostA mirror (\(mirrorA.time)) did not overlap hostB auth (ends \(authB.end))")
         )
+        // The wall-time win, checked RELATIVELY (an absolute bound flaked
+        // under CI load): each later machine's authentication began before
+        // the previous machine's mirror (0.8s in this mock) could have
+        // completed, which a sequential loop cannot do. It mirrors, then
+        // authenticates the next machine.
+        for (earlierMirror, laterAuth) in zip(mirrors, auths.dropFirst()) {
+            #expect(
+                laterAuth.start < earlierMirror.time + Self.mirrorSleepSeconds,
+                Comment(rawValue: "\(laterAuth.host) auth started \(laterAuth.start - earlierMirror.time)s after \(earlierMirror.host) mirror (elapsed \(elapsed)s)")
+            )
+        }
 
         // Followers joined the window the first machine created.
         #expect(mirrors[0].windowParam == nil)
         #expect(mirrors[1].windowParam == Self.windowId)
         #expect(mirrors[2].windowParam == Self.windowId)
-
-        // Wall-time sanity: strictly under the sequential floor. In this
-        // mock a sequential attach costs startup + 3×(probe + auth(0.6 +
-        // shim spawns ≈ 0.1) + mirror 0.8) ≈ 5.1s; the pipeline's floor is
-        // ≈ 3.4s. The structural expectations above are the real proof —
-        // this bound just catches a wholesale return to serial execution.
-        #expect(elapsed < 4.8, Comment(rawValue: "elapsed \(elapsed)s"))
     }
 
     @Test func parallelAttachSurvivesOneUnreachableMachine() throws {
