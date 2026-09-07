@@ -2,14 +2,16 @@ public import Foundation
 
 /// The system/misc-domain slice of the control-command seam (a constituent of
 /// the ``ControlCommandContext`` umbrella): `system.identify`, `system.tree`,
-/// `auth.login`, `session.restore_previous`, `settings.open`, `feedback.open`,
-/// `extension.sidebar.snapshot`, `workspace.action`, `surface.action` /
-/// `tab.action`, `surface.drag_to_split` / `surface.split_off`, and the
-/// DEBUG-only `mobile.dev_stack_auth.configure`.
+/// `system.open_url`, `auth.login`, `session.restore_previous`,
+/// `settings.open`, `feedback.open`, `extension.sidebar.snapshot`,
+/// `workspace.action`, `surface.action` / `tab.action`,
+/// `surface.drag_to_split` / `surface.split_off`, and the DEBUG-only
+/// `mobile.dev_stack_auth.configure`.
 ///
-/// Every method is `@MainActor`: the conformer (the interim composition owner)
-/// and the coordinator both live on the main actor, so these are plain
-/// in-isolation calls.
+/// Every method but `controlSystemOpenExternalURL` is `@MainActor`: the
+/// conformer (the interim composition owner) and the coordinator both live on
+/// the main actor, so these are plain in-isolation calls. The open witness is
+/// nonisolated and async because the socket worker awaits it.
 @MainActor
 public protocol ControlSystemContext: AnyObject {
     /// The fully-shaped `system.identify` payload (the still-shared app-side
@@ -64,6 +66,20 @@ public protocol ControlSystemContext: AnyObject {
     ///   - requestedActivate: The requested `activate` flag (the app applies
     ///     the focus-allowance policy).
     func controlFeedbackOpen(workspaceID: UUID?, windowID: UUID?, requestedActivate: Bool)
+
+    /// Opens a validated web URL in the Mac's default browser for
+    /// `system.open_url`, and reports whether an application took it.
+    ///
+    /// A worker-lane witness like `controlMobileTaskModelsList`: nonisolated
+    /// and asynchronous so the socket worker can await the Launch Services
+    /// completion without holding the main actor (the conformer hops to main
+    /// only to issue the open).
+    ///
+    /// - Parameter request: The validated request (URL plus activation).
+    /// - Returns: The open outcome.
+    nonisolated func controlSystemOpenExternalURL(
+        _ request: ControlExternalURLOpenRequest
+    ) async -> ControlExternalURLOpenOutcome
 
     /// Snapshots the routed window's workspaces for
     /// `extension.sidebar.snapshot`.

@@ -10,10 +10,11 @@ import Foundation
 /// `v2SettingsOpen`, `v2FeedbackOpen`, and the DEBUG-only
 /// `v2MobileDevStackAuthConfigure`, minus the per-read `v2MainSync` hops (the
 /// coordinator already runs on the main actor inside the socket-command policy
-/// scope). `system.identify` and `surface.split_off` stay shared app-side
-/// bodies (`v2Identify` feeds `system.top` / `system.memory` and the
-/// task-manager snapshot; `v2SurfaceSplitOff` is also driven by the v1
-/// `drag_surface_to_split`), so their witnesses bridge.
+/// scope), plus the `system.open_url` Launch Services open. `system.identify`
+/// and `surface.split_off` stay shared app-side bodies (`v2Identify` feeds
+/// `system.top` / `system.memory` and the task-manager snapshot;
+/// `v2SurfaceSplitOff` is also driven by the v1 `drag_surface_to_split`), so
+/// their witnesses bridge.
 extension TerminalController: ControlSystemContext {
 
     func controlSystemSurfaceNotFoundMessage() -> String {
@@ -264,6 +265,32 @@ extension TerminalController: ControlSystemContext {
             }
 
             FeedbackComposerBridge().openComposer(in: targetWindow)
+        }
+    }
+
+    // MARK: - system.open_url
+
+    /// Hands the URL to Launch Services and waits for its verdict, so `opened`
+    /// means an application actually accepted the URL (a refused scheme, a
+    /// missing browser, or a sandbox denial surfaces as `failed`). The open is
+    /// issued from the main actor (NSWorkspace is main-thread bound in
+    /// practice) but awaited without holding it: the worker lane is what
+    /// blocks on the reply.
+    nonisolated func controlSystemOpenExternalURL(
+        _ request: ControlExternalURLOpenRequest
+    ) async -> ControlExternalURLOpenOutcome {
+        await withCheckedContinuation { continuation in
+            Task { @MainActor in
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = request.activates
+                NSWorkspace.shared.open(request.url, configuration: configuration) { application, error in
+                    if let error {
+                        continuation.resume(returning: .failed(message: error.localizedDescription))
+                        return
+                    }
+                    continuation.resume(returning: .opened(handler: application?.localizedName))
+                }
+            }
         }
     }
 

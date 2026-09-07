@@ -971,6 +971,55 @@ final class TerminalControllerSocketSecurityTests {
         XCTAssertEqual(workerError["code"] as? String, "not_found")
     }
 
+    /// `system.open_url` is the browser bridge for agents on mirrored remote
+    /// machines (a clicked `cl/` link in a remote TUI opens on the Mac). It
+    /// runs on the socket worker (it awaits Launch Services), so a main-thread
+    /// in-process caller is refused, and the worker lane must reach the
+    /// coordinator's validation: a non-web scheme is refused as
+    /// `invalid_params` before anything opens. A policy entry without the
+    /// worker handler would answer the lane's `internal_error` backstop here
+    /// instead.
+    @Test func testSystemOpenURLRunsOnSocketWorkerAndRefusesNonWebSchemes() async throws {
+        let socketPath = makeSocketPath("open-url-worker")
+        let tabManager = TabManager()
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let params: [String: Any] = ["url": "file:///etc/hosts"]
+        let requestLine = try makeV2RequestLine(method: "system.open_url", params: params)
+
+        let mainEnvelope = try decodeV2Envelope(TerminalController.shared.handleSocketLine(requestLine))
+        let mainError = try XCTUnwrap(mainEnvelope["error"] as? [String: Any])
+        XCTAssertEqual(mainError["code"] as? String, "invalid_dispatch")
+
+        let workerEnvelope = try await sendV2RequestAsync(
+            method: "system.open_url",
+            params: params,
+            to: socketPath
+        )
+        XCTAssertEqual(workerEnvelope["ok"] as? Bool, false)
+        let workerError = try XCTUnwrap(workerEnvelope["error"] as? [String: Any])
+        XCTAssertEqual(workerError["code"] as? String, "invalid_params")
+        XCTAssertTrue((workerError["message"] as? String ?? "").contains("file"), String(describing: workerError))
+        let data = try XCTUnwrap(workerError["data"] as? [String: Any])
+        XCTAssertEqual(data["url"] as? String, "file:///etc/hosts")
+
+        let missing = try await sendV2RequestAsync(method: "system.open_url", params: [:], to: socketPath)
+        let missingError = try XCTUnwrap(missing["error"] as? [String: Any])
+        XCTAssertEqual(missingError["code"] as? String, "invalid_params")
+        XCTAssertEqual(missingError["message"] as? String, "system.open_url requires params.url")
+
+        // Remote clients discover the bridge through the capability list.
+        let capabilities = try await sendV2RequestAsync(method: "system.capabilities", params: [:], to: socketPath)
+        let result = try XCTUnwrap(capabilities["result"] as? [String: Any])
+        let methods = try XCTUnwrap(result["methods"] as? [String])
+        XCTAssertTrue(methods.contains("system.open_url"), "system.open_url missing from capabilities")
+    }
+
     @Test func testRemotePTYAttachEndRoutesMovedSurfaceToCurrentWorkspace() throws {
         let previousAppDelegate = AppDelegate.shared
         let appDelegate = AppDelegate()
