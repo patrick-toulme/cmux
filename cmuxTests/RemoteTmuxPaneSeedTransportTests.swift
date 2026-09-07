@@ -1975,4 +1975,186 @@ import Testing
         #expect(sessionMirror.pendingPaneSeedTotalByteCount == 0)
     }
 
+    // MARK: - tmux DCS passthrough envelopes are unwrapped before the surface
+    //
+    // A TUI inside the remote tmux wraps kitty graphics escapes as
+    // `ESC P tmux; <payload, ESC doubled> ESC \`. Control mode delivers the wrapped
+    // bytes verbatim, so the mirror must hand the surface the payload with each
+    // doubled ESC collapsed to one. Bytes retained behind a gated seed are exactly
+    // what the surface receives on drain, which makes them the observable seam for
+    // the live routing path.
+
+    private static let wrappedKittyQuery = Data(
+        "\u{1b}Ptmux;\u{1b}\u{1b}_Gi=4102,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\u{1b}\\\u{1b}\\".utf8
+    )
+    private static let kittyQuery = Data(
+        "\u{1b}_Gi=4102,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\".utf8
+    )
+
+    private struct GatedMirror {
+        let mirror: RemoteTmuxSessionMirror
+        let manager: TabManager
+
+        @MainActor func close() {
+            mirror.detachObserver()
+            withExtendedLifetime(manager) {}
+        }
+    }
+
+    /// A session mirror for window 1 / pane 7 whose surface grid is not ready, so
+    /// every routed byte is retained on the mirror instead of reaching Ghostty.
+    private func gatedMirror(_ fixture: Fixture) -> GatedMirror {
+        fixture.connection.windowsByID[1] = RemoteTmuxWindow(
+            id: 1,
+            width: 80,
+            height: 24,
+            layout: RemoteTmuxLayoutNode(
+                width: 80, height: 24, x: 0, y: 0, content: .pane(7)
+            )
+        )
+        fixture.connection.windowOrder = [1]
+        fixture.connection.recordPublishedPaneOwnership(windowId: 1, paneIds: [7])
+
+        let manager = TabManager(autoWelcomeIfNeeded: false)
+        let workspace = manager.selectedWorkspace!
+        workspace.isRemoteTmuxMirror = true
+        let sessionMirror = RemoteTmuxSessionMirror(
+            host: fixture.connection.host,
+            sessionName: "work",
+            connection: fixture.connection,
+            tabManager: manager,
+            workspace: workspace
+        )
+        return GatedMirror(mirror: sessionMirror, manager: manager)
+    }
+
+    /// Live `%output` is unwrapped per pane across chunk boundaries, and the
+    /// title filter still runs on the unwrapped stream.
+    @Test func liveOutputUnwrapsPassthroughEnvelopeAcrossChunksBeforeTitleFilter() throws {
+        let fixture = attachedConnection()
+        defer { fixture.close() }
+        let gated = gatedMirror(fixture)
+        defer { gated.close() }
+
+        gated.mirror.routeSeed(
+            paneId: 7,
+            seed: RemoteTmuxPaneSeed(
+                kind: .fullHistory,
+                discardedOutput: [],
+                snapshot: Data("1234".utf8),
+                catchUpOutput: [],
+                state: Data()
+            )
+        )
+        #expect(gated.mirror.pendingPaneSeedByteCounts[7] == 4)
+
+        // Cut between the two ESCs of a doubled pair in the payload, then follow the
+        // envelope with the screen title escape a shell prompt emits.
+        var stream = Self.wrappedKittyQuery
+        stream.append(Data("\u{1b}kecho\u{1b}\\ej".utf8))
+        let cut = 8
+        gated.mirror.routeOutput(paneId: 7, data: stream[..<cut])
+        gated.mirror.routeOutput(paneId: 7, data: stream[cut...])
+
+        var expected = Self.kittyQuery
+        expected.append(Data("ej".utf8))
+        #expect(gated.mirror.pendingPaneSeedLiveOutput[7] == [expected])
+        #expect(gated.mirror.pendingPaneSeedByteCounts[7] == 4 + expected.count)
+    }
+
+    /// A seed's discarded chunks advance the live unwrapper without being
+    /// rendered, so `catchUpOutput` that continues an envelope is unwrapped as
+    /// payload, while the snapshot is rendered independently of that live state.
+    @Test func seedCatchUpOutputContinuesEnvelopeStateFromDiscardedOutput() throws {
+        let fixture = attachedConnection()
+        defer { fixture.close() }
+        let gated = gatedMirror(fixture)
+        defer { gated.close() }
+
+        let cut = 20
+        var catchUp = Self.wrappedKittyQuery[cut...]
+        catchUp.append(Data("tail".utf8))
+        let snapshot = Data("\u{1b}[H\u{1b}[2J1234".utf8)
+        let state = Data("\u{1b}[2;3H".utf8)
+        gated.mirror.routeSeed(
+            paneId: 7,
+            seed: RemoteTmuxPaneSeed(
+                kind: .fullHistory,
+                discardedOutput: [Self.wrappedKittyQuery[..<cut]],
+                snapshot: snapshot,
+                catchUpOutput: [catchUp],
+                state: state
+            )
+        )
+
+        // The wrapped query drops `ESC P tmux;` plus one ESC of each doubled pair,
+        // so wrapped byte 20 is unwrapped byte 12.
+        var expected = snapshot
+        expected.append(state)
+        expected.append(Self.kittyQuery[12...])
+        expected.append(Data("tail".utf8))
+        #expect(gated.mirror.pendingPaneSeedBytes[7] == expected)
+    }
+
+    // MARK: - kitty graphics support queries are answered into the pane
+    //
+    // tmux never answers `ESC _ G ... a=q ... ESC \` and the mirror surface's own
+    // reply is suppressed with every other parser reply, so the mirror types the
+    // protocol reply into the pane through the same `send-keys -H` path as user
+    // input. The control pipe is the observable seam.
+
+    /// A wrapped support query split across two `%output` chunks produces exactly
+    /// one `send-keys -H` reply addressed to the query's image id, and the pane
+    /// output itself still reaches the surface unwrapped.
+    @Test func liveOutputAnswersAKittyGraphicsQueryThroughSendKeys() throws {
+        let fixture = attachedConnection()
+        defer { fixture.close() }
+        let gated = gatedMirror(fixture)
+        defer { gated.close() }
+        // Replies only go to panes the mirror still owns.
+        gated.mirror.reconcileControlPaneIdentities(livePaneIDs: [7])
+
+        gated.mirror.routeSeed(
+            paneId: 7,
+            seed: RemoteTmuxPaneSeed(
+                kind: .fullHistory,
+                discardedOutput: [],
+                snapshot: Data("1234".utf8),
+                catchUpOutput: [],
+                state: Data()
+            )
+        )
+
+        let cut = 12
+        gated.mirror.routeOutput(paneId: 7, data: Self.wrappedKittyQuery[..<cut])
+        gated.mirror.routeOutput(paneId: 7, data: Self.wrappedKittyQuery[cut...])
+
+        let reply = Data("\u{1b}_Gi=4102;OK\u{1b}\\".utf8)
+        let hex = RemoteTmuxControlConnection.hexByteArguments(reply)
+        let commands = String(decoding: fixture.pipe.fileHandleForReading.availableData, as: UTF8.self)
+        let sent = commands.split(separator: "\n").filter { $0.hasPrefix("send-keys -t %7 ") }
+        #expect(sent == ["send-keys -t %7 -H \(hex)"])
+        #expect(gated.mirror.pendingPaneSeedLiveOutput[7] == [Self.kittyQuery])
+    }
+
+    /// A transmit with `q=2`, and a query for a pane tmux no longer reports, send
+    /// nothing. (The pipe blocks on an empty read, so the pending command FIFO is
+    /// the witness here.)
+    @Test func liveOutputStaysSilentForQuietCommandsAndUnknownPanes() throws {
+        let fixture = attachedConnection()
+        defer { fixture.close() }
+        let gated = gatedMirror(fixture)
+        defer { gated.close() }
+        gated.mirror.reconcileControlPaneIdentities(livePaneIDs: [7])
+        let pending = fixture.connection.pendingCommandKindsForTesting.count
+
+        gated.mirror.routeOutput(
+            paneId: 7,
+            data: Data("\u{1b}Ptmux;\u{1b}\u{1b}_Gi=9,a=t,f=100,q=2;iVBOR\u{1b}\u{1b}\\\u{1b}\\".utf8)
+        )
+        gated.mirror.routeOutput(paneId: 99, data: Self.wrappedKittyQuery)
+
+        #expect(fixture.connection.pendingCommandKindsForTesting.count == pending)
+    }
+
 }
