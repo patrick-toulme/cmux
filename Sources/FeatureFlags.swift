@@ -43,7 +43,6 @@ final class CmuxFeatureFlags {
     #endif
 
     private static let mobileConnectButtonDefault = false
-    private static let sidebarAccountButtonDefault = true
 
     #if DEBUG
     private static let cloudVMUIDefault = true
@@ -175,15 +174,15 @@ final class CmuxFeatureFlags {
         [
             // FLAG(key: pro-upgrade-ui-enabled-release, owner: lawrencecchen,
             //      reviewBy: 2026-10-01, defaultWhenUnavailable: false)
-            // Shows the Pro upgrade entrypoints (sidebar badge, Settings Account
-            // card, palette command, Help menu item). Release builds hide them until
-            // the PostHog flag is enabled; DEBUG keeps them visible for dogfood.
+            // Shows the Pro upgrade entrypoints (Settings Account card, palette
+            // command, Help menu item). Release builds hide them until the
+            // PostHog flag is enabled; DEBUG keeps them visible for dogfood.
             CmuxFeatureFlagDefinition(
                 key: "pro-upgrade-ui-enabled-release",
                 title: String(localized: "featureFlags.proUpgrade.title", defaultValue: "Pro upgrade UI"),
                 flagDescription: String(
                     localized: "featureFlags.proUpgrade.description",
-                    defaultValue: "Shows Pro upgrade entrypoints in the sidebar, Settings, command palette, and Help menu."
+                    defaultValue: "Shows Pro upgrade entrypoints in Settings, the command palette, and the Help menu."
                 ),
                 defaultWhenUnavailable: CmuxFeatureFlags.proUpgradeUIDefault
             ),
@@ -201,20 +200,6 @@ final class CmuxFeatureFlags {
                     defaultValue: "Shows the Tailscale Pairing button in the sidebar footer."
                 ),
                 defaultWhenUnavailable: CmuxFeatureFlags.mobileConnectButtonDefault
-            ),
-
-            // FLAG(key: sidebar-account-button-enabled-release, owner: lawrencecchen,
-            //      reviewBy: 2026-10-01, defaultWhenUnavailable: true)
-            // Shows the account control in the bottom-left sidebar footer. The
-            // Settings account section remains available when this shortcut is off.
-            CmuxFeatureFlagDefinition(
-                key: "sidebar-account-button-enabled-release",
-                title: String(localized: "featureFlags.sidebarAccount.title", defaultValue: "Sidebar account button"),
-                flagDescription: String(
-                    localized: "featureFlags.sidebarAccount.description",
-                    defaultValue: "Shows the profile and sign-in control in the sidebar footer."
-                ),
-                defaultWhenUnavailable: CmuxFeatureFlags.sidebarAccountButtonDefault
             ),
 
             // FLAG(key: cloud-vm-ui-enabled-release, owner: lawrencecchen,
@@ -304,19 +289,15 @@ final class CmuxFeatureFlags {
     }
 
     var isCloudVMUIEnabled: Bool {
-        effectiveValue(for: Self.allFlags[3])
-    }
-
-    var isAgentChatUIEnabled: Bool {
-        effectiveValue(for: Self.allFlags[4])
-    }
-
-    var isSidebarAccountButtonEnabled: Bool {
         effectiveValue(for: Self.allFlags[2])
     }
 
+    var isAgentChatUIEnabled: Bool {
+        effectiveValue(for: Self.allFlags[3])
+    }
+
     var isSidebarWorkspaceAgentSpinnerEnabled: Bool {
-        effectiveValue(for: Self.allFlags[5])
+        effectiveValue(for: Self.allFlags[4])
     }
 
     var isSimulatorEnabled: Bool {
@@ -324,7 +305,7 @@ final class CmuxFeatureFlags {
     }
 
     var isWorkspaceTodoControlsEnabled: Bool {
-        effectiveValue(for: Self.allFlags[7])
+        effectiveValue(for: Self.allFlags[6])
     }
 
     var isAppKitSidebarListEnabled: Bool {

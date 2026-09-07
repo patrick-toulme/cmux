@@ -456,8 +456,10 @@ final class WorkspaceContentViewVisibilityTests {
         #expect(publicationCount == 1, "Applying an equivalent snapshot must stay silent.")
     }
 
+    /// The footer carries no account or upgrade control: minimal mode hides
+    /// every footer control, standard mode shows them all.
     @Test
-    func minimalModeSidebarFooterKeepsOnlyUpgradeControl() {
+    func minimalModeSidebarFooterHidesEveryControl() {
         let minimalControls = SidebarFooterControl.allCases.filter {
             SidebarFooterPresentationPolicy.isVisible($0, presentationMode: .minimal)
         }
@@ -465,58 +467,26 @@ final class WorkspaceContentViewVisibilityTests {
             SidebarFooterPresentationPolicy.isVisible($0, presentationMode: .standard)
         }
 
-        #expect(minimalControls == [.upgrade])
+        #expect(minimalControls.isEmpty)
         #expect(standardControls == SidebarFooterControl.allCases)
+        #expect(SidebarFooterControl.allCases == [
+            .mobileConnect, .help, .shortcutDiscovery, .extensions, .update,
+        ])
     }
 
+    /// The footer's remaining icons (mobile, help) share one visual size.
     @Test
-    func sidebarAccountPictureAndIconPresentationsStayDistinct() {
-        let picture = SidebarAccountButtonPresentation.resolve(
-            isSignedIn: true,
-            prefersProfileIcon: false,
-            hasProfilePicture: true
-        )
-        let toggledIcon = SidebarAccountButtonPresentation.resolve(
-            isSignedIn: true,
-            prefersProfileIcon: true
-        )
-        let signedOutIcon = SidebarAccountButtonPresentation.resolve(
-            isSignedIn: false,
-            prefersProfileIcon: false
-        )
-        let missingPictureIcon = SidebarAccountButtonPresentation.resolve(
-            isSignedIn: true,
-            prefersProfileIcon: false,
-            hasProfilePicture: false
-        )
-
-        #expect(picture.visual == .profilePicture)
-        #expect(picture.size == SidebarFooterButtonMetrics.accountAndHelpVisualSize)
+    func sidebarFooterIconsShareOneVisualSize() {
         #expect(
-            SidebarAccountButtonPresentation.defaultProfileIconSystemName
-                == "person.crop.circle"
-        )
-        #expect(
-            toggledIcon.visual == .profileIcon(
-                systemName: SidebarAccountButtonPresentation.defaultProfileIconSystemName
-            )
-        )
-        #expect(toggledIcon.size == SidebarFooterButtonMetrics.accountAndHelpVisualSize)
-        #expect(signedOutIcon == toggledIcon)
-        #expect(missingPictureIcon == toggledIcon)
-        #expect(
-            SidebarFooterButtonMetrics.profilePictureSize
-                == SidebarFooterButtonMetrics.helpIconSize
-        )
-        #expect(
-            SidebarFooterButtonMetrics.profileIconSize
-                == SidebarFooterButtonMetrics.helpIconSize
+            SidebarFooterButtonMetrics.helpIconSize
+                == SidebarFooterButtonMetrics.accountAndHelpVisualSize
         )
         #expect(
             SidebarFooterCircularIconStyle.standard.pointSize
                 == SidebarFooterButtonMetrics.accountAndHelpVisualSize
         )
         #expect(SidebarFooterCircularIconStyle.standard.weight == .regular)
+        #expect(SidebarAccountAvatar.defaultProfileIconSystemName == "person.crop.circle")
 #if DEBUG
         #expect(SidebarFooterProfileIconDebugSettings.defaultIcon == .cropCircle)
         #expect(

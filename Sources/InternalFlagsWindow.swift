@@ -45,10 +45,6 @@ private final class InternalFlagsWindowController: NSWindowController {
 
 private struct InternalFlagsView: View {
     let flags: CmuxFeatureFlags
-#if DEBUG
-    @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
-    private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
-#endif
 
     private var rows: [InternalFlagRowSnapshot] {
         CmuxFeatureFlags.allFlags.map { definition in
@@ -82,20 +78,6 @@ private struct InternalFlagsView: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
-#if DEBUG
-                    InternalBooleanSettingRow(
-                        title: String(
-                            localized: "debug.devBuildBanner.show",
-                            defaultValue: "Show Dev Build Banner"
-                        ),
-                        key: DevBuildBannerDebugSettings.sidebarBannerVisibleKey,
-                        settingDescription: String(
-                            localized: "debug.devBuildBanner.description",
-                            defaultValue: "Controls the red debug-build label below the sidebar footer."
-                        ),
-                        isOn: $showSidebarDevBuildBanner
-                    )
-#endif
                     ForEach(rows) { row in
                         InternalFlagRow(
                             snapshot: row,
@@ -131,39 +113,6 @@ private struct InternalFlagsView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
-
-#if DEBUG
-private struct InternalBooleanSettingRow: View {
-    let title: String
-    let key: String
-    let settingDescription: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        InternalFlagRowLayout(
-            title: title,
-            key: key,
-            flagDescription: settingDescription,
-            effectiveValue: isOn,
-            sourceTitle: String(localized: "featureFlags.source.local", defaultValue: "Local")
-        ) {
-            Picker(
-                String(localized: "featureFlags.override.pickerLabel", defaultValue: "Override"),
-                selection: $isOn
-            ) {
-                Text(String(localized: "featureFlags.override.on", defaultValue: "On"))
-                    .tag(true)
-                Text(String(localized: "featureFlags.override.off", defaultValue: "Off"))
-                    .tag(false)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 240)
-            .accessibilityIdentifier("InternalFlagsDevBuildBannerPicker")
-        }
-    }
-}
-#endif
 
 private struct InternalFlagRowLayout<OverrideControl: View>: View {
     let title: String

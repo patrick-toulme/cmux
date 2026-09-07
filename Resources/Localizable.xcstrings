@@ -86928,93 +86928,6 @@
         }
       }
     },
-    "debug.devBuildBanner.description": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Controls the red debug-build label below the sidebar footer."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "サイドバーのフッター下にある赤い開発ビルドラベルの表示を切り替えます。"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "사이드바 하단 아래의 빨간색 개발 빌드 라벨 표시를 전환합니다."
-          }
-        },
-        "uk": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Керує показом червоної позначки збірки для розробки під нижньою частиною бічної панелі."
-          }
-        }
-      }
-    },
-    "debug.devBuildBanner.show": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Dev Build Banner"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "開発ビルドバナーを表示"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "개발 빌드 배너 표시"
-          }
-        },
-        "uk": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Показати банер версії для розробки"
-          }
-        }
-      }
-    },
-    "debug.devBuildBanner.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "THIS IS A DEV BUILD"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "これは開発ビルドです"
-          }
-        },
-        "ko": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "개발 빌드입니다"
-          }
-        },
-        "uk": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ЦЕ ВЕРСІЯ ДЛЯ РОЗРОБКИ"
-          }
-        }
-      }
-    },
     "debug.devWindowDisplay.clear": {
       "extractionState": "manual",
       "localizations": {
@@ -117463,13 +117376,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Shows Pro upgrade entrypoints in the sidebar, Settings, command palette, and Help menu."
+            "value": "Shows Pro upgrade entrypoints in Settings, the command palette, and the Help menu."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "サイドバー、設定、コマンドパレット、ヘルプメニューにProアップグレードの入口を表示します。"
+            "value": "設定、コマンドパレット、ヘルプメニューにProアップグレードの入口を表示します。"
           }
         }
       }
@@ -117487,40 +117400,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "ProアップグレードUI"
-          }
-        }
-      }
-    },
-    "featureFlags.sidebarAccount.description": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Shows the profile and sign-in control in the sidebar footer."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "サイドバーのフッターにプロフィールとサインインのコントロールを表示します。"
-          }
-        }
-      }
-    },
-    "featureFlags.sidebarAccount.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sidebar account button"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "サイドバーのアカウントボタン"
           }
         }
       }
@@ -228806,40 +228685,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Відкрити localhost:%lld"
-          }
-        }
-      }
-    },
-    "sidebar.pro.badge": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Upgrade"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "アップグレード"
-          }
-        }
-      }
-    },
-    "sidebar.pro.badge.dismiss": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Hide the Pro badge"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Proバッジを非表示にする"
           }
         }
       }

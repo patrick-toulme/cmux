@@ -7,7 +7,7 @@ import CmuxUpdater
 import CmuxWorkspaces
 import SwiftUI
 
-/// Footer debug controls and empty-area drop targets for the vertical tabs sidebar, extracted from `ContentView.swift`, which sits at its file-length budget.
+/// Footer controls and empty-area drop targets for the vertical tabs sidebar, extracted from `ContentView.swift`, which sits at its file-length budget.
 struct SidebarFooterIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         SidebarFooterIconButtonStyleBody(configuration: configuration)
@@ -38,55 +38,21 @@ enum SidebarFooterButtonMetrics {
     static let hoverOpacity = 0.08
 }
 
-enum SidebarAccountButtonVisual: Equatable {
-    case profilePicture
-    case profileIcon(systemName: String)
-}
-
-struct SidebarAccountButtonPresentation: Equatable {
-    static let defaultProfileIconSystemName = "person.crop.circle"
-
-    let visual: SidebarAccountButtonVisual
-    let size: CGFloat
-
-    static func resolve(
-        isSignedIn: Bool,
-        prefersProfileIcon: Bool,
-        hasProfilePicture: Bool = false
-    ) -> SidebarAccountButtonPresentation {
-        if isSignedIn, hasProfilePicture, !prefersProfileIcon {
-            return SidebarAccountButtonPresentation(
-                visual: .profilePicture,
-                size: SidebarFooterButtonMetrics.profilePictureSize
-            )
-        }
-        return SidebarAccountButtonPresentation(
-            visual: .profileIcon(systemName: defaultProfileIconSystemName),
-            size: SidebarFooterButtonMetrics.profileIconSize
-        )
-    }
-
-    var showsProfilePicture: Bool {
-        visual == .profilePicture
-    }
-}
-
 enum SidebarFooterControl: CaseIterable, Equatable {
-    case account
     case mobileConnect
     case help
     case shortcutDiscovery
-    case upgrade
     case extensions
     case update
 }
 
 enum SidebarFooterPresentationPolicy {
+    /// Minimal presentation hides the whole footer strip.
     static func isVisible(
         _ control: SidebarFooterControl,
         presentationMode: WorkspacePresentationModeSettings.Mode
     ) -> Bool {
-        presentationMode != .minimal || control == .upgrade
+        presentationMode != .minimal
     }
 }
 
@@ -228,183 +194,12 @@ struct SidebarFooterHelpIcon: View {
     }
 }
 
-struct SidebarAccountMenuButton: View {
-    @EnvironmentObject private var tabManager: TabManager
-    private var accountFlow: HostAccountFlow? { AppDelegate.shared?.auth?.accountFlow }
-    private let title = String(localized: "settings.section.account", defaultValue: "Account")
-    private let signInTitle = String(localized: "settings.account.signIn", defaultValue: "Sign In…")
-    private let buttonSize = SidebarFooterButtonMetrics.buttonSize
-    @State private var isPopoverPresented = false
-#if DEBUG
-    @AppStorage(SidebarFooterProfileIconDebugSettings.sizeKey)
-    private var debugIconSize = SidebarFooterProfileIconDebugSettings.defaultSize
-    @AppStorage(SidebarFooterProfileDisplayDebugSettings.displayKey)
-    private var debugProfileDisplay = SidebarFooterProfileDisplayDebugSettings.defaultDisplay.rawValue
-#endif
-
-    private var profileIconSize: CGFloat {
-#if DEBUG
-        CGFloat(debugIconSize)
-#else
-        SidebarFooterButtonMetrics.profileIconSize
-#endif
-    }
-
-    private var prefersProfileIcon: Bool {
-#if DEBUG
-        SidebarFooterProfileDisplayDebugChoice(rawValue: debugProfileDisplay) == .icon
-#else
-        false
-#endif
-    }
-
-    private func presentation(
-        isSignedIn: Bool,
-        hasProfilePicture: Bool
-    ) -> SidebarAccountButtonPresentation {
-        let presentation = SidebarAccountButtonPresentation.resolve(
-            isSignedIn: isSignedIn,
-            prefersProfileIcon: prefersProfileIcon,
-            hasProfilePicture: hasProfilePicture
-        )
-#if DEBUG
-        if !presentation.showsProfilePicture {
-            return SidebarAccountButtonPresentation(
-                visual: presentation.visual,
-                size: profileIconSize
-            )
-        }
-#endif
-        return presentation
-    }
-
-    var body: some View {
-        let identity = accountFlow?.currentIdentity
-        let isSignedIn = identity != nil
-        let buttonTitle = isSignedIn ? title : signInTitle
-        let presentation = presentation(
-            isSignedIn: isSignedIn,
-            hasProfilePicture: identity?.avatarURL != nil
-        )
-        Button {
-            if isSignedIn {
-                isPopoverPresented.toggle()
-            } else {
-                _ = AppDelegate.shared?.performAccountSignInWorkspaceAction(
-                    tabManager: tabManager,
-                    debugSource: "sidebar.account"
-                )
-            }
-        } label: {
-            SidebarAccountAvatar(
-                avatarURL: identity?.avatarURL,
-                displayName: identity?.displayName ?? "",
-                email: identity?.email ?? "",
-                isSignedIn: presentation.showsProfilePicture,
-                size: presentation.size
-            )
-            .frame(width: buttonSize, height: buttonSize)
-        }
-        .buttonStyle(SidebarFooterIconButtonStyle())
-        .disabled(accountFlow?.isWorkingOnAuth == true)
-        .frame(width: buttonSize, height: buttonSize)
-        .background(ArrowlessPopoverAnchor(
-            isPresented: $isPopoverPresented,
-            preferredEdge: .maxY,
-            detachedGap: 4
-        ) {
-            SidebarAccountPopover(
-                accountFlow: accountFlow,
-                dismiss: { isPopoverPresented = false }
-            )
-        })
-        .safeHelp(buttonTitle)
-        .accessibilityLabel(buttonTitle)
-        .accessibilityIdentifier("SidebarAccountMenuButton")
-    }
-}
-
-private struct SidebarAccountPopover: View {
-    let accountFlow: HostAccountFlow?
-    let dismiss: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let identity = accountFlow?.currentIdentity {
-                HStack(spacing: 10) {
-                    SidebarAccountAvatar(
-                        avatarURL: identity.avatarURL,
-                        displayName: identity.displayName,
-                        email: identity.email,
-                        isSignedIn: true,
-                        size: 34
-                    )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(identity.displayName.isEmpty ? identity.email : identity.displayName)
-                            .cmuxFont(size: 13, weight: .semibold)
-                            .lineLimit(1)
-                        if !identity.email.isEmpty && identity.email != identity.displayName {
-                            Text(identity.email)
-                                .cmuxFont(size: 11)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-                Divider()
-            } else {
-                Text(String(localized: "settings.account.signedOut.title", defaultValue: "Not signed in"))
-                    .cmuxFont(size: 13, weight: .semibold)
-                Button {
-                    dismiss()
-                    accountFlow?.startSignIn()
-                } label: {
-                    Label(
-                        String(localized: "settings.account.signIn", defaultValue: "Sign In…"),
-                        systemImage: "person.crop.circle.badge.plus"
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .accessibilityIdentifier("SidebarAccountSignInButton")
-            }
-            if accountFlow?.isProUpgradeAvailable == true {
-                if accountFlow?.currentIdentity == nil {
-                    Divider()
-                }
-                Button {
-                    dismiss()
-                    accountFlow?.openProUpgrade()
-                } label: {
-                    Label(
-                        String(localized: "menu.help.upgradeToPro", defaultValue: "Upgrade to cmux Pro…"),
-                        systemImage: "sparkles"
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .accessibilityIdentifier("SidebarAccountUpgradeButton")
-            }
-            if accountFlow?.currentIdentity != nil {
-                Button {
-                    dismiss()
-                    Task { await accountFlow?.signOut() }
-                } label: {
-                    Label(
-                        String(localized: "settings.account.signOut", defaultValue: "Sign Out"),
-                        systemImage: "rectangle.portrait.and.arrow.right"
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .accessibilityIdentifier("SidebarAccountSignOutButton")
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(accountFlow?.isWorkingOnAuth == true)
-        .padding(12)
-        .frame(width: 220, alignment: .leading)
-    }
-}
-
+/// Signed-in avatar or signed-out profile glyph. The footer no longer hosts
+/// an account control; this stays as the reference rendering the Debug
+/// footer icon balance window previews against the other footer icons.
 struct SidebarAccountAvatar: View {
+    static let defaultProfileIconSystemName = "person.crop.circle"
+
     let avatarURL: URL?
     let displayName: String
     let email: String
@@ -420,7 +215,7 @@ struct SidebarAccountAvatar: View {
         SidebarFooterProfileIconDebugChoice(rawValue: debugIcon)?.rawValue
             ?? SidebarFooterProfileIconDebugSettings.defaultIcon.rawValue
 #else
-        SidebarAccountButtonPresentation.defaultProfileIconSystemName
+        Self.defaultProfileIconSystemName
 #endif
     }
 
@@ -523,31 +318,6 @@ private struct SidebarFooterIconButtonStyleBody: View {
             .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
-
-#if DEBUG
-struct SidebarDevFooter: View {
-    var updateViewModel: UpdateStateModel
-    @ObservedObject var fileExplorerState: FileExplorerState
-    let modifierKeyMonitor: WindowScopedShortcutHintModifierMonitor
-    let onSendFeedback: () -> Void
-    @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
-    private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SidebarFooterButtons(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, modifierKeyMonitor: modifierKeyMonitor, onSendFeedback: onSendFeedback)
-            if showSidebarDevBuildBanner {
-                Text(String(localized: "debug.devBuildBanner.title", defaultValue: "THIS IS A DEV BUILD"))
-                    .cmuxFont(size: 11, weight: .semibold)
-                    .foregroundColor(.red)
-            }
-        }
-        .padding(.leading, 6)
-        .padding(.trailing, 10)
-        .padding(.bottom, 6)
-    }
-}
-#endif
 
 struct SidebarEmptyArea: View {
     @EnvironmentObject var tabManager: TabManager
