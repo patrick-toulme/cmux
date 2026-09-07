@@ -15165,14 +15165,10 @@ private struct SidebarFooter: View {
     let onSendFeedback: () -> Void
 
     var body: some View {
-#if DEBUG
-        SidebarDevFooter(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, modifierKeyMonitor: modifierKeyMonitor, onSendFeedback: onSendFeedback)
-#else
         SidebarFooterButtons(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, modifierKeyMonitor: modifierKeyMonitor, onSendFeedback: onSendFeedback)
             .padding(.leading, 6)
             .padding(.trailing, 10)
             .padding(.bottom, 6)
-#endif
     }
 }
 
@@ -15204,11 +15200,8 @@ struct SidebarFooterButtons: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            if shows(.account) || shows(.mobileConnect) || shows(.help) {
+            if shows(.mobileConnect) || shows(.help) {
                 HStack(spacing: 0) {
-                    if shows(.account), CmuxFeatureFlags.shared.isSidebarAccountButtonEnabled {
-                        SidebarAccountMenuButton()
-                    }
                     if shows(.mobileConnect), CmuxFeatureFlags.shared.isMobileConnectButtonEnabled {
                         SidebarMobileConnectButton()
                     }
@@ -15217,14 +15210,11 @@ struct SidebarFooterButtons: View {
                     }
                 }
             }
-            // Command-hold reveal: appears immediately before Upgrade. It stays
+            // Command-hold reveal: appears right after the icon cluster. It stays
             // mounted while its popover is open so releasing ⌘ does not dismiss it.
             if shows(.shortcutDiscovery),
                (showModifierHoldHints && modifierKeyMonitor.isModifierPressed) || isShortcutPopoverPresented {
                 ShortcutDiscoveryButton(isPopoverPresented: $isShortcutPopoverPresented)
-            }
-            if shows(.upgrade) {
-                SidebarProBadge()
             }
             // The puzzle button opens the extensions browser; it only shows
             // while the experimental Extensions feature is enabled.

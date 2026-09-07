@@ -62,8 +62,6 @@ struct cmuxApp: App {
     @State private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     @AppStorage(AppearanceSettings.appearanceModeKey) private var appearanceMode = AppearanceSettings.defaultMode.rawValue
     @AppStorage(TitlebarControlsStyle.storageKey) private var titlebarControlsStyle = TitlebarControlsStyle.defaultRawValue
-    @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
-    private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
     @AppStorage(BrowserToolbarAccessorySpacingDebugSettings.key) private var browserToolbarAccessorySpacingRaw = BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing
     @State private var browserFocusModeMenuRevision = 0
@@ -549,9 +547,6 @@ struct cmuxApp: App {
                     Button("Background Debug…") {
                         BackgroundDebugWindowController.shared.show()
                     }
-                    Button("Pro Badge Style…") {
-                        ProBadgeDebugWindowController.shared.show()
-                    }
                     Button(
                         String(
                             localized: "debug.menu.bonsplitTabBarDebug",
@@ -693,11 +688,6 @@ struct cmuxApp: App {
                         }
                     }
                 }
-
-                Toggle(
-                    String(localized: "debug.devBuildBanner.show", defaultValue: "Show Dev Build Banner"),
-                    isOn: $showSidebarDevBuildBanner
-                )
 
                 Divider()
 
@@ -1570,7 +1560,6 @@ private enum DebugWindowConfigSnapshot {
         sidebarBranchDirectoryStacked=\(boolValue(defaults, key: SidebarCatalogSection().stackBranchDirectory.userDefaultsKey, fallback: SidebarCatalogSection().stackBranchDirectory.defaultValue))
         sidebarPathLastSegmentOnly=\(boolValue(defaults, key: SidebarCatalogSection().pathLastSegmentOnly.userDefaultsKey, fallback: SidebarCatalogSection().pathLastSegmentOnly.defaultValue))
         sidebarActiveTabIndicatorStyle=\(stringValue(defaults, key: WorkspaceColorsCatalogSection().indicatorStyle.userDefaultsKey, fallback: WorkspaceColorsCatalogSection().indicatorStyle.defaultValue.rawValue))
-        sidebarDevBuildBannerVisible=\(boolValue(defaults, key: DevBuildBannerDebugSettings.sidebarBannerVisibleKey, fallback: DevBuildBannerDebugSettings.defaultShowSidebarBanner))
         sidebarMinimumWidth=\(String(format: "%.1f", SessionPersistencePolicy.resolvedMinimumSidebarWidth(defaults: defaults)))
         """
 
@@ -3197,7 +3186,6 @@ private struct SidebarFooterIconBalanceStrip: View {
                     .compositingGroup()
                     .blur(radius: CGFloat(blurRadius))
             }
-            ProBadgeLabel(style: .textPro)
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
@@ -3379,8 +3367,6 @@ private struct SidebarDebugView: View {
     private var sidebarBranchDirectoryStacked = SidebarCatalogSection().stackBranchDirectory.defaultValue
     @AppStorage(SidebarCatalogSection().pathLastSegmentOnly.userDefaultsKey)
     private var sidebarPathLastSegmentOnly = SidebarCatalogSection().pathLastSegmentOnly.defaultValue
-    @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
-    private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(WorkspaceColorsCatalogSection().indicatorStyle.userDefaultsKey)
     private var sidebarActiveTabIndicatorStyle = WorkspaceColorsCatalogSection().indicatorStyle.defaultValue.rawValue
     @AppStorage("sidebarSelectionColorHex") private var sidebarSelectionColorHex: String?
@@ -3580,7 +3566,6 @@ private struct SidebarDebugView: View {
         sidebarBranchDirectoryStacked=\(sidebarBranchDirectoryStacked)
         sidebarPathLastSegmentOnly=\(sidebarPathLastSegmentOnly)
         sidebarActiveTabIndicatorStyle=\(sidebarActiveTabIndicatorStyle)
-        sidebarDevBuildBannerVisible=\(showSidebarDevBuildBanner)
         """
         GhosttyApp.terminalPasteboard.writeString(
             payload,
