@@ -110,6 +110,11 @@ public enum ControlCommandExecutionPolicy: Sendable, Equatable {
         "mobile.terminal.set_font",
         "system.top",
         "system.memory",
+        // `system.open_url` awaits the Launch Services completion of the
+        // browser open (ControlCommandCoordinator.handleSystemAsync), so it
+        // must not park the main actor; the worker lane awaits the reply.
+        // NOT mainThreadCallable: the body blocks its caller on that wait.
+        "system.open_url",
         // `surface.read_text` reads a terminal's visible or full-scrollback
         // text and formats it (line tailing, candidate scoring, base64
         // encoding). On the main actor that formatting stalls the run loop

@@ -1117,6 +1117,14 @@ class TerminalController {
                     return response
                 }
             }
+            if request.method == "system.open_url" {
+                // Awaits the Launch Services verdict on this worker thread;
+                // the coordinator hops to main only to issue the open.
+                return v2AsyncControlResultCall(id: parsedRequest.id, timeoutSeconds: 20) {
+                    await self.controlCommandCoordinator.handleSystemAsync(parsedRequest, context: self)
+                        ?? .err(code: "method_not_found", message: "Unknown method", data: nil)
+                }
+            }
             if request.method == "mobile.task.models.list" {
                 return v2AsyncResultCall(
                     id: request.id,
@@ -2710,6 +2718,7 @@ class TerminalController {
             "system.capabilities",
             "system.identify",
             "system.tree",
+            "system.open_url",
             "sidebar.custom.open",
             "system.top",
             "system.memory",
@@ -3822,6 +3831,34 @@ class TerminalController {
             )
         }
         return v2Result(id: id, result)
+    }
+
+    /// The typed twin of `v2AsyncResultCall` for coordinator-owned async
+    /// bodies: awaits a `ControlCallResult` on this worker thread (bounded by
+    /// `timeoutSeconds`) and encodes it through the shared wire encoder.
+    nonisolated func v2AsyncControlResultCall(
+        id: JSONValue?,
+        timeoutSeconds: TimeInterval,
+        _ work: @escaping @Sendable () async -> ControlCallResult
+    ) -> String {
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result: ControlCallResult?
+        let task = Task {
+            result = await work()
+            semaphore.signal()
+        }
+        if semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
+            task.cancel()
+            return Self.v2Encoder.error(
+                id: id,
+                code: "timeout",
+                message: "Request timed out after \(Int(timeoutSeconds)) seconds"
+            )
+        }
+        return Self.v2Encoder.response(
+            id: id,
+            result ?? .err(code: "request_error", message: "Request failed before returning a result", data: nil)
+        )
     }
 
     nonisolated func v2Error(id: Any?, code: String, message: String, data: Any? = nil) -> String {

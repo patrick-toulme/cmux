@@ -1,7 +1,7 @@
 internal import Foundation
 
-/// The system/misc domain (`system.identify`, `system.tree`, `auth.login`,
-/// `session.restore_previous`, `settings.open`, `feedback.open`,
+/// The system/misc domain (`system.identify`, `system.tree`, `system.open_url`,
+/// `auth.login`, `session.restore_previous`, `settings.open`, `feedback.open`,
 /// `extension.sidebar.snapshot`, `workspace.action`, `surface.action` /
 /// `tab.action`, `surface.drag_to_split` / `surface.split_off`, and the
 /// DEBUG-only `mobile.dev_stack_auth.configure`), lifted byte-faithfully from
@@ -48,6 +48,71 @@ extension ControlCommandCoordinator {
 #endif
         default:
             return nil
+        }
+    }
+
+    /// Dispatches the system-domain methods that await asynchronous app work
+    /// and therefore run on the socket worker (today `system.open_url`);
+    /// returns `nil` for anything else. `nonisolated` so the worker lane can
+    /// call it off the main actor; the seam call itself hops to main and
+    /// suspends there instead of blocking.
+    ///
+    /// - Parameters:
+    ///   - request: The decoded request envelope.
+    ///   - context: The wired seam (passed explicitly: the coordinator's own
+    ///     `context` is main-actor-isolated).
+    /// - Returns: The command result, or `nil` if not an async system method.
+    public nonisolated func handleSystemAsync(
+        _ request: ControlRequest,
+        context: (any ControlSystemContext)?
+    ) async -> ControlCallResult? {
+        switch request.method {
+        case "system.open_url":
+            return await systemOpenURL(request.params, context: context)
+        default:
+            return nil
+        }
+    }
+
+    /// `system.open_url` — open a web URL in the Mac's default browser.
+    ///
+    /// Validation (scheme allowlist, host) runs here on the worker; only the
+    /// Launch Services call crosses to the app. The reply is truthful: `opened`
+    /// is true only once an application accepted the URL, and a refusal names
+    /// the offending part so a remote client can tell a typo from a blocked
+    /// scheme.
+    nonisolated func systemOpenURL(
+        _ params: [String: JSONValue],
+        context: (any ControlSystemContext)?
+    ) async -> ControlCallResult {
+        let request: ControlExternalURLOpenRequest
+        switch ControlExternalURLOpenRequest.parse(params: params) {
+        case .success(let parsed):
+            request = parsed
+        case .failure(let rejection):
+            return .err(
+                code: "invalid_params",
+                message: rejection.message,
+                data: .object(["url": orNull(string(params, "url"))])
+            )
+        }
+        guard let context else {
+            return .err(code: "unavailable", message: "System context not attached", data: nil)
+        }
+        switch await context.controlSystemOpenExternalURL(request) {
+        case .opened(let handler):
+            return .ok(.object([
+                "opened": .bool(true),
+                "url": .string(request.url.absoluteString),
+                "activated": .bool(request.activates),
+                "handler": orNull(handler),
+            ]))
+        case .failed(let message):
+            return .err(
+                code: "unavailable",
+                message: message,
+                data: .object(["url": .string(request.url.absoluteString)])
+            )
         }
     }
 

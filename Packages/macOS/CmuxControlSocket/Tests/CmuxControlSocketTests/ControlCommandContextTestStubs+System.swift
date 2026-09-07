@@ -29,6 +29,11 @@ extension ControlSystemContext {
         .opened(target: targetRaw ?? "general")
     }
     func controlFeedbackOpen(workspaceID: UUID?, windowID: UUID?, requestedActivate: Bool) {}
+    nonisolated func controlSystemOpenExternalURL(
+        _ request: ControlExternalURLOpenRequest
+    ) async -> ControlExternalURLOpenOutcome {
+        .failed(message: "No browser available")
+    }
     func controlExtensionSidebarSnapshot(routing: ControlRoutingSelectors) -> ControlExtensionSidebarSnapshot? { nil }
     func controlWorkspaceAction(params: [String: JSONValue]) -> ControlCallResult {
         .err(code: "unavailable", message: "TabManager not available", data: nil)
