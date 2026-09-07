@@ -171,6 +171,16 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
     /// and a pane switching from `claude` to `opencode` must not leave a stale
     /// `claude_code: running` entry spinning forever.
     var agentLifecycleKeysByPaneId: [Int: String] = [:]
+    /// Per pane unwrapper for the tmux DCS passthrough envelope
+    /// (`ESC P tmux; … ESC \`) in `%output`, so kitty graphics and other escapes
+    /// meant for the outer terminal reach the mirror surface the way a passthrough
+    /// enabled tmux would deliver them (stateful across chunk boundaries).
+    var passthroughUnwrappers: [Int: RemoteTmuxPassthroughUnwrapper] = [:]
+    /// Per pane responder for kitty graphics support queries in `%output`. tmux
+    /// never answers them and the mirror surface's own reply is suppressed with
+    /// every other parser reply, so the answer is produced here and typed into
+    /// the pane (stateful across chunk boundaries).
+    var kittyQueryResponders: [Int: RemoteTmuxKittyGraphicsQueryResponder] = [:]
     /// Per-pane filter that strips the screen/tmux `ESC k <title> ST` window-title
     /// escape from `%output` (stateful across chunk boundaries).
     var titleFilters: [Int: RemoteTmuxScreenTitleFilter] = [:]
@@ -288,12 +298,16 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
             },
             onConnectionStateChanged: { [weak self] state in
                 self?.paneInputForwarder?.setConnectionActive(state == .connected)
-                // Drop any mid-`ESC k` title-filter state when the stream isn't live:
-                // a reconnect's `reseedAfterReconnect` re-emits clear/capture bytes,
-                // and a filter stuck mid-title from before the drop would swallow them.
-                // Resetting on the disconnect edge is ordering-independent (no output
-                // arrives while not connected).
+                // Drop title filter, unwrapper and responder state when the stream
+                // isn't live: a reconnect's `reseedAfterReconnect` emits clear/capture
+                // bytes again, and a filter still inside an `ESC k` title (or an
+                // unwrapper still inside a passthrough envelope, or a responder still
+                // inside a graphics command) from before the drop would swallow or
+                // mangle them. Resetting on the disconnect edge does not depend on
+                // ordering (no output arrives while not connected).
                 if state != .connected {
+                    self?.passthroughUnwrappers.removeAll()
+                    self?.kittyQueryResponders.removeAll()
                     self?.titleFilters.removeAll()
                     self?.clearPendingPaneSeedDeliveries()
                     self?.windowMirrorByWindowId.values.forEach {
@@ -459,6 +473,8 @@ final class RemoteTmuxSessionMirror: RemoteTmuxControlPaneMutationOwner {
         // Drop cached directories for panes tmux no longer reports, so the cache
         // stays bounded across window/pane churn (tmux pane ids never recur).
         cwdByPane = cwdByPane.filter { livePanes.contains($0.key) }
+        passthroughUnwrappers = passthroughUnwrappers.filter { livePanes.contains($0.key) }
+        kittyQueryResponders = kittyQueryResponders.filter { livePanes.contains($0.key) }
         titleFilters = titleFilters.filter { livePanes.contains($0.key) }
         reconcilePendingPaneSeedDeliveries(keeping: Set(windowIdByPane.keys))
         closeDefaultTabsIfNeeded()

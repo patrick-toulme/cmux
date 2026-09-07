@@ -5,27 +5,50 @@ import Foundation
 @MainActor
 extension RemoteTmuxSessionMirror {
     func routeOutput(paneId: Int, data: Data) {
-        // Strip the screen/tmux `ESC k <title> ST` window-title escape that a remote
-        // shell (TERM=screen*/tmux*) emits. Per-pane state survives chunk splits.
-        var filter = titleFilters[paneId] ?? RemoteTmuxScreenTitleFilter()
-        let cleaned = filter.filter(data)
-        titleFilters[paneId] = filter
+        // Live output is what tmux would feed its own screen: first unwrap the DCS
+        // passthrough envelope (what a passthrough enabled tmux hands the outer
+        // terminal), answer any kitty graphics support query in it, then strip
+        // the screen/tmux `ESC k <title> ST` window title escape that a remote
+        // shell (TERM=screen*/tmux*) emits. Per pane state survives chunk splits.
+        let cleaned = filterLiveOutput(paneId: paneId, data: data)
         routeOrQueueCleanedOutput(paneId: paneId, data: cleaned)
+    }
+
+    /// Runs one live `%output` chunk through the pane's stateful unwrapper,
+    /// query responder and title filter, in that order, stores the advanced
+    /// state, and types each query reply into the pane. The reply goes out the
+    /// same `send-keys` path as user input, so it reaches the program in stream
+    /// order like a reply from the terminal core would.
+    private func filterLiveOutput(paneId: Int, data: Data) -> Data {
+        var unwrapper = passthroughUnwrappers[paneId] ?? RemoteTmuxPassthroughUnwrapper()
+        var responder = kittyQueryResponders[paneId] ?? RemoteTmuxKittyGraphicsQueryResponder()
+        var filter = titleFilters[paneId] ?? RemoteTmuxScreenTitleFilter()
+        let unwrapped = unwrapper.filter(data)
+        let replies = responder.replies(for: unwrapped)
+        let cleaned = filter.filter(unwrapped)
+        passthroughUnwrappers[paneId] = unwrapper
+        kittyQueryResponders[paneId] = responder
+        titleFilters[paneId] = filter
+        for reply in replies { _ = sendInputBytes(reply, toPane: paneId) }
+        return cleaned
     }
 
     /// Applies an authoritative snapshot independently from the logical live
     /// escape stream, then catches that stream up across the capture boundary.
     func routeSeed(paneId: Int, seed: RemoteTmuxPaneSeed) {
-        var liveFilter = titleFilters[paneId] ?? RemoteTmuxScreenTitleFilter()
-        for data in seed.discardedOutput { _ = liveFilter.filter(data) }
+        // Discarded chunks already reached tmux's screen (the snapshot covers them),
+        // but the live unwrapper and title filter must still advance through them
+        // so a chunk boundary inside an envelope or title stays consistent.
+        for data in seed.discardedOutput { _ = filterLiveOutput(paneId: paneId, data: data) }
 
+        // The capture is tmux's rendered screen: it holds no passthrough envelopes,
+        // so only the title filter applies, with fresh state.
         var snapshotFilter = RemoteTmuxScreenTitleFilter()
         var renderedBytes = snapshotFilter.filter(seed.snapshot)
         renderedBytes.append(seed.state)
         for data in seed.catchUpOutput {
-            renderedBytes.append(liveFilter.filter(data))
+            renderedBytes.append(filterLiveOutput(paneId: paneId, data: data))
         }
-        titleFilters[paneId] = liveFilter
 
         guard let target = authoritativeGrid(forPane: paneId) else {
             if seed.kind == .fullHistory { deferredFullPaneReseeds.remove(paneId) }
