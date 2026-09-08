@@ -43,6 +43,12 @@ struct SidebarWorkspaceSnapshotBuilder {
         let showsRemoteReconnectAffordance: Bool
         let copyableSidebarSSHError: String?
         let latestConversationMessage: String?
+        // The last prompt the user submitted to an agent here, and when. Part
+        // of the snapshot so a new prompt re-renders the row: the subtitle
+        // policy hands the line to a prompt newer than the latest
+        // notification (SidebarWorkspaceSubtitlePolicy).
+        let latestSubmittedMessage: String?
+        let latestSubmittedAt: Date?
         let metadataEntries: [SidebarStatusEntry]
         let metadataBlocks: [SidebarMetadataBlock]
         let latestLog: SidebarLogEntry?
