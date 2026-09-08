@@ -278,6 +278,7 @@ final class FeedCoordinator: @unchecked Sendable {
         ) { result in
             let acceptedEvent: WorkstreamEvent? = DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
+                    var inheritedOverlay: (target: FeedAttentionTarget, state: AttentionOverlayState?)?
                     guard let acceptance = result.commit({
                         guard ContinuousClock.now < deliveryDeadline else {
                             return FeedEventAcceptance.unavailable
@@ -285,6 +286,19 @@ final class FeedCoordinator: @unchecked Sendable {
                         // Register in the commit boundary before the store sees
                         // the event, so a fast reply cannot slip through.
                         FeedCoordinator.shared.waiterLock.lock()
+                        if let superseded = FeedCoordinator.shared.waiters[requestId],
+                           superseded.decision == nil,
+                           let target = superseded.attentionTarget {
+                            // A renewal of a still-parked ask replaces its wait
+                            // in the registry. Carry the lit overlay over so
+                            // the renewal retains it below instead of
+                            // re-surfacing (no clear-then-relight, no second
+                            // workspace elevation), and the superseded wait's
+                            // exit still balances against the same state.
+                            waiter.attentionTarget = target
+                            waiter.attentionOverlayState = superseded.attentionOverlayState
+                            inheritedOverlay = (target, superseded.attentionOverlayState)
+                        }
                         FeedCoordinator.shared.waiters[requestId] = waiter
                         FeedCoordinator.shared.waiterLock.unlock()
                         return FeedCoordinator.shared.acceptOnMainActor(event)
@@ -293,6 +307,17 @@ final class FeedCoordinator: @unchecked Sendable {
                     }
                     guard case .accepted(let acceptedEvent, _, _) = acceptance else {
                         return nil
+                    }
+                    if let inheritedOverlay,
+                       FeedCoordinator.shared.retainAttentionOverlay(
+                           inheritedOverlay.target,
+                           expecting: inheritedOverlay.state
+                       ) {
+                        onAcceptedOnMainActor(acceptedEvent)
+                        #if DEBUG
+                        FeedCoordinatorTestHooks.afterBlockingEventIngested?(acceptedEvent, requestId)
+                        #endif
+                        return acceptedEvent
                     }
                     // Surface in-app attention (needs-input status + workspace
                     // elevation) for the blocking decision. This fires
@@ -998,6 +1023,20 @@ extension FeedCoordinator {
     @MainActor
     func markAttentionOverlayWaiterBacked(_ target: FeedAttentionTarget) {
         pendingAttentionStates[target]?.expectsWaiterBacking = true
+    }
+
+    /// Takes one more reference on an overlay a renewed wait inherited from
+    /// the wait it supersedes, so the two exits balance against the same
+    /// state. Returns false when the ledger no longer holds that generation
+    /// (the superseded wait exited first); the caller then surfaces afresh.
+    @MainActor
+    fileprivate func retainAttentionOverlay(_ target: FeedAttentionTarget, expecting expected: AttentionOverlayState?) -> Bool {
+        guard let attentionState = pendingAttentionStates[target],
+              expected == nil || attentionState === expected else {
+            return false
+        }
+        attentionState.count += 1
+        return true
     }
 
     /// The reserved status/lifecycle key namespace the Feed attention overlay
