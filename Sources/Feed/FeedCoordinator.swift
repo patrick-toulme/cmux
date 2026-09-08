@@ -8,7 +8,9 @@ import CmuxSettings
 import CmuxSidebar
 
 private enum FeedEventAcceptance: Sendable {
-    case accepted(event: WorkstreamEvent, itemId: UUID)
+    /// `revived` is true when the frame re-armed an existing card (a
+    /// renewal of a still-parked ask) instead of creating one.
+    case accepted(event: WorkstreamEvent, itemId: UUID, revived: Bool)
     case notFound
     case unavailable
 }
@@ -129,10 +131,10 @@ final class FeedCoordinator: @unchecked Sendable {
         switch resolveDeliveryTarget(for: [event]) {
         case .accepted(let events):
             guard let revalidatedEvent = events.first,
-                  let itemId = ingestRevalidatedOnMainActor(revalidatedEvent) else {
+                  let outcome = ingestRevalidatedOnMainActor(revalidatedEvent) else {
                 return .unavailable
             }
-            return .accepted(event: revalidatedEvent, itemId: itemId)
+            return .accepted(event: revalidatedEvent, itemId: outcome.itemId, revived: outcome.revived)
         case .notFound:
             return .notFound
         case .unavailable:
@@ -141,13 +143,27 @@ final class FeedCoordinator: @unchecked Sendable {
     }
 
     @MainActor
-    func ingestRevalidatedOnMainActor(_ event: WorkstreamEvent) -> UUID? {
+    func ingestRevalidatedOnMainActor(_ event: WorkstreamEvent) -> WorkstreamStore.IngestOutcome? {
         guard let store else { return nil }
-        store.ingest(event)
+        let outcome = store.ingest(event)
         if let ppid = event.ppid, ppid > 0 {
             armPidWatcher(ppid: ppid)
         }
-        return store.items.last?.id
+        return outcome
+    }
+
+    /// The decision already recorded on `itemId`, when the user decided the
+    /// card before this (renewed) wait was registered. The decision went
+    /// back on the earlier wait's connection, which the bridge may have
+    /// closed by now, so the renewal is answered from the store instead of
+    /// parking against a card nobody can act on.
+    @MainActor
+    fileprivate func recordedDecision(itemId: UUID) -> WorkstreamDecision? {
+        guard let item = store?.items.first(where: { $0.id == itemId }),
+              case .resolved(let decision, _) = item.status else {
+            return nil
+        }
+        return decision
     }
 
     /// Runs synchronous acknowledged ingress on the same ordered lane as zero-wait telemetry.
@@ -221,7 +237,7 @@ final class FeedCoordinator: @unchecked Sendable {
                         }) else {
                             return nil
                         }
-                        guard case .accepted(let acceptedEvent, _) = acceptance else {
+                        guard case .accepted(let acceptedEvent, _, _) = acceptance else {
                             return nil
                         }
                         onAcceptedOnMainActor(acceptedEvent)
@@ -236,7 +252,7 @@ final class FeedCoordinator: @unchecked Sendable {
                 return IngestBlockingOutcome(result: .unavailable, authoritativeEvent: nil)
             }
             switch acceptance {
-            case .accepted(let acceptedEvent, let itemId):
+            case .accepted(let acceptedEvent, let itemId, _):
                 return IngestBlockingOutcome(
                     result: .acknowledged(itemId: itemId),
                     authoritativeEvent: acceptedEvent
@@ -275,7 +291,7 @@ final class FeedCoordinator: @unchecked Sendable {
                     }) else {
                         return nil
                     }
-                    guard case .accepted(let acceptedEvent, _) = acceptance else {
+                    guard case .accepted(let acceptedEvent, _, _) = acceptance else {
                         return nil
                     }
                     // Surface in-app attention (needs-input status + workspace
@@ -358,9 +374,11 @@ final class FeedCoordinator: @unchecked Sendable {
         }
 
         let accepted: (event: WorkstreamEvent, itemId: UUID)
+        let revived: Bool
         switch acceptance {
-        case .accepted(let event, let itemId):
+        case .accepted(let event, let itemId, let wasRevived):
             accepted = (event, itemId)
+            revived = wasRevived
         case .notFound:
             _ = removeWaiterIfCurrent(waiter, requestId: requestId)
             return IngestBlockingOutcome(result: .notFound, authoritativeEvent: nil)
@@ -368,10 +386,28 @@ final class FeedCoordinator: @unchecked Sendable {
             _ = removeWaiterIfCurrent(waiter, requestId: requestId)
             return IngestBlockingOutcome(result: .unavailable, authoritativeEvent: nil)
         }
+        // A renewal that maps onto a card the user already decided gets that
+        // decision now: the earlier wait it was delivered on may be gone.
+        let readDecision: @Sendable () -> WorkstreamDecision? = { [itemId = accepted.itemId] in
+            MainActor.assumeIsolated { FeedCoordinator.shared.recordedDecision(itemId: itemId) }
+        }
+        let decidedEarlier = Thread.isMainThread ? readDecision() : DispatchQueue.main.sync(execute: readDecision)
+        if let decidedEarlier {
+            let exited = removeWaiterIfCurrent(waiter, requestId: requestId)
+            concludeAttentionOnMain(exited.attentionTarget, expecting: exited.overlayState)
+            return IngestBlockingOutcome(
+                result: .resolved(itemId: accepted.itemId, decision: decidedEarlier),
+                authoritativeEvent: accepted.event
+            )
+        }
         // If this is a blocking actionable event and the app window isn't
         // focused, post a native notification banner with inline action
-        // buttons so the user can respond without switching windows.
-        postNotificationIfStillAwaiting(event: accepted.event, requestId: requestId)
+        // buttons so the user can respond without switching windows. A
+        // renewal re-arms a card the user was already told about: no second
+        // banner.
+        if !revived {
+            postNotificationIfStillAwaiting(event: accepted.event, requestId: requestId)
+        }
 
         let remainingDecisionTimeout = Self.remainingIngressTime(until: deliveryDeadline)
         let deadline: DispatchTime = .now() + max(remainingDecisionTimeout, 0)
@@ -394,11 +430,13 @@ final class FeedCoordinator: @unchecked Sendable {
                     authoritativeEvent: accepted.event
                 )
             }
+            // Only the card's CURRENT wait may expire it: a wait replaced by a
+            // renewal shares the (revived) card with its successor.
             if exited.wasCurrent {
                 cancelNotification(requestId: requestId)
+                expireTimedOutItem(accepted.itemId)
             }
             concludeAttentionOnMain(exited.attentionTarget, expecting: exited.overlayState)
-            expireTimedOutItem(accepted.itemId)
             return IngestBlockingOutcome(
                 result: .timedOut(itemId: accepted.itemId),
                 authoritativeEvent: accepted.event
@@ -406,9 +444,9 @@ final class FeedCoordinator: @unchecked Sendable {
         case .timedOut:
             if exited.wasCurrent {
                 cancelNotification(requestId: requestId)
+                expireTimedOutItem(accepted.itemId)
             }
             concludeAttentionOnMain(exited.attentionTarget, expecting: exited.overlayState)
-            expireTimedOutItem(accepted.itemId)
             return IngestBlockingOutcome(
                 result: .timedOut(itemId: accepted.itemId),
                 authoritativeEvent: accepted.event
@@ -454,7 +492,7 @@ final class FeedCoordinator: @unchecked Sendable {
             let acceptedEvent: WorkstreamEvent? = DispatchQueue.main.sync {
                 MainActor.assumeIsolated {
                     let accept: () -> WorkstreamEvent? = {
-                        guard case .accepted(let event, _) = FeedCoordinator.shared.acceptOnMainActor(event) else {
+                        guard case .accepted(let event, _, _) = FeedCoordinator.shared.acceptOnMainActor(event) else {
                             return nil
                         }
                         return event

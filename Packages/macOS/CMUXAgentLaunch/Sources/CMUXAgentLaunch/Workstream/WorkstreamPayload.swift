@@ -293,4 +293,17 @@ public enum WorkstreamPayload: Codable, Sendable, Equatable {
             try p.encode(todos, forKey: .value)
         }
     }
+
+    /// The agent-side request id of an actionable payload (the key a hook
+    /// parks on and a decision is delivered against); nil for telemetry.
+    public var requestId: String? {
+        switch self {
+        case .permissionRequest(let requestId, _, _, _),
+             .exitPlan(let requestId, _, _),
+             .question(let requestId, _):
+            return requestId
+        case .toolUse, .toolResult, .userPrompt, .assistantMessage, .sessionStart, .sessionEnd, .stop, .todos:
+            return nil
+        }
+    }
 }

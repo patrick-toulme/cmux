@@ -66,6 +66,11 @@ const conns = new Set();
 // that) and observe whether the parked push survives.
 let parkFeedPush = false;
 const parkedConns = new Set();
+// Every parked connection per request id, oldest first, so a scenario can
+// answer a SUPERSEDED wait (renewals open a new connection each).
+const parkedByRequest = new Map();
+// One scripted reply for the next park of a request id.
+const parkReplies = new Map();
 // While set, the fake app answers resolve_pane with resolved:false (a pane
 // the mirror cannot place yet).
 let failResolve = false;
@@ -101,7 +106,15 @@ const handleConnection = (conn) => {
         const rid = (msg.params && msg.params.event && msg.params.event._opencode_request_id) || "";
         received.push(`push-parked:${rid}`);
         parkedConns.add(conn);
+        parkedByRequest.set(rid, [...(parkedByRequest.get(rid) || []), conn]);
         conn.on("close", () => received.push(`parked-closed:${rid}`));
+        // Optional scripted answer for this park (the app's own wait window
+        // closing, or a decision), delivered on THIS connection.
+        const scripted = parkReplies.get(rid);
+        if (scripted) {
+          parkReplies.delete(rid);
+          conn.write(JSON.stringify({ id: msg.id, ok: true, result: scripted }) + "\\n");
+        }
       } else if (msg && msg.method) {
         const requestId = msg.params && msg.params.request_id ? `:${msg.params.request_id}` : "";
         received.push(`v2:${msg.method}${requestId}`);
@@ -276,6 +289,101 @@ await hooks.event({ event: { type: "question.replied", properties: { sessionID: 
 await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-88"), 5000, "conclude sent after shared-conn churn");
 await waitFor(() => received.some((l) => l === "parked-closed:q-88"), 5000, "parked push settled by out-of-band reply");
 parkFeedPush = false;
+
+// Scenario 3c2: a parked ask outlives one wait window. The push RENEWS
+// inside the app's window (CMUX_FEED_BLOCKING_RENEW_MS=400 here) on a new
+// dedicated connection with the SAME request id, the superseded
+// connection stays open until the app answers it, and the ask stays
+// parked (its connections stay open) until a decision arrives from either
+// side. The event hook itself returns at once, as always, so the parked
+// state is observed through the dedicated connections.
+received.length = 0;
+parkFeedPush = true;
+parkedByRequest.clear();
+const closedCount = (rid) => received.filter((l) => l === `parked-closed:${rid}`).length;
+await hooks.event({ event: { type: "question.asked", properties: {
+  id: "q-110", sessionID: "s1",
+  questions: [{ question: "Ship?", options: [{ label: "Yes" }, { label: "No" }] }],
+} } });
+await waitFor(() => received.filter((l) => l === "push-parked:q-110").length >= 2, 5000, "parked push renewed inside the wait window");
+if (closedCount("q-110") !== 0) {
+  throw new Error("renewal must not close the superseded wait before the app answers it");
+}
+// The app closes the superseded wait on schedule: the plugin retires that
+// connection only and keeps the newest one parked.
+const [firstWait] = parkedByRequest.get("q-110");
+firstWait.write(JSON.stringify({ id: "opencode-q-110", ok: true, result: { status: "timed_out" } }) + "\\n");
+await waitFor(() => closedCount("q-110") === 1, 5000, "superseded wait retired on its timed_out");
+await new Promise((resolve) => setTimeout(resolve, 150));
+if (closedCount("q-110") !== 1) {
+  throw new Error("a superseded wait's timed_out must not settle the ask");
+}
+// The decision arrives on the CURRENT wait: the ask settles and every
+// connection closes.
+const currentWait = parkedByRequest.get("q-110").at(-1);
+currentWait.write(JSON.stringify({ id: "opencode-q-110", ok: true, result: { status: "resolved", decision: { kind: "question", selections: [["Yes"]] } } }) + "\\n");
+await waitFor(() => closedCount("q-110") >= 2 && parkedByRequest.get("q-110").every((c) => c.destroyed), 5000, "all waits closed once decided");
+if (received.filter((l) => l === "push-parked:q-110").length > 3) {
+  throw new Error("a decided ask kept renewing");
+}
+
+// Scenario 3c3: the app's window closes on the NEWEST wait before the
+// renewal (a lost race): the plugin re-pushes at once, not after the
+// renewal interval, so the card and needs-input state never lapse.
+received.length = 0;
+parkedByRequest.clear();
+parkReplies.set("q-120", { status: "timed_out" });
+await hooks.event({ event: { type: "question.asked", properties: {
+  id: "q-120", sessionID: "s1",
+  questions: [{ question: "Retry?", options: [{ label: "Yes" }] }],
+} } });
+const raceStart = Date.now();
+await waitFor(() => received.filter((l) => l === "push-parked:q-120").length >= 2, 5000, "immediate re-push after an app-side timed_out");
+if (Date.now() - raceStart > 350) {
+  throw new Error("the re-push after timed_out waited for the renewal interval");
+}
+// A decision delivered on the FIRST wait (it raced the renewal) settles
+// the ask: its connection closes and no renewal follows.
+parkReplies.set("q-130", { status: "resolved", decision: { kind: "question", selections: [["Yes"]] } });
+await hooks.event({ event: { type: "question.asked", properties: {
+  id: "q-130", sessionID: "s1",
+  questions: [{ question: "Raced?", options: [{ label: "Yes" }] }],
+} } });
+await waitFor(() => closedCount("q-130") >= 1, 5000, "decision on the first wait settles the ask");
+await new Promise((resolve) => setTimeout(resolve, 600));
+if (received.filter((l) => l === "push-parked:q-130").length !== 1) {
+  throw new Error("a decided ask must not renew");
+}
+// The out-of-band reply still settles a renewed ask and closes its waits.
+await hooks.event({ event: { type: "question.replied", properties: { sessionID: "s1", requestID: "q-120" } } });
+await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-120"), 5000, "conclude for a renewed ask");
+await waitFor(() => parkedByRequest.get("q-120").every((c) => c.destroyed), 5000, "renewed ask's waits closed by the out-of-band reply");
+parkFeedPush = false;
+parkedByRequest.clear();
+await new Promise((resolve) => setTimeout(resolve, 300));
+
+// Scenario 3c4: cmux is DOWN when the agent asks. The ask parks locally
+// and the push retries on the retry cadence until the app is back, then
+// parks there; the out-of-band reply still concludes it.
+received.length = 0;
+await stopServer();
+parkFeedPush = true;
+await hooks.event({ event: { type: "question.asked", properties: {
+  id: "q-140", sessionID: "s1",
+  questions: [{ question: "Down?", options: [{ label: "Yes" }] }],
+} } });
+await new Promise((resolve) => setTimeout(resolve, 600));
+if (received.some((l) => l === "push-parked:q-140")) {
+  throw new Error("no server, yet a push was recorded");
+}
+await startServer();
+await waitFor(() => received.some((l) => l === "push-parked:q-140"), 8000, "push retried once the app is back");
+await hooks.event({ event: { type: "question.replied", properties: { sessionID: "s1", requestID: "q-140" } } });
+await waitFor(() => received.some((l) => l === "v2:feed.conclude:q-140"), 8000, "conclude after outage");
+await waitFor(() => closedCount("q-140") >= 1, 5000, "outage ask's wait closed by the out-of-band reply");
+parkFeedPush = false;
+parkedByRequest.clear();
+await new Promise((resolve) => setTimeout(resolve, 300));
 
 // Scenario 3d: keepalive newlines ride the shared connection so the app's
 // idle reaper never fires between real frames.
@@ -1074,6 +1182,12 @@ def main() -> int:
         # (each waits past it), long enough for the coalescing scenario to
         # land two settles inside one window.
         env["CMUX_FEED_TOAST_COALESCE_MS"] = "400"
+        # Blocking-ask renewal inside the (fake) app's wait window, and a
+        # quick retry while the app is down, so the parked-ask scenarios run
+        # in well under a second each.
+        env["CMUX_FEED_BLOCKING_RENEW_MS"] = "400"
+        env["CMUX_FEED_BLOCKING_RETRY_MS"] = "250"
+        env["CMUX_FEED_BLOCKING_RETRY_SLOW_MS"] = "250"
         env["CMUX_FEED_DEBUG"] = "1"
         env.pop("CMUX_SOCKET_PATH", None)
         env.pop("CMUX_REMOTE_HOST_KEY", None)

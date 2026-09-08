@@ -469,6 +469,99 @@ struct FeedCoordinatorTests {
         }
     }
 
+    /// The agent bridge re-pushes a parked ask under the same request id
+    /// before each wait window closes. The renewal must map onto the card the
+    /// first push created (pending, no duplicate, no second banner), the
+    /// superseded wait's timeout must leave that card alone, and a renewal
+    /// that arrives after the user decided must answer with the recorded
+    /// decision instead of parking against a decided card.
+    @Test func renewedBlockingIngestRevivesTheSameCardAndNeverExpiresItFromASupersededWait() async {
+        let requestId = "renewed-request"
+        let notifications = NotificationRequestRecorder()
+        defer {
+            Self.resetFeedCoordinatorTestHooks()
+        }
+        await MainActor.run {
+            FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
+            FeedCoordinatorTestHooks.isAppActiveOverride = { false }
+            FeedCoordinatorTestHooks.notificationPostObserver = { _, postedRequestId in
+                notifications.record(postedRequestId)
+            }
+        }
+        let event = WorkstreamEvent(
+            sessionId: "claude-renewal-test",
+            hookEventName: .permissionRequest,
+            source: "claude",
+            cwd: "/tmp",
+            toolName: "Bash",
+            toolInputJSON: #"{"command":"true"}"#,
+            requestId: requestId
+        )
+
+        // First wait: parks for 0.3 s. Renewal: lands while the first is still
+        // parked and outlives it.
+        let firstDone = DispatchSemaphore(value: 0)
+        let firstResult = IngestResultBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            firstResult.value = FeedCoordinator.shared.ingestBlocking(event: event, waitTimeout: 0.3)
+            firstDone.signal()
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+        let renewalDone = DispatchSemaphore(value: 0)
+        let renewalResult = IngestResultBox()
+        DispatchQueue.global(qos: .userInitiated).async {
+            renewalResult.value = FeedCoordinator.shared.ingestBlocking(event: event, waitTimeout: 1.5)
+            renewalDone.signal()
+        }
+
+        #expect(firstDone.wait(timeout: .now() + 2) == .success)
+        guard case .timedOut(let firstItemId) = firstResult.value else {
+            Issue.record("the superseded wait should time out on its own schedule")
+            return
+        }
+        let afterFirstExit = await MainActor.run { () -> (count: Int, status: WorkstreamStatus?, id: UUID?) in
+            let items = FeedCoordinator.shared.store.items
+            return (items.count, items.first?.status, items.first?.id)
+        }
+        #expect(afterFirstExit.count == 1, "a renewal must revive the card, not stack a second one")
+        #expect(afterFirstExit.id == firstItemId)
+        #expect(afterFirstExit.status?.isPending == true, "a superseded wait's timeout must not expire the renewed card")
+        #expect(notifications.requestIds == [requestId], "a renewal must not post a second banner")
+
+        // The user decides during the renewed wait: the renewal resolves.
+        await MainActor.run {
+            FeedCoordinator.shared.deliverReply(requestId: requestId, decision: .permission(.once))
+        }
+        #expect(renewalDone.wait(timeout: .now() + 2) == .success)
+        guard case .resolved(let renewedItemId, .permission(.once)) = renewalResult.value else {
+            Issue.record("the renewed wait should carry the decision")
+            return
+        }
+        #expect(renewedItemId == firstItemId)
+
+        // A straggling renewal after the decision is answered from the store,
+        // without reopening the card or parking.
+        let lateDone = DispatchSemaphore(value: 0)
+        let lateResult = IngestResultBox()
+        let lateStartedAt = ContinuousClock.now
+        DispatchQueue.global(qos: .userInitiated).async {
+            lateResult.value = FeedCoordinator.shared.ingestBlocking(event: event, waitTimeout: 5)
+            lateDone.signal()
+        }
+        #expect(lateDone.wait(timeout: .now() + 2) == .success)
+        #expect(lateStartedAt.duration(to: .now) < .seconds(2))
+        guard case .resolved(let lateItemId, .permission(.once)) = lateResult.value else {
+            Issue.record("a renewal after the decision should return that decision")
+            return
+        }
+        #expect(lateItemId == firstItemId)
+        let finalState = await MainActor.run { () -> (count: Int, pending: Int) in
+            (FeedCoordinator.shared.store.items.count, FeedCoordinator.shared.store.pending.count)
+        }
+        #expect(finalState.count == 1)
+        #expect(finalState.pending == 0)
+    }
+
     @Test func blockingIngestUsesOneEndToEndDeadline() async {
         await MainActor.run {
             FeedCoordinator.shared.install(store: WorkstreamStore(ringCapacity: 10))
