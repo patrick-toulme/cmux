@@ -127,11 +127,47 @@ public final class WorkstreamStore {
 
     // MARK: - Ingest
 
+    /// What `ingest` did with a frame.
+    public struct IngestOutcome: Sendable, Equatable {
+        /// The item the frame now stands behind.
+        public let itemId: UUID
+        /// True when the frame re-armed an existing actionable card (same
+        /// request id, still pending or already expired) instead of
+        /// appending a duplicate.
+        public let revived: Bool
+    }
+
     /// Applies an inbound wire frame. Creates or updates a
     /// `WorkstreamItem`, enforces the ring-buffer cap, and appends to
     /// the JSONL log.
-    public func ingest(_ event: WorkstreamEvent) {
+    ///
+    /// A blocking ask can be pushed more than once under the same request
+    /// id: the agent bridge re-arms a parked permission or question before
+    /// each wait window expires so the card (and the sidebar's needs-input
+    /// state) outlives a single 120 s wait. Such a renewal revives the card
+    /// it already created (pending again, `updatedAt` bumped) rather than
+    /// stacking a second one behind an expired twin. A card the user has
+    /// already decided is never reopened: the renewal maps to it unchanged
+    /// so the caller can answer with the stored decision.
+    @discardableResult
+    public func ingest(_ event: WorkstreamEvent) -> IngestOutcome {
         let item = makeItem(from: event)
+        if item.kind.isActionable,
+           let requestId = item.payload.requestId,
+           let idx = items.lastIndex(where: {
+               $0.workstreamId == item.workstreamId && $0.payload.requestId == requestId
+           }) {
+            switch items[idx].status {
+            case .pending, .expired:
+                items[idx].status = .pending
+                items[idx].updatedAt = clock()
+                return IngestOutcome(itemId: items[idx].id, revived: true)
+            case .resolved:
+                return IngestOutcome(itemId: items[idx].id, revived: false)
+            case .telemetry:
+                break
+            }
+        }
         insert(item)
         updateContextIndex(with: item)
         if let persistence {
@@ -139,6 +175,7 @@ public final class WorkstreamStore {
                 try? await persistence.append(item)
             }
         }
+        return IngestOutcome(itemId: item.id, revived: false)
     }
 
     // MARK: - Actions

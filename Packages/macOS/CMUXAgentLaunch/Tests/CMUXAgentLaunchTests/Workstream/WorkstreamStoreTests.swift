@@ -92,6 +92,56 @@ struct WorkstreamStoreTests {
         #expect(store.items[2].status.isPending)
     }
 
+    @Test("A renewed ask revives its own card instead of stacking a duplicate")
+    func renewalRevivesTheSameCard() {
+        let clock = TestClock(initial: Date(timeIntervalSince1970: 0))
+        let store = WorkstreamStore(ringCapacity: 10, clock: { clock.now })
+        let first = store.ingest(.permission("s1", requestId: "r1", at: clock.now))
+        #expect(!first.revived)
+        #expect(store.items.count == 1)
+
+        // Still parked when the bridge re-arms it: same card, bumped, no duplicate.
+        clock.advance(105)
+        let renewed = store.ingest(.permission("s1", requestId: "r1", at: clock.now))
+        #expect(renewed == WorkstreamStore.IngestOutcome(itemId: first.itemId, revived: true))
+        #expect(store.items.count == 1)
+        #expect(store.items[0].status.isPending)
+        #expect(store.items[0].updatedAt == clock.now)
+
+        // The earlier wait expired the card before the renewal landed (a lost
+        // race): the renewal reopens it rather than leaving an expired twin.
+        store.markExpired(first.itemId)
+        clock.advance(1)
+        let reopened = store.ingest(.permission("s1", requestId: "r1", at: clock.now))
+        #expect(reopened == WorkstreamStore.IngestOutcome(itemId: first.itemId, revived: true))
+        #expect(store.items.count == 1)
+        #expect(store.pending.map(\.id) == [first.itemId])
+    }
+
+    @Test("A renewal never reopens a decided card, and other asks stay distinct")
+    func renewalLeavesDecisionsAndOtherAsksAlone() {
+        let store = WorkstreamStore(ringCapacity: 10)
+        let first = store.ingest(.permission("s1", requestId: "r1"))
+        store.markResolved(first.itemId, decision: .permission(.once))
+
+        let afterDecision = store.ingest(.permission("s1", requestId: "r1"))
+        #expect(afterDecision == WorkstreamStore.IngestOutcome(itemId: first.itemId, revived: false))
+        #expect(store.items.count == 1)
+        if case .resolved(let decision, _) = store.items[0].status {
+            #expect(decision == .permission(.once))
+        } else {
+            Issue.record("a renewal reopened a decided card")
+        }
+
+        // A different request id, or the same id from another session, is a new ask.
+        let other = store.ingest(.permission("s1", requestId: "r2"))
+        let elsewhere = store.ingest(.permission("s2", requestId: "r1"))
+        #expect(!other.revived)
+        #expect(!elsewhere.revived)
+        #expect(store.items.count == 3)
+        #expect(store.pending.count == 2)
+    }
+
     @Test("expirePending moves stale pending items to expired")
     func expirePending() {
         let clock = TestClock(initial: Date(timeIntervalSince1970: 0))

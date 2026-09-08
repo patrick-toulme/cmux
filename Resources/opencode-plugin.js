@@ -1,4 +1,4 @@
-// cmux-feed-plugin-marker v13
+// cmux-feed-plugin-marker v14
 // Bridges OpenCode's plugin event bus to the cmux socket's feed.* verbs.
 // Installed by `cmux hooks setup` or `cmux hooks opencode install`; pushed
 // onto remote tmux machines by the cmux remote agent bridge.
@@ -12,6 +12,19 @@ const childProcess = require("node:child_process");
 
 const DEFAULT_SOCKET = `${os.homedir()}/.config/cmux/cmux.sock`;
 const REPLY_TIMEOUT_MS = 120_000;
+// A parked ask is re-pushed this long after each push, inside the app's
+// wait window, so the Feed card and the needs-input state never lapse
+// while the decision is still open (see pushBlocking). Env overrides are
+// for the plugin test harness only.
+const BLOCKING_RENEW_MS =
+  Number(process.env.CMUX_FEED_BLOCKING_RENEW_MS || "") || REPLY_TIMEOUT_MS - 15_000;
+// Retry cadence while the app cannot take or place the ask (socket down
+// across a cmux restart, pane not yet re-mirrored): quick at first, then
+// slow so an hour-long outage costs a poll every 30 s, not every 5.
+const BLOCKING_RETRY_MS =
+  Number(process.env.CMUX_FEED_BLOCKING_RETRY_MS || "") || 5_000;
+const BLOCKING_RETRY_SLOW_MS =
+  Number(process.env.CMUX_FEED_BLOCKING_RETRY_SLOW_MS || "") || 30_000;
 const MAX_PLAN_BYTES = 128 * 1024;
 
 // Remote mode: this opencode runs inside a tmux pane on a machine that a
@@ -1544,34 +1557,79 @@ export const CMUXFeed = async (ctx) => {
   // parked permission, finish notifications delayed two minutes. Blocking
   // pushes therefore ride a DEDICATED connection each; the shared one
   // stays fluid.
+  //
+  // A parked decision also outlives one wait window. The app's waiter,
+  // and the Feed card plus the sidebar's needs-input state behind it,
+  // live for wait_timeout_seconds; a user who took longer than that used
+  // to find the card expired and needs-input cleared while the agent still
+  // sat on the prompt. So the push is RENEWED: before the app-side window
+  // closes, a fresh feed.push for the same request id rides a new
+  // dedicated connection (the app revives the same card and posts no
+  // second banner), and the superseded connection stays open until the
+  // app answers it (timed_out, or the real decision if it raced the
+  // renewal) so no reply is ever lost. Renewals run until the decision
+  // arrives from either side; a socket the app is not serving (restart,
+  // reattach) retries on a slower cadence, so the card re-lights once
+  // cmux is back and can place the pane again.
   const pushBlocking = async (event, requestId) => {
     // Bind late: a disconnect between frame build and write nulls
     // remoteTarget, and an unbound blocking frame reaches the app as
     // unattributable (attention skipped, "needs input" stuck on the
     // wrong panel). The resolve promise is cached, so this is free on
     // the hot path.
-    if (isRemote() && !event.workspace_id) {
-      const target = await resolveRemoteTarget();
+    const bind = async () => {
+      if (!isRemote()) return;
+      const target = remoteTarget || (await resolveRemoteTarget());
       if (target) {
         event.workspace_id = target.workspaceId;
         event.surface_id = target.surfaceId;
       }
-    }
+    };
+    await bind();
     // The row's needs-input line takes over while the decision parks; a
     // stale "running tool" line under it would read as still working.
     clearActivityStatus();
+    let settle;
     const reply = new Promise((resolve) => {
-      blockingPending.set(requestId, resolve);
-      setTimeout(() => {
-        if (blockingPending.has(requestId)) {
-          blockingPending.delete(requestId);
-          resolve({ status: "timed_out" });
-        }
-      }, REPLY_TIMEOUT_MS);
+      settle = resolve;
     });
-    let conn = null;
-    try {
-      conn = net.createConnection(socketPath || DEFAULT_SOCKET);
+    // One waiter for the whole ask, registered before the first frame so a
+    // reply on any connection (or a replied/rejected event between
+    // renewals) cannot slip past it. resolvePending removes it.
+    blockingPending.set(requestId, settle);
+    const live = () => !disposed && blockingPending.get(requestId) === settle;
+    const connections = new Set();
+    let newest = null;
+    let timer = null;
+    let failures = 0;
+    let attempts = 0;
+    const schedule = (ms) => {
+      if (!live()) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void open(), ms);
+      if (typeof timer.unref === "function") timer.unref();
+    };
+    const retry = () => {
+      failures += 1;
+      schedule(failures < 3 ? BLOCKING_RETRY_MS : BLOCKING_RETRY_SLOW_MS);
+    };
+    const open = async () => {
+      if (!live()) return;
+      // A cmux restart between attempts hands the pane new UUIDs.
+      if (attempts > 0) await bind();
+      if (!live()) return;
+      attempts += 1;
+      let conn;
+      try {
+        conn = net.createConnection(socketPath || DEFAULT_SOCKET);
+      } catch (_) {
+        retry();
+        return;
+      }
+      connections.add(conn);
+      newest = conn;
+      // A parked ask must never keep a dying opencode process alive.
+      if (typeof conn.unref === "function") conn.unref();
       conn.setEncoding("utf8");
       let lineBuffer = "";
       conn.on("data", (chunk) => {
@@ -1581,38 +1639,64 @@ export const CMUXFeed = async (ctx) => {
           const line = lineBuffer.slice(0, index);
           lineBuffer = lineBuffer.slice(index + 1);
           if (!line) continue;
+          let msg;
           try {
-            const msg = JSON.parse(line);
-            const responseId =
-              typeof msg?.id === "string" && msg.id.startsWith("opencode-")
-                ? msg.id.slice("opencode-".length)
-                : null;
-            resolvePending(
-              responseId || msg?.result?.request_id || msg?.request_id,
-              msg.result || msg
-            );
+            msg = JSON.parse(line);
           } catch (_) {
-            // Non-JSON replies (V1 "OK") are irrelevant here.
+            continue; // Non-JSON replies (V1 "OK") are irrelevant here.
           }
+          const responseId =
+            typeof msg?.id === "string" && msg.id.startsWith("opencode-")
+              ? msg.id.slice("opencode-".length)
+              : null;
+          const result = msg.result || msg;
+          const answered = responseId || result?.request_id || msg?.request_id;
+          if (answered !== requestId) continue;
+          if (result?.status === "resolved") {
+            resolvePending(requestId, result);
+            return;
+          }
+          // timed_out: this wait's window closed (a superseded wait ending
+          // on schedule, or the newest one expiring before our renewal).
+          // Anything else (not_found, unavailable, an error envelope): the
+          // app could not place the ask right now. Either way the ask is
+          // still parked on our side, so the newest wait renews at once and
+          // a superseded one just retires.
+          connections.delete(conn);
+          conn.destroy();
+          if (conn !== newest) return;
+          if (result?.status === "timed_out") {
+            failures = 0;
+            schedule(0);
+          } else {
+            retry();
+          }
+          return;
         }
       });
-      // This connection dying means the wait itself is dead (app
-      // restart or reap); a settled push already emptied its map entry,
-      // so the late 'close' from our own destroy() is a no-op.
-      const settleDead = () => resolvePending(requestId, { status: "timed_out" });
-      conn.on("error", settleDead);
-      conn.on("end", settleDead);
-      conn.on("close", settleDead);
+      // The connection dying before the app answered: the app is gone or
+      // restarting (or reaped this connection). Only the newest wait drives
+      // the retry; a superseded connection closing is expected.
+      const gone = () => {
+        const wasNewest = conn === newest;
+        connections.delete(conn);
+        if (wasNewest && live()) retry();
+      };
+      conn.on("error", gone);
+      conn.on("close", gone);
       conn.write(JSON.stringify({
         id: `opencode-${requestId}`,
         method: "feed.push",
         params: { event, wait_timeout_seconds: REPLY_TIMEOUT_MS / 1000 },
       }) + "\n");
-    } catch (_) {
-      resolvePending(requestId, { status: "timed_out" });
-    }
+      failures = 0;
+      schedule(BLOCKING_RENEW_MS);
+    };
+    void open();
     return reply.then((value) => {
-      if (conn) conn.destroy();
+      if (timer) clearTimeout(timer);
+      for (const conn of connections) conn.destroy();
+      connections.clear();
       return value;
     });
   };
@@ -1675,6 +1759,11 @@ export const CMUXFeed = async (ctx) => {
         clearTimeout(state.settleTimer);
         state.settleTimer = null;
       }
+    }
+    // Parked asks stop renewing with the instance; settling them closes
+    // their dedicated connections (pushBlocking's then-handler).
+    for (const requestId of [...blockingPending.keys()]) {
+      resolvePending(requestId, { status: "timed_out" });
     }
     ownBusy = false;
     if (paneRecord) {

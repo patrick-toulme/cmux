@@ -38,10 +38,10 @@ extension TerminalController {
                     itemIds.reserveCapacity(authoritativeEvents.count)
                     for event in authoritativeEvents {
                         self.v2ApplyIMessageModeSideEffects(for: event)
-                        guard let itemId = FeedCoordinator.shared.ingestRevalidatedOnMainActor(event) else {
+                        guard let outcome = FeedCoordinator.shared.ingestRevalidatedOnMainActor(event) else {
                             continue
                         }
-                        itemIds.append(itemId)
+                        itemIds.append(outcome.itemId)
                     }
                     if itemIds.count != authoritativeEvents.count {
                         return .unavailable
