@@ -12455,15 +12455,25 @@ struct VerticalTabsSidebar: View, Equatable {
             unreadRebuild: {
                 [model, workspaceId = tab.id,
                  showsNotificationMessage = input.settings.showsNotificationMessage,
-                 isRemoteTmuxMirror = tab.remoteTmuxHostKey != nil] snapshot in
+                 isRemoteTmuxMirror = tab.remoteTmuxHostKey != nil,
+                 latestSubmittedMessage = tab.latestSubmittedMessage,
+                 latestSubmittedAt = tab.latestSubmittedAt] snapshot in
                 let summary = snapshot.summary(forWorkspaceId: workspaceId)
                 var fresh = model
                 fresh.unreadCount = SidebarWorkspaceRowInput.displayedUnreadCount(
                     summary.unreadCount,
                     isRemoteTmuxMirror: isRemoteTmuxMirror
                 )
+                // A newer prompt is part of the input that built `model`
+                // (the snapshot carries it), so the captured pair is current
+                // for every unread-only rebuild of this configuration.
                 fresh.latestNotificationText = showsNotificationMessage
-                    ? summary.latestNotificationText
+                    ? SidebarWorkspaceSubtitlePolicy.resolve(
+                        latestNotificationText: summary.latestNotificationText,
+                        latestNotificationCreatedAt: summary.latestNotificationCreatedAt,
+                        latestSubmittedMessage: latestSubmittedMessage,
+                        latestSubmittedAt: latestSubmittedAt
+                    )
                     : nil
                 return fresh
             }
@@ -14503,7 +14513,12 @@ struct VerticalTabsSidebar: View, Equatable {
         let unreadSummary = unreadSummariesByWorkspaceId[tab.id]
             ?? SidebarWorkspaceUnreadSummary(unreadCount: 0, latestNotificationText: nil)
         let liveLatestNotificationText: String? = renderContext.tabItemSettings.showsNotificationMessage
-            ? unreadSummary.latestNotificationText
+            ? SidebarWorkspaceSubtitlePolicy.resolve(
+                latestNotificationText: unreadSummary.latestNotificationText,
+                latestNotificationCreatedAt: unreadSummary.latestNotificationCreatedAt,
+                latestSubmittedMessage: tab.latestSubmittedMessage,
+                latestSubmittedAt: tab.latestSubmittedAt
+            )
             : nil
         let liveShowsModifierShortcutHints = showModifierHoldHints && modifierKeyMonitor.isModifierPressed
         let resolvedShowsModifierShortcutHints = SidebarShortcutHintFreezePolicy().resolved(
