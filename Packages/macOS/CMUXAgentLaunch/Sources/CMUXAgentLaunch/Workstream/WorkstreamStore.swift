@@ -276,23 +276,23 @@ public final class WorkstreamStore {
         }
     }
 
-    /// Marks every pending item whose emitting agent process is no
-    /// longer alive as `.expired`. Used once at app startup to
-    /// catch items restored from the JSONL log whose original
-    /// agent never made it to the kqueue-watcher install; steady-
-    /// state abandonment is driven by `expireItems(forPpid:)` from
-    /// the DispatchSource handler instead.
+    /// Marks every pending item that nothing can conclude any more as
+    /// `.expired`. Used once at app startup to catch items restored from
+    /// the JSONL log: one whose local agent process is gone, and one with
+    /// no process to watch at all (a remote agent's ask, which the agent
+    /// bridge re-arms under the same request id while it is still parked,
+    /// so a live one revives its card on the next renewal push within one
+    /// wait window). Steady-state abandonment of local items is driven by
+    /// `expireItems(forPpid:)` from the DispatchSource handler instead.
     public func expireAbandonedItems(
         isProcessAlive: (Int) -> Bool = WorkstreamStore.defaultIsProcessAlive
     ) {
         let now = clock()
         for idx in items.indices {
             guard items[idx].status.isPending else { continue }
-            guard let ppid = items[idx].ppid, ppid > 0 else { continue }
-            if !isProcessAlive(ppid) {
-                items[idx].status = .expired(at: now)
-                items[idx].updatedAt = now
-            }
+            if let ppid = items[idx].ppid, ppid > 0, isProcessAlive(ppid) { continue }
+            items[idx].status = .expired(at: now)
+            items[idx].updatedAt = now
         }
     }
 

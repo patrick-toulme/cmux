@@ -73,7 +73,7 @@ struct WorkstreamStoreTests {
         #expect(!store.hasMorePersistedItems)
     }
 
-    @Test("expireAbandonedItems expires items whose agent PID is dead")
+    @Test("expireAbandonedItems expires items whose agent PID is dead or unwatched")
     func expireAbandoned() {
         let clock = TestClock(initial: Date(timeIntervalSince1970: 0))
         let store = WorkstreamStore(ringCapacity: 10, clock: { clock.now })
@@ -88,7 +88,15 @@ struct WorkstreamStoreTests {
         if case .expired = store.items[1].status {} else {
             Issue.record("dead-pid item should be expired")
         }
-        // Item with no ppid: no change (we don't know liveness).
+        // No ppid means no process to watch (a remote agent's ask restored
+        // across an app restart): nothing else could ever conclude it, so it
+        // expires too. A live remote ask re-arms its card on the next renewal
+        // push, which revives it.
+        if case .expired = store.items[2].status {} else {
+            Issue.record("unwatched restored item should be expired")
+        }
+        let renewed = store.ingest(.permission("untracked", requestId: "r3", at: clock.now))
+        #expect(renewed == WorkstreamStore.IngestOutcome(itemId: store.items[2].id, revived: true))
         #expect(store.items[2].status.isPending)
     }
 
